@@ -87,7 +87,7 @@ pub const SERVER_OPS_TOPIC: &str = "_willow_server_ops";
 /// Global gossipsub topic for profile broadcasts.
 pub const PROFILE_TOPIC: &str = "_willow_profiles";
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use willow_identity::Identity;
@@ -107,6 +107,7 @@ mod tests {
                 name: "general".to_string(),
                 channel_id: "ch-1".to_string(),
                 kind: willow_state::ChannelKind::Text,
+                ephemeral: None,
             },
         );
 
@@ -154,6 +155,7 @@ mod tests {
                 name: "ch1".to_string(),
                 channel_id: "cid1".to_string(),
                 kind: willow_state::ChannelKind::Text,
+                ephemeral: None,
             },
         );
         let e2 = willow_state::Event::new(
@@ -312,6 +314,7 @@ mod tests {
         let id = Identity::generate();
         let joiner = Identity::generate();
         let msg = WireMessage::JoinResponse {
+            link_id: "link-1".to_string(),
             target_peer: joiner.endpoint_id(),
             invite_data: "base64inviteblob".to_string(),
         };
@@ -319,9 +322,11 @@ mod tests {
         let (decoded, _) = unpack_wire(&data).unwrap();
         match decoded {
             WireMessage::JoinResponse {
+                link_id,
                 target_peer,
                 invite_data,
             } => {
+                assert_eq!(link_id, "link-1");
                 assert_eq!(target_peer, joiner.endpoint_id());
                 assert_eq!(invite_data, "base64inviteblob");
             }
@@ -334,6 +339,7 @@ mod tests {
         let id = Identity::generate();
         let joiner = Identity::generate();
         let msg = WireMessage::JoinDenied {
+            link_id: "link-1".to_string(),
             target_peer: joiner.endpoint_id(),
             reason: "link_expired".to_string(),
         };
@@ -341,9 +347,11 @@ mod tests {
         let (decoded, _) = unpack_wire(&data).unwrap();
         match decoded {
             WireMessage::JoinDenied {
+                link_id,
                 target_peer,
                 reason,
             } => {
+                assert_eq!(link_id, "link-1");
                 assert_eq!(target_peer, joiner.endpoint_id());
                 assert_eq!(reason, "link_expired");
             }

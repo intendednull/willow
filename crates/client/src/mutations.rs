@@ -44,6 +44,9 @@ pub struct ClientMutations<N: willow_network::Network> {
     pub(crate) persistence_enabled: bool,
     pub(crate) identity: Identity,
     pub(crate) dag: Addr<StateActor<DagState>>,
+    // state: lock-ok — mirrors `ClientHandle.{join_links,topics}`; actor
+    // migration tracked in docs/specs/2026-04-26-state-management-model-design.md
+    // § F4.
     pub(crate) join_links: Arc<Mutex<Vec<crate::ops::JoinLink>>>,
     pub(crate) topics: Arc<RwLock<HashMap<String, N::Topic>>>,
     /// Phase 2b: shared handle to the sync-queue actor, so mutations
@@ -97,6 +100,9 @@ impl<N: willow_network::Network> ClientMutations<N> {
             ds.managed
                 .insert_and_apply(genesis)
                 .expect("genesis event must insert successfully");
+            // SyncRequest-reply cache must be invalidated on every
+            // successful insertion path; see GEN-08 / issue #268.
+            ds.invalidate_sync_reply_cache();
             ds.managed.state().clone()
         })
         .await;
@@ -115,9 +121,16 @@ impl<N: willow_network::Network> ClientMutations<N> {
         let dag = self.dag.clone();
         util::with_timeout("build_event", async move {
             willow_actor::state::mutate(&dag, move |ds| {
-                ds.managed
+                let result = ds
+                    .managed
                     .create_and_insert(&identity, kind, ts)
-                    .map_err(|e| anyhow::anyhow!("DAG insert failed: {e:?}"))
+                    .map_err(|e| anyhow::anyhow!("DAG insert failed: {e:?}"));
+                if result.is_ok() {
+                    // SyncRequest-reply cache must be invalidated on every
+                    // successful insertion path; see GEN-08 / issue #268.
+                    ds.invalidate_sync_reply_cache();
+                }
+                result
             })
             .await
         })
@@ -365,6 +378,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
                 name: name.clone(),
                 channel_id: ch_id_str,
                 kind: willow_state::ChannelKind::Text,
+                ephemeral: None,
             })
             .await?;
         self.apply_event(&event).await;
@@ -372,6 +386,51 @@ impl<N: willow_network::Network> ClientMutations<N> {
         // Switch to new channel.
         self.switch_channel(&name_for_switch).await;
 
+        self.broadcast_event(&event);
+        Ok(())
+    }
+
+    /// Create a non-permanent ("ephemeral") channel that
+    /// auto-archives after `idle_threshold_ms` of inactivity.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/ephemeral-channels.md`.
+    pub async fn create_ephemeral_channel(
+        &self,
+        name: &str,
+        kind: willow_state::EphemeralKind,
+        idle_threshold_ms: u64,
+    ) -> anyhow::Result<()> {
+        let name = name.to_string();
+        let name_for_switch = name.clone();
+        let ch_id_str = uuid::Uuid::new_v4().to_string();
+
+        let event = self
+            .build_event(EventKind::CreateChannel {
+                name: name.clone(),
+                channel_id: ch_id_str,
+                kind: willow_state::ChannelKind::Text,
+                ephemeral: Some(willow_state::EphemeralConfig {
+                    kind,
+                    idle_threshold_ms,
+                }),
+            })
+            .await?;
+        self.apply_event(&event).await;
+        self.switch_channel(&name_for_switch).await;
+        self.broadcast_event(&event);
+        Ok(())
+    }
+
+    /// Revive an auto-archived ephemeral channel by name without
+    /// posting a message.
+    pub async fn revive_channel(&self, name: &str) -> anyhow::Result<()> {
+        let ch_id_str = self.resolve_channel_id(name).await?;
+        let event = self
+            .build_event(EventKind::ChannelRevive {
+                channel_id: ch_id_str,
+            })
+            .await?;
+        self.apply_event(&event).await;
         self.broadcast_event(&event);
         Ok(())
     }
@@ -708,7 +767,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
     pub async fn update_profile(&self, peer_id: EndpointId, display_name: String) {
         let name = display_name.clone();
         willow_actor::state::mutate(&self.profiles, move |p| {
-            p.names.insert(peer_id, name);
+            p.insert_name(peer_id, name);
         })
         .await;
         self.event_broker
@@ -723,7 +782,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
     pub async fn record_typing(&self, peer_id: EndpointId, channel: String) {
         let now = util::current_time_ms();
         willow_actor::state::mutate(&self.network, move |n| {
-            n.typing_peers.insert(peer_id, (channel, now));
+            n.insert_typing(peer_id, channel, now);
         })
         .await;
         // Also ensure peer is tracked.
@@ -886,7 +945,7 @@ pub(crate) fn derive_client_events(event: &willow_state::Event) -> Vec<ClientEve
         EventKind::Propose { action } => {
             out.push(ClientEvent::ProposalCreated {
                 proposal_hash: event.hash.to_string(),
-                action_description: format!("{action:?}"),
+                action_description: format!("{action}"),
             });
         }
         EventKind::Vote { proposal, accept } => {

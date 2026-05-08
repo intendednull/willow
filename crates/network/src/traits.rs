@@ -158,9 +158,10 @@ pub trait Network: Send + Sync + 'static {
     /// Access the blob store.
     fn blobs(&self) -> &dyn BlobStore;
 
-    // TODO(#119): add connection_events() — stream relay up/down and direct
+    // TODO(#561): add connection_events() — stream relay up/down and direct
     // peer connect/disconnect events so the client can surface connectivity
-    // status in the UI.
+    // status in the UI. (#119 was the original tracker, closed before the
+    // placeholder `pending()` impls were replaced — #561 is the live followup.)
 
     /// Reachability of the configured relay, or [`RelayStatus::NotConfigured`]
     /// when none is set. Default impl returns `NotConfigured`; the real

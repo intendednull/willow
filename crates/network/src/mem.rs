@@ -4,6 +4,11 @@
 //! for testing. No real connections, no network I/O — messages are delivered
 //! via `tokio::sync::broadcast` channels.
 //!
+//! All `Mutex` usage in this module is test-infrastructure-only and exempt
+//! from the project's actor-default rule (see `CLAUDE.md` § State Management
+//! and `docs/specs/2026-04-26-state-management-model-design.md`). Production
+//! networking lives in [`crate::iroh::IrohNetwork`].
+//!
 //! ## Usage
 //!
 //! ```ignore
@@ -272,7 +277,7 @@ impl TopicEvents for MemTopicEvents {
                             // Filter out events about ourselves
                             match &event {
                                 GossipEvent::NeighborUp(id) | GossipEvent::NeighborDown(id) if *id == self.id => continue,
-                                _ => return Some(Ok(event)),
+                                GossipEvent::Received(_) | GossipEvent::NeighborUp(_) | GossipEvent::NeighborDown(_) => return Some(Ok(event)),
                             }
                         }
                         Err(broadcast::error::RecvError::Closed) => return None,

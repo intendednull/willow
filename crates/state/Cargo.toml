@@ -12,3 +12,6 @@ iroh-base = { workspace = true, features = ["key"] }
 serde = { workspace = true }
 sha2 = "0.10"
 willow-identity = { path = "../identity" }
+
+[dev-dependencies]
+serde_json = "1"

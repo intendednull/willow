@@ -49,6 +49,10 @@ self.addEventListener('push', function(event) {
         // Content-preview composition happens only after local
         // decryption (see notifications.md §Local composition).
         const title = opaqueTitle(cat);
+        // SECURITY: icon path must reference only build-time-bundled assets — do
+        // NOT pass user-supplied SVG. SVGs can carry inline scripts that execute
+        // in the notification context. See issue #312. A build-time assertion in
+        // crates/web/tests/static_assets.rs guards the allow-list.
         await self.registration.showNotification(title, {
             body: '',
             tag: cat + ':' + (ref || 'generic'),

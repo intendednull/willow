@@ -92,13 +92,13 @@ impl ServerRegistry {
     /// exposes its full membership — see the multi-grove TODO on
     /// `servers.rs`).
     pub fn shared_groves(&self, _local: &EndpointId, _other: &EndpointId) -> Vec<String> {
-        // TODO(multi-grove): plumb `state.members` into `ServerEntry`
-        // so the intersection can walk every grove the local peer is
-        // in. Until then, the helper returns the active grove's name
-        // when we know both peers are members (check deferred to the
-        // UI which reads `MembersView` for the active server). Return
-        // an empty Vec rather than fabricating a match — the spec's
-        // edge case "no shared groves → omit section" covers this.
+        // TODO(#563): plumb `state.members` into `ServerEntry` so the
+        // intersection can walk every grove the local peer is in. Until
+        // then, the helper returns the active grove's name when we know
+        // both peers are members (check deferred to the UI which reads
+        // `MembersView` for the active server). Return an empty Vec rather
+        // than fabricating a match — the spec's edge case "no shared
+        // groves → omit section" covers this.
         Vec::new()
     }
 }
@@ -123,6 +123,68 @@ pub struct ChannelsView {
 pub struct ChannelInfo {
     pub name: String,
     pub kind: willow_state::ChannelKind,
+}
+
+/// One row in the archives surface — an ephemeral channel that has
+/// crossed its idle threshold and is no longer in the active sidebar.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/ephemeral-channels.md`
+/// §Archive surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedChannelSummary {
+    pub channel_id: String,
+    pub name: String,
+    pub kind: willow_state::EphemeralKind,
+    pub last_activity_ms: Option<u64>,
+    /// `last_activity + idle_threshold` — the moment the channel
+    /// crossed into archived. Used by the archives view to render
+    /// "archived after N units idle".
+    pub archived_at_ms: u64,
+}
+
+/// Everything the archives surface needs to render — list of
+/// auto-archived ephemeral channels, newest archive first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArchivesView {
+    pub entries: Vec<ArchivedChannelSummary>,
+}
+
+/// Pure derivation: enumerate the channels whose ephemeral band has
+/// crossed into [`willow_state::EphemeralState::Archived`] given the
+/// current frontier HLC. Newest archive first.
+pub fn derive_archives_view(
+    state: &willow_state::ServerState,
+    frontier_hlc_ms: u64,
+) -> ArchivesView {
+    let mut entries: Vec<ArchivedChannelSummary> = state
+        .channels
+        .values()
+        .filter_map(|ch| {
+            let cfg = ch.ephemeral.as_ref()?;
+            let band = willow_state::derive_ephemeral_state(
+                ch.last_activity_hlc,
+                cfg.idle_threshold_ms,
+                frontier_hlc_ms,
+            );
+            if band != willow_state::EphemeralState::Archived {
+                return None;
+            }
+            let archived_at = ch
+                .last_activity_hlc
+                .unwrap_or(0)
+                .saturating_add(cfg.idle_threshold_ms);
+            Some(ArchivedChannelSummary {
+                channel_id: ch.id.clone(),
+                name: ch.name.clone(),
+                kind: cfg.kind,
+                last_activity_ms: ch.last_activity_hlc,
+                archived_at_ms: archived_at,
+            })
+        })
+        .collect();
+    // Newest archive first.
+    entries.sort_by_key(|e| std::cmp::Reverse(e.archived_at_ms));
+    ArchivesView { entries }
 }
 
 /// Member list with online status.
@@ -269,6 +331,9 @@ pub struct RolesView {
 pub struct RoleEntry {
     pub id: String,
     pub name: String,
+    /// Permission names (string form) in stable, deduplicated order.
+    /// Surfaced as strings so UI / accessor consumers stay format-stable
+    /// even as the underlying [`willow_state::Permission`] enum grows.
     pub permissions: Vec<String>,
 }
 
@@ -523,8 +588,10 @@ pub fn mention_handle_for(events: &willow_state::ServerState, peer_id: &Endpoint
 /// Phase 2b: accepts a `queue_meta` snapshot so the projection can
 /// derive real `QueueNote::Pending` / `QueueNote::LateArrival` values
 /// for each row via [`crate::queue::derive_pending`] +
-/// [`crate::queue::derive_late_arrival`]. Closes the
-/// `TODO(sync-queue.md)` gate in this function and in the Phase 2a
+/// [`crate::queue::derive_late_arrival`]. Closes the original
+/// sync-queue gate (see plan
+/// `docs/plans/2026-04-21-ui-phase-2b-sync-queue.md`) in this function
+/// and in the Phase 2a plan
 /// `docs/plans/2026-04-20-ui-phase-2a-message-row.md` at line 490.
 pub fn compute_messages_view(
     events: &Arc<willow_state::ServerState>,
@@ -554,8 +621,9 @@ pub fn compute_messages_view(
     // track a distinct `@handle` (see `profile-card.md` for the target
     // profile data model); as a stand-in we derive a handle from the
     // display name via `display_name.to_lowercase().replace(' ', '.')`.
-    // TODO(profile-card.md): replace the display-name-derived handle
-    // with the real handle field once profile data is plumbed.
+    // TODO(plan: docs/plans/2026-04-21-ui-phase-2c-profile-card.md):
+    // replace the display-name-derived handle with the real handle field
+    // once profile data is plumbed.
     let peer_refs: Vec<PeerRef> = events
         .members
         .keys()
@@ -643,11 +711,11 @@ pub fn compute_messages_view(
             } else {
                 QueueNote::None
             };
-            // TODO(whisper-mode.md): flip via WhisperStart event when
-            // that phase lands. Phase 2a Task 8 reserves the row
-            // styling surface (message--whisper class + whisper-badge)
-            // behind this always-false gate so later work only has to
-            // swap the projection lookup.
+            // TODO(#562): flip via WhisperStart event when that phase
+            // lands. Phase 2a Task 8 reserves the row styling surface
+            // (message--whisper class + whisper-badge) behind this
+            // always-false gate so later work only has to swap the
+            // projection lookup.
             let whisper = false;
             DisplayMessage {
                 id: m.id.to_string(),
@@ -743,8 +811,10 @@ pub fn compute_unread_view(
     let mute = event_state.mute_state.get(&local_peer_id).cloned();
 
     // Build a PeerRef list once for the mention parser. Mirrors the
-    // build in `compute_messages_view`; TODO(profile-card.md) tracks
-    // swapping display-name-derived handles for real profile handles.
+    // build in `compute_messages_view`; the
+    // TODO(plan: docs/plans/2026-04-21-ui-phase-2c-profile-card.md)
+    // there tracks swapping display-name-derived handles for real
+    // profile handles.
     //
     // `resolve_display_name` needs a `ProfileState` — we only have the
     // event-state profiles here, so fall back to the event-state entry
@@ -835,7 +905,7 @@ pub fn compute_roles_view(events: &Arc<willow_state::ServerState>) -> RolesView 
         .map(|role| RoleEntry {
             id: role.id.clone(),
             name: role.name.clone(),
-            permissions: role.permissions.iter().cloned().collect(),
+            permissions: role.permissions.iter().map(|p| p.to_string()).collect(),
         })
         .collect();
     roles.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1077,7 +1147,7 @@ pub fn resolve_display_name(
     "unknown peer".to_string()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     //! Projection tests for Phase 2a Task 4 — populated `mentions` in
     //! `DisplayMessage` and `mentioned` flag in `UnreadStats`.
@@ -1114,6 +1184,8 @@ mod tests {
                 name: name.into(),
                 pinned_messages: Default::default(),
                 kind: ChannelKind::Text,
+                ephemeral: None,
+                last_activity_hlc: None,
             },
         );
     }

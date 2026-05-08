@@ -137,12 +137,13 @@ pub struct DisplayMessage {
     /// Queue-note state for this row (see [`QueueNote`]).
     ///
     /// Populated by the view projection in
-    /// `views::compute_messages_view`. Today the projection defers the
-    /// real detection to the sync-queue crate and always returns
-    /// `None` — see `TODO(sync-queue.md)` in `views.rs`. The renderer
-    /// is already wired for the full tri-state so the UX will light up
-    /// once detection lands. The grouping predicate in `chat.rs`
-    /// treats any non-`None` variant as a run-break per
+    /// `views::compute_messages_view`. Phase 2b (see
+    /// `docs/plans/2026-04-21-ui-phase-2b-sync-queue.md`) closed the
+    /// original `TODO(sync-queue.md)` gate: the projection now derives
+    /// real `Pending` / `LateArrival` values from `QueueMeta`. The
+    /// renderer is wired for the full tri-state. The grouping
+    /// predicate in `chat.rs` treats any non-`None` variant as a
+    /// run-break per
     /// `docs/specs/2026-04-19-ui-design/message-row.md` §Queue notes.
     pub queue_note: QueueNote,
 }
@@ -176,8 +177,6 @@ pub struct ClientState {
     pub profiles: ProfileStore,
     /// Emoji shortcode expansion registry.
     pub emoji: crate::emoji::EmojiRegistry,
-    /// Persistent message database (native-only SQLite, WASM localStorage).
-    pub message_db: Option<std::sync::Arc<std::sync::Mutex<crate::storage::MessageDb>>>,
 
     // --- Event-sourced state (willow-state) ---
     /// Event-sourced server state — the single source of truth.
@@ -194,7 +193,6 @@ impl ClientState {
             active_server: None,
             profiles: ProfileStore::default(),
             emoji: crate::emoji::EmojiRegistry::new(),
-            message_db: None,
             event_state: willow_state::ServerState::new("", "", owner),
         }
     }

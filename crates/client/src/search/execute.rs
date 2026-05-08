@@ -6,6 +6,8 @@
 //! timestamp-desc order with matched byte-ranges ready for the
 //! highlight renderer.
 
+use std::sync::Arc;
+
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
@@ -81,7 +83,7 @@ pub fn execute(index: &SearchIndex, query: &SearchQuery, scope: &SearchScope) ->
 /// Candidate set: posting-lists for every token + first-word of each
 /// phrase. Falls back to every posting when the query has no tokens
 /// (pure operator-only queries like `has:link`).
-fn candidate_postings(index: &SearchIndex, query: &SearchQuery) -> Vec<Posting> {
+fn candidate_postings(index: &SearchIndex, query: &SearchQuery) -> Vec<Arc<Posting>> {
     let mut lookup_tokens: Vec<String> = query.tokens.clone();
     for ph in &query.phrases {
         if let Some(first) = ph.split_whitespace().next() {
@@ -89,7 +91,7 @@ fn candidate_postings(index: &SearchIndex, query: &SearchQuery) -> Vec<Posting> 
         }
     }
 
-    let mut candidates: Vec<Posting> = Vec::new();
+    let mut candidates: Vec<Arc<Posting>> = Vec::new();
     for t in &lookup_tokens {
         if let Some(slice) = index.postings_for(t) {
             candidates.extend(slice.iter().cloned());

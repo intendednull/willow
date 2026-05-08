@@ -6,9 +6,31 @@
 //! networking — just DAG operations and deterministic state projection.
 
 #[cfg(test)]
-mod tests;
+#[path = "tests/dag.rs"]
+mod tests_dag;
+
+#[cfg(test)]
+#[path = "tests/materialize.rs"]
+mod tests_materialize;
+
+#[cfg(test)]
+#[path = "tests/permissions.rs"]
+mod tests_permissions;
+
+#[cfg(test)]
+#[path = "tests/stress.rs"]
+mod tests_stress;
+
+#[cfg(test)]
+#[path = "tests/sync.rs"]
+mod tests_sync;
+
+#[cfg(test)]
+#[path = "tests/voting.rs"]
+mod tests_voting;
 
 pub mod dag;
+pub mod ephemeral;
 pub mod event;
 pub mod hash;
 pub mod managed;
@@ -19,6 +41,11 @@ pub mod types;
 
 // Re-exports for convenience.
 pub use dag::{EventDag, InsertError};
+pub use ephemeral::{
+    derive_ephemeral_state, EphemeralConfig, EphemeralKind, EphemeralState,
+    DEFAULT_CHANNEL_THRESHOLD_MS, DEFAULT_THREAD_THRESHOLD_MS, DEFAULT_WHISPER_THRESHOLD_MS,
+    IDLE_THRESHOLD_MAX_MS, IDLE_THRESHOLD_MIN_MS,
+};
 pub use event::{Event, EventKind, Permission, ProposedAction, VoteThreshold};
 pub use hash::EventHash;
 pub use managed::ManagedDag;

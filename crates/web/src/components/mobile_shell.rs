@@ -17,9 +17,12 @@
 //!
 //! Spec: docs/specs/2026-04-19-ui-design/layout-primitives.md §Mobile layout
 
+use leptos::ev::TransitionEvent;
+use leptos::html::Div;
 use leptos::prelude::*;
 
 use crate::app::WebClientHandle;
+use crate::components::lifecycle::{advance, is_zero_duration, LifecycleState};
 use crate::components::{
     BottomSheet, ChannelSidebar, Composer, FileShareButton, GroveDrawer, MainPaneHeader,
     MessageList, RightRailWhich, TabBar,
@@ -61,7 +64,6 @@ impl MobileTab {
 /// Full-screen pushes that can be stacked over a primary tab. Each
 /// push hides the tab bar and renders translated in from the right.
 #[derive(Clone, PartialEq, Eq, Debug)]
-#[allow(dead_code)]
 pub enum MobilePush {
     /// Channel chat view (name = channel id).
     Channel(String),
@@ -237,6 +239,55 @@ where
     let on_pin = on_pin.clone();
     let on_voice_join_sidebar = on_voice_join.clone();
 
+    // Four-phase data-state lifecycle on the .mobile-shell root, mirroring
+    // the drawer-open signal owned by this component (`drawer_open` above).
+    // The actual transform transition lives on the inner GroveDrawer
+    // <aside>; this top-level lifecycle exists so test harnesses can gate
+    // on the shell-owned source of truth (per spec §`data-state` attribute
+    // pattern: "Components receiving the lifecycle"). Driving property is
+    // `transform` to match grove_drawer; under our default CSS the shell
+    // div has no transform transition, so the reduced-motion shortcut
+    // (is_zero_duration) snaps Opening/Closing straight to terminal —
+    // matching the canonical pattern's "no-animation → no-event" branch.
+    //
+    // See docs/specs/2026-04-27-event-based-waits-design.md
+    // §`data-state` attribute pattern.
+    let shell_ref: NodeRef<Div> = NodeRef::new();
+    let drawer_lifecycle = RwSignal::new(if drawer_open.get_untracked() {
+        LifecycleState::Open
+    } else {
+        LifecycleState::Closed
+    });
+
+    Effect::new(move |prev: Option<bool>| {
+        let now_open = drawer_open.get();
+        if prev.is_none() || prev == Some(now_open) {
+            drawer_lifecycle.set(if now_open {
+                LifecycleState::Open
+            } else {
+                LifecycleState::Closed
+            });
+            return now_open;
+        }
+        drawer_lifecycle.set(if now_open {
+            LifecycleState::Opening
+        } else {
+            LifecycleState::Closing
+        });
+        if let Some(el) = shell_ref.get_untracked() {
+            if is_zero_duration(el.as_ref()) {
+                drawer_lifecycle.set(advance(drawer_lifecycle.get_untracked()));
+            }
+        }
+        now_open
+    });
+
+    let on_shell_transition_end = move |ev: TransitionEvent| {
+        if ev.property_name() == "transform" {
+            drawer_lifecycle.update(|s| *s = advance(*s));
+        }
+    };
+
     // Alias some signals for concise view closures.
     let current_channel = app_state.chat.current_channel;
     let messages = app_state.chat.messages;
@@ -251,7 +302,13 @@ where
     let active_server_name = app_state.server.active_server_name;
 
     view! {
-        <div class="mobile-shell" data-tab=move || active_tab.get().id()>
+        <div
+            class="mobile-shell"
+            node_ref=shell_ref
+            data-tab=move || active_tab.get().id()
+            data-state=move || drawer_lifecycle.get().as_str()
+            on:transitionend=on_shell_transition_end
+        >
             // ── Top bar ────────────────────────────────────────────
             <header class="mobile-top-bar" role="banner" aria-label="top bar">
                 <button

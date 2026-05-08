@@ -21,12 +21,16 @@ test.describe('Worker nodes infrastructure', () => {
     await freshStart(page);
     await createServer(page, 'Relay Test', 'Alice');
 
-    // Wait for relay connection to establish.
-    // App indicates reachability by rendering either the desktop net
-    // status footer or the mobile top bar once the client has a peer
-    // id and peer count signal. `:visible` scopes to the active shell.
+    // Wait for the app shell to mount — proof the WASM client booted,
+    // joined a server, and rendered the channel surface where the
+    // network status indicators live (relay-signal-button in the sync
+    // queue panel + offline-strip when peers are queued). The desktop
+    // path renders `.main-pane-header`; the mobile path renders
+    // `.mobile-top-bar`. `:visible` scopes to the active shell so we
+    // don't match the hidden inactive copy on the other side of the
+    // 720 px split.
     await expect(
-      page.locator('.net-status-footer:visible, .mobile-top-bar:visible').first()
+      page.locator('.main-pane-header:visible, .mobile-top-bar:visible').first()
     ).toBeVisible({ timeout: 20_000 });
 
     // Alice should always be in the member list on desktop. Mobile

@@ -597,6 +597,19 @@ impl RatchetCache {
         self.ratchet_states.remove(&epoch);
     }
 
+    /// Drop every cached message key and saved ratchet state.
+    ///
+    /// Call this on sign-out, server-leave, or any other identity-bound
+    /// teardown so derived [`ChannelKey`] material does not linger in
+    /// process memory longer than necessary. Both [`ChannelKey`] and
+    /// [`KeyRatchet`] implement [`zeroize::ZeroizeOnDrop`], so removing
+    /// them from the underlying maps wipes their secret material before
+    /// the allocation is freed.
+    pub fn clear(&mut self) {
+        self.cache.clear();
+        self.ratchet_states.clear();
+    }
+
     /// Number of entries currently in the cache.
     pub fn len(&self) -> usize {
         self.cache.len()
@@ -1178,6 +1191,56 @@ mod tests {
         let fresh = cache.derive_or_cached(&key, 0, 5);
         let direct = derive_message_key(&key, 0, 5);
         assert_eq!(fresh.as_bytes(), direct.as_bytes());
+    }
+
+    /// `clear()` must wipe both the message-key cache and the saved
+    /// per-epoch ratchet state. Issue #178: without explicit eviction,
+    /// derived `ChannelKey` material lingered in `RatchetCache` past the
+    /// point where the owning identity / server context was torn down.
+    #[test]
+    fn ratchet_cache_clear_drops_all_state() {
+        let key = generate_channel_key();
+        let mut cache = RatchetCache::new(128);
+
+        // Populate multiple epochs so both `cache` and `ratchet_states`
+        // pick up entries.
+        let _ = cache.derive_or_cached(&key, 0, 5);
+        let _ = cache.derive_or_cached(&key, 1, 7);
+        let _ = cache.derive_or_cached(&key, 2, 3);
+
+        assert!(!cache.is_empty(), "cache should be populated before clear");
+        assert!(!cache.ratchet_states.is_empty());
+
+        cache.clear();
+
+        assert!(cache.is_empty(), "clear() must empty the message-key cache");
+        assert_eq!(cache.len(), 0);
+        assert!(
+            cache.ratchet_states.is_empty(),
+            "clear() must also drop saved ratchet states"
+        );
+
+        // The cache must remain functional after clear(): derivations
+        // still produce correct keys (matching `derive_message_key`),
+        // proving we did not corrupt the cache, only emptied it.
+        let post = cache.derive_or_cached(&key, 0, 5);
+        let direct = derive_message_key(&key, 0, 5);
+        assert_eq!(
+            post.as_bytes(),
+            direct.as_bytes(),
+            "cache must remain usable after clear()"
+        );
+    }
+
+    /// `clear()` on an already-empty cache is a no-op (idempotent).
+    #[test]
+    fn ratchet_cache_clear_is_idempotent() {
+        let mut cache = RatchetCache::new(64);
+        assert!(cache.is_empty());
+        cache.clear();
+        assert!(cache.is_empty());
+        cache.clear();
+        assert!(cache.is_empty());
     }
 
     /// The cache must not grow beyond `max_entries`.

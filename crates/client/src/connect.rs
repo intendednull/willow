@@ -4,14 +4,21 @@ use willow_network::TopicHandle as _;
 /// Spawn the per-connection presence tick driver.
 ///
 /// Advances [`PresenceMeta::now`](state_actors::PresenceMeta) by one
-/// every second and refreshes `last_seen` for each reachable peer so
-/// their derived state stays `here` while online.
+/// every second, refreshes `last_seen` for each reachable peer so their
+/// derived state stays `here` while online, and sweeps stale entries
+/// from [`NetworkMeta::typing_peers`](state_actors::NetworkMeta) older
+/// than [`crate::TYPING_INDICATOR_TTL_MS`]. Piggy-backing the typing
+/// sweep on the existing presence cadence (1 Hz) avoids a second timer
+/// task: the TTL is 5 s so 1 Hz drains entries with at most 1 s of
+/// extra dwell, far below the user-visible threshold. Followup to
+/// issue #429 ([SEC-V-05]).
 ///
 /// On native we use `tokio::spawn`; on wasm we use
 /// `wasm_bindgen_futures::spawn_local` with `gloo-timers` for sleep.
 fn spawn_presence_tick(
     presence_meta_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::PresenceMeta>>,
     chat_meta_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::ChatMeta>>,
+    network_meta_addr: willow_actor::Addr<willow_actor::StateActor<state_actors::NetworkMeta>>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -19,7 +26,7 @@ fn spawn_presence_tick(
             rt.spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    tick_once(&presence_meta_addr, &chat_meta_addr).await;
+                    tick_once(&presence_meta_addr, &chat_meta_addr, &network_meta_addr).await;
                 }
             });
         }
@@ -29,26 +36,29 @@ fn spawn_presence_tick(
         wasm_bindgen_futures::spawn_local(async move {
             loop {
                 gloo_timers::future::TimeoutFuture::new(1_000).await;
-                tick_once(&presence_meta_addr, &chat_meta_addr).await;
+                tick_once(&presence_meta_addr, &chat_meta_addr, &network_meta_addr).await;
             }
         });
     }
 }
 
-/// Single tick: advance `now` and stamp `last_seen` for every peer in
-/// `chat_meta.peers`. Kept separate so it can be unit-tested by driving
-/// it directly without spawning a timer task.
+/// Single tick: advance `now`, stamp `last_seen` for every peer in
+/// `chat_meta.peers`, and sweep stale typing entries. Kept separate so
+/// it can be unit-tested by driving it directly without spawning a
+/// timer task.
 #[cfg(any(test, feature = "test-utils"))]
 pub async fn tick_once_for_test(
     presence_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::PresenceMeta>>,
     chat_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::ChatMeta>>,
+    network_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::NetworkMeta>>,
 ) {
-    tick_once(presence_meta_addr, chat_meta_addr).await;
+    tick_once(presence_meta_addr, chat_meta_addr, network_meta_addr).await;
 }
 
 async fn tick_once(
     presence_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::PresenceMeta>>,
     chat_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::ChatMeta>>,
+    network_meta_addr: &willow_actor::Addr<willow_actor::StateActor<state_actors::NetworkMeta>>,
 ) {
     let reachable = willow_actor::state::select(chat_meta_addr, |c| c.peers.clone()).await;
     willow_actor::state::mutate(presence_meta_addr, move |pm| {
@@ -56,6 +66,14 @@ async fn tick_once(
         for pid in &reachable {
             pm.last_seen.insert(*pid, pm.now);
         }
+    })
+    .await;
+    // Drain stale typing entries on the same cadence so the map cannot
+    // accumulate dead peers indefinitely (#429). The accessor + view
+    // layers also filter on read, but only the sweep removes entries.
+    let now_ms = crate::util::current_time_ms();
+    willow_actor::state::mutate(network_meta_addr, move |n| {
+        n.sweep_typing(now_ms, crate::TYPING_INDICATOR_TTL_MS);
     })
     .await;
 }
@@ -166,6 +184,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             event_broker: self.event_broker.clone(),
             identity: self.identity.clone(),
             join_links: Arc::clone(&self.join_links),
+            pending_joins: Arc::clone(&self.pending_joins),
             dag: self.dag_addr.clone(),
             server_registry: self.server_registry_addr.clone(),
             on_neighbor_up: None,
@@ -326,7 +345,11 @@ impl<N: willow_network::Network> ClientHandle<N> {
         // while reachable. When a peer drops out of `chat_meta.peers`
         // their last_seen stays frozen so elapsed = now - last_seen
         // climbs past the idle / gone thresholds in due course.
-        spawn_presence_tick(self.presence_meta_addr.clone(), self.chat_meta_addr.clone());
+        spawn_presence_tick(
+            self.presence_meta_addr.clone(),
+            self.chat_meta_addr.clone(),
+            self.network_meta_addr.clone(),
+        );
 
         // Sync-queue tick driver (Phase 2b). Advances `QueueMeta::now`
         // and decays `recent_arrivals` entries older than 24 h so the

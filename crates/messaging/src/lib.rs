@@ -92,6 +92,51 @@ impl std::fmt::Display for ChannelId {
 
 // ───── Content types ─────────────────────────────────────────────────────────
 
+/// Maximum allowed length, in bytes, for a [`Content::File`] filename.
+///
+/// Matches POSIX `NAME_MAX` (255). Peer-supplied filenames longer than
+/// this are rejected by [`Content::validate`].
+pub const MAX_FILENAME_BYTES: usize = 255;
+
+/// Maximum allowed length, in bytes, for a [`Content::File`] MIME type.
+///
+/// RFC 6838 §4.2 caps the registered `type/subtype` form at 127+127
+/// characters; we use 255 as a conservative POSIX-aligned bound that
+/// covers all realistic media types plus parameters. Peer-supplied
+/// MIME types longer than this are rejected by [`Content::validate`].
+pub const MAX_MIME_BYTES: usize = 255;
+
+/// Errors returned by [`Content::validate`] / [`Message::validate`] when a
+/// peer-supplied payload exceeds the structural bounds enforced by this
+/// crate.
+///
+/// These checks guard against unbounded `String` fields in `Content::File`
+/// being abused to inflate gossip payloads or memory footprint after a
+/// message has already cleared signature verification. The `Content` enum
+/// is decoded by `bincode` before any structural check runs, so callers
+/// receiving peer-supplied `Content` MUST invoke `validate()` on the
+/// decoded value before trusting any of its fields.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum MessageValidationError {
+    /// `Content::File::filename` exceeded [`MAX_FILENAME_BYTES`].
+    #[error("filename too long: {actual} bytes (max {max})")]
+    FilenameTooLong {
+        /// Observed length in bytes.
+        actual: usize,
+        /// Configured maximum.
+        max: usize,
+    },
+
+    /// `Content::File::mime_type` exceeded [`MAX_MIME_BYTES`].
+    #[error("mime_type too long: {actual} bytes (max {max})")]
+    MimeTypeTooLong {
+        /// Observed length in bytes.
+        actual: usize,
+        /// Configured maximum.
+        max: usize,
+    },
+}
+
 /// The payload inside a [`Message`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Content {
@@ -105,11 +150,21 @@ pub enum Content {
     File {
         /// Content-addressed hash of the file data.
         hash: String,
-        /// Original filename.
+        /// Original filename. Bounded to [`MAX_FILENAME_BYTES`] by
+        /// [`Content::validate`]; values exceeding the cap are rejected
+        /// at the inbound boundary.
         filename: String,
-        /// MIME type (e.g. `image/png`).
+        /// MIME type (e.g. `image/png`). Bounded to [`MAX_MIME_BYTES`]
+        /// by [`Content::validate`]; values exceeding the cap are
+        /// rejected at the inbound boundary.
         mime_type: String,
-        /// File size in bytes.
+        /// File size in bytes, as declared by the sender.
+        ///
+        /// **Attacker-declared.** UI MAY display this for the user but
+        /// MUST NOT use it for preallocation (`Vec::with_capacity`,
+        /// `reserve`, etc.), allocation hints, or trust decisions. The
+        /// authoritative size is whatever the content-addressed `hash`
+        /// resolves to once the file bytes are actually fetched.
         size_bytes: u64,
     },
 
@@ -153,6 +208,45 @@ pub enum Content {
     /// encrypted with the channel's symmetric key. Only channel members
     /// with the key can decrypt this.
     Encrypted(SealedContent),
+}
+
+impl Content {
+    /// Validate structural bounds on peer-supplied content.
+    ///
+    /// `Content` is a wire enum decoded with `bincode` before any
+    /// structural check runs, so callers handling peer-supplied values
+    /// MUST invoke this method after decoding and before trusting the
+    /// fields. Currently the only bounded fields are
+    /// [`Content::File::filename`] (≤ [`MAX_FILENAME_BYTES`]) and
+    /// [`Content::File::mime_type`] (≤ [`MAX_MIME_BYTES`]); other
+    /// variants always validate successfully.
+    ///
+    /// `Content::Encrypted` is intentionally not recursed into here —
+    /// the inner `Content` is opaque ciphertext until the channel key
+    /// is applied; callers should re-invoke `validate()` on the
+    /// decrypted `Content` before using its fields.
+    pub fn validate(&self) -> Result<(), MessageValidationError> {
+        if let Content::File {
+            filename,
+            mime_type,
+            ..
+        } = self
+        {
+            if filename.len() > MAX_FILENAME_BYTES {
+                return Err(MessageValidationError::FilenameTooLong {
+                    actual: filename.len(),
+                    max: MAX_FILENAME_BYTES,
+                });
+            }
+            if mime_type.len() > MAX_MIME_BYTES {
+                return Err(MessageValidationError::MimeTypeTooLong {
+                    actual: mime_type.len(),
+                    max: MAX_MIME_BYTES,
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The encrypted form of a [`Content`] value.
@@ -256,6 +350,16 @@ impl Message {
             created_at: Utc::now(),
             hlc: hlc.now(),
         }
+    }
+
+    /// Validate structural bounds on this message's payload.
+    ///
+    /// Convenience wrapper around [`Content::validate`]; see that
+    /// method's docs for the contract. Callers receiving a peer-supplied
+    /// [`Message`] over the wire MUST invoke this before trusting any
+    /// fields of the inner [`Content`].
+    pub fn validate(&self) -> Result<(), MessageValidationError> {
+        self.content.validate()
     }
 
     /// Create a file-sharing message.
@@ -534,5 +638,106 @@ mod tests {
             ratchet_counter: 0,
         };
         assert_eq!(sealed.ratchet_counter, 0);
+    }
+
+    // ── validate() bounds ───────────────────────────────────────────────────
+
+    fn file_content(filename: &str, mime_type: &str) -> Content {
+        Content::File {
+            hash: "deadbeef".into(),
+            filename: filename.into(),
+            mime_type: mime_type.into(),
+            size_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn validate_rejects_oversized_filename() {
+        let too_long = "a".repeat(MAX_FILENAME_BYTES + 1);
+        let content = file_content(&too_long, "image/png");
+        assert_eq!(
+            content.validate(),
+            Err(MessageValidationError::FilenameTooLong {
+                actual: MAX_FILENAME_BYTES + 1,
+                max: MAX_FILENAME_BYTES,
+            })
+        );
+    }
+
+    #[test]
+    fn validate_rejects_oversized_mime_type() {
+        let too_long = "a".repeat(MAX_MIME_BYTES + 1);
+        let content = file_content("ok.txt", &too_long);
+        assert_eq!(
+            content.validate(),
+            Err(MessageValidationError::MimeTypeTooLong {
+                actual: MAX_MIME_BYTES + 1,
+                max: MAX_MIME_BYTES,
+            })
+        );
+    }
+
+    #[test]
+    fn validate_accepts_filename_at_boundary() {
+        let at_cap = "a".repeat(MAX_FILENAME_BYTES);
+        let mime_at_cap = "a".repeat(MAX_MIME_BYTES);
+        let content = file_content(&at_cap, &mime_at_cap);
+        assert!(content.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_empty_filename_and_mime() {
+        let content = file_content("", "");
+        assert!(content.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_is_noop_for_non_file_variants() {
+        let cases = [
+            Content::Text {
+                body: "x".repeat(1024),
+            },
+            Content::Reaction {
+                target: MessageId::new(),
+                emoji: "👍".into(),
+            },
+            Content::Reply {
+                parent: MessageId::new(),
+                body: "ok".into(),
+            },
+            Content::Edit {
+                target: MessageId::new(),
+                new_body: "edited".into(),
+            },
+            Content::Delete {
+                target: MessageId::new(),
+            },
+            Content::System {
+                description: "joined".into(),
+            },
+            Content::Encrypted(SealedContent {
+                ciphertext: vec![1, 2, 3],
+                nonce: [0u8; 12],
+                key_epoch: 0,
+                ratchet_counter: 0,
+            }),
+        ];
+        for content in &cases {
+            assert!(content.validate().is_ok(), "expected ok for {content:?}");
+        }
+    }
+
+    #[test]
+    fn message_validate_delegates_to_content() {
+        let mut hlc = hlc::HLC::new();
+        let peer = Identity::generate().endpoint_id();
+        let channel = ChannelId::new();
+        let too_long = "a".repeat(MAX_FILENAME_BYTES + 1);
+
+        let msg = Message::file(channel, peer, "hash", too_long, "image/png", 42, &mut hlc);
+        assert!(matches!(
+            msg.validate(),
+            Err(MessageValidationError::FilenameTooLong { .. })
+        ));
     }
 }

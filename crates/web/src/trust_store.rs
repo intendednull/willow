@@ -43,6 +43,12 @@ fn default_version() -> u32 {
 /// Peer-trust store backed by the browser `localStorage` API (wasm32)
 /// or an in-memory mutex (native).
 pub struct WebTrustStore {
+    // state: lock-ok — `TrustStore` trait is sync; trait elimination
+    // tracked in docs/specs/2026-04-26-state-management-model-design.md
+    // § Follow-up work F1. `Inner` already groups peers + version under
+    // one guard, so cross-field atomicity is intact. Poison policy
+    // matches `InMemoryTrustStore` (panic on poison): trust state is
+    // security-critical, so silent degradation would be unsafe.
     inner: Mutex<Inner>,
 }
 
@@ -81,6 +87,7 @@ impl WebTrustStore {
 
 impl TrustStore for WebTrustStore {
     fn get(&self, peer_id: &str) -> PeerTrust {
+        // state: lock-ok — see `WebTrustStore::inner` doc; panic-on-poison intentional (trust state security-critical).
         self.inner
             .lock()
             .expect("WebTrustStore mutex poisoned")
@@ -91,6 +98,7 @@ impl TrustStore for WebTrustStore {
     }
 
     fn set(&self, peer_id: &str, trust: PeerTrust) {
+        // state: lock-ok — see `WebTrustStore::inner` doc; panic-on-poison intentional (trust state security-critical).
         let mut guard = self.inner.lock().expect("WebTrustStore mutex poisoned");
         if matches!(trust, PeerTrust::Unknown) {
             guard.peers.remove(peer_id);
@@ -105,6 +113,7 @@ impl TrustStore for WebTrustStore {
     }
 
     fn snapshot(&self) -> Vec<(String, PeerTrust)> {
+        // state: lock-ok — see `WebTrustStore::inner` doc; panic-on-poison intentional (trust state security-critical).
         self.inner
             .lock()
             .expect("WebTrustStore mutex poisoned")
@@ -115,6 +124,7 @@ impl TrustStore for WebTrustStore {
     }
 
     fn version(&self) -> u64 {
+        // state: lock-ok — see `WebTrustStore::inner` doc; panic-on-poison intentional (trust state security-critical).
         self.inner
             .lock()
             .expect("WebTrustStore mutex poisoned")

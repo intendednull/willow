@@ -20,6 +20,14 @@ pub struct DerivedStateActor<T: Send + Sync + 'static, U: PartialEq + Clone + Se
 {
     source: StateRef<T>,
     selector: Arc<dyn Fn(&T) -> U + Send + Sync>,
+    // state: lock-ok — cross-await dedup cache. The actor mailbox
+    // serializes `Handler<Notify>::handle` invocations, so handle-vs-
+    // handle contention is impossible. The actual race window is
+    // `started()` seeding `cached` (its own future) vs the first
+    // `Notify` arriving before that seed completes — a one-extra-`set()`
+    // worst case that doesn't break correctness. Alternative shapes
+    // (Leptos `Resource`, full StateActor) tracked in
+    // docs/specs/2026-04-26-state-management-model-design.md § Follow-up F2.
     cached: Arc<Mutex<Option<U>>>,
     write: SendWrapper<WriteSignal<U>>,
 }
@@ -40,6 +48,7 @@ impl<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static> Act
         async move {
             let snapshot = source.get().await;
             let result = selector(&snapshot);
+            // state: lock-ok — see `DerivedStateActor::cached` doc; mailbox serializes handlers, no contention.
             *cached.lock().expect("cached mutex poisoned") = Some(result.clone());
             (*write).set(result);
         }
@@ -62,6 +71,7 @@ impl<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static> Han
         async move {
             let snapshot = source.get().await;
             let result = selector(&snapshot);
+            // state: lock-ok — see `DerivedStateActor::cached` doc; mailbox serializes handlers, no contention.
             let mut guard = cached.lock().expect("cached mutex poisoned");
             let changed = match &*guard {
                 Some(old) => old != &result,
@@ -76,6 +86,17 @@ impl<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static> Han
     }
 }
 
+// SAFETY: All four fields are Send under the `T: Send + Sync` and `U: Send + Sync`
+// bounds on the impl: `StateRef<T>` and `Arc<Mutex<Option<U>>>` propagate Send from
+// their parameters, `Arc<dyn Fn(&T) -> U + Send + Sync>` is Send by its trait object
+// bound, and `SendWrapper<WriteSignal<U>>` is unconditionally Send with a runtime
+// panic on cross-thread access. The actor framework requires `Send` for spawning
+// across its mailbox, but the actor only ever runs on a single WASM thread (Leptos
+// is browser-only), so `SendWrapper`'s runtime check is never tripped. Manual impl
+// guards against future field additions silently breaking auto-derive — any new
+// `!Send` field must reaffirm or remove this assertion. Tracked alongside the
+// `cached` Mutex follow-up in
+// docs/specs/2026-04-26-state-management-model-design.md § Follow-up F2.
 unsafe impl<T: Send + Sync + 'static, U: PartialEq + Clone + Send + Sync + 'static> Send
     for DerivedStateActor<T, U>
 {

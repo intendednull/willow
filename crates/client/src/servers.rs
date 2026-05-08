@@ -30,6 +30,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 ds.managed =
                     willow_state::ManagedDag::empty(crate::state_actors::MAX_CLIENT_PENDING);
             }
+            // The cached SyncRequest reply belongs to the *previous*
+            // server's DAG; the new active DAG has a different topological
+            // sort. See GEN-08 / issue #268.
+            ds.invalidate_sync_reply_cache();
             ds.managed.state().clone()
         })
         .await;
@@ -120,6 +124,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 // Reset managed to empty so seed_genesis creates fresh state.
                 ds.managed =
                     willow_state::ManagedDag::empty(crate::state_actors::MAX_CLIENT_PENDING);
+                // Cached SyncRequest reply belongs to the previous DAG.
+                // See GEN-08 / issue #268.
+                ds.invalidate_sync_reply_cache();
             })
             .await;
         }
@@ -137,6 +144,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 name: "general".to_string(),
                 channel_id: ch_id_str,
                 kind: willow_state::ChannelKind::Text,
+                ephemeral: None,
             })
             .await?;
         self.mutation_handle.apply_event(&event).await;
@@ -197,7 +205,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let pid = self.identity.endpoint_id();
         let n = name.clone();
         willow_actor::state::mutate(&self.profile_state_addr, move |p| {
-            p.names.insert(pid, n);
+            p.insert_name(pid, n);
         })
         .await;
         // Persist to localStorage so broadcast_profile_via_network() can read

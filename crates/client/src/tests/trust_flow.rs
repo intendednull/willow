@@ -91,6 +91,7 @@ async fn connected_pair() -> (
         for event in events_for_bob {
             ds.managed.insert_and_apply(event).ok();
         }
+        ds.invalidate_sync_reply_cache();
     })
     .await;
     let bob_state =

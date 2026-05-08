@@ -1,16 +1,22 @@
 use leptos::prelude::*;
+use willow_state::Permission;
 
 use crate::app::WebClientHandle;
-use crate::components::ConfirmDialog;
+use crate::components::{ConfirmDialog, ToastStack};
 use crate::state::AppState;
 
-/// List of all permission names that can be toggled on a role.
-const PERMISSION_NAMES: &[&str] = &[
-    "SyncProvider",
-    "ManageChannels",
-    "ManageRoles",
-    "SendMessages",
-    "CreateInvite",
+/// All non-sentinel permissions that can be toggled on a role.
+///
+/// Order is the order they appear in the UI. The
+/// [`Permission::__UnknownLegacy`] sentinel is intentionally excluded —
+/// it represents a value emitted by an unknown future client and must
+/// never be presented as a togglable option.
+const TOGGLABLE_PERMISSIONS: &[Permission] = &[
+    Permission::SyncProvider,
+    Permission::ManageChannels,
+    Permission::ManageRoles,
+    Permission::SendMessages,
+    Permission::CreateInvite,
 ];
 
 /// A single role entry: (role_id, role_name, set of granted permission strings).
@@ -52,8 +58,14 @@ pub fn RoleManager(
         let name = name.trim().to_string();
         if !name.is_empty() {
             let h = handle_create.clone();
+            // Capture toast stack on the outer reactive frame —
+            // `spawn_local` strips the owner so `use_context` inside
+            // the async block would return None.
+            let toasts = use_context::<ToastStack>();
             wasm_bindgen_futures::spawn_local(async move {
-                let _ = h.create_role(&name).await;
+                if let Err(e) = h.create_role(&name).await {
+                    crate::handlers::warn_and_toast_with("create role", &e, toasts.as_ref());
+                }
             });
         }
         set_new_name.set(String::new());
@@ -177,15 +189,15 @@ pub fn RoleManager(
                                     let hp = handle_perm.clone();
                                     let rid = role_id_perms.clone();
                                     let perms = permissions.clone();
-                                    PERMISSION_NAMES.iter().map(|perm_name| {
-                                        let perm = perm_name.to_string();
-                                        let perm_label = perm.clone();
-                                        let perm_check = perm.clone();
-                                        let perm_toggle = perm.clone();
+                                    TOGGLABLE_PERMISSIONS.iter().copied().map(|perm| {
+                                        // The role view layer renders permissions
+                                        // via `Display`, so membership compares
+                                        // against the same `Display` string.
+                                        let perm_label = perm.to_string();
+                                        let checked = perms.contains(&perm_label);
                                         let rid_t = rid.clone();
                                         let hp_t = hp.clone();
                                         let oc_t = oc;
-                                        let checked = perms.contains(&perm_check);
                                         view! {
                                             <label class="permission-toggle">
                                                 <input
@@ -196,9 +208,15 @@ pub fn RoleManager(
                                                         let granted = event_target_checked(&ev);
                                                         let h = hp_t.clone();
                                                         let rid = rid_t.clone();
-                                                        let perm = perm_toggle.clone();
+                                                        let toasts = use_context::<ToastStack>();
                                                         wasm_bindgen_futures::spawn_local(async move {
-                                                            let _ = h.set_permission(&rid, &perm, granted).await;
+                                                            if let Err(e) = h.set_permission(&rid, perm, granted).await {
+                                                                crate::handlers::warn_and_toast_with(
+                                                                    "set permission",
+                                                                    &e,
+                                                                    toasts.as_ref(),
+                                                                );
+                                                            }
                                                         });
                                                     }
                                                 />
@@ -235,8 +253,15 @@ pub fn RoleManager(
                                                             if let Ok(eid) = pid.trim().parse::<willow_identity::EndpointId>() {
                                                                 let h = ha.clone();
                                                                 let r = rid.clone();
+                                                                let toasts = use_context::<ToastStack>();
                                                                 wasm_bindgen_futures::spawn_local(async move {
-                                                                    let _ = h.assign_role(eid, &r).await;
+                                                                    if let Err(e) = h.assign_role(eid, &r).await {
+                                                                        crate::handlers::warn_and_toast_with(
+                                                                            "assign role",
+                                                                            &e,
+                                                                            toasts.as_ref(),
+                                                                        );
+                                                                    }
                                                                 });
                                                             }
                                                             set_assign_peer.set(String::new());
@@ -280,8 +305,15 @@ pub fn RoleManager(
                 on_confirm=Callback::new(move |_| {
                     if let Some((rid, _)) = pending_del_role.get_untracked() {
                         let h = handle_del_confirm.clone();
+                        let toasts = use_context::<ToastStack>();
                         wasm_bindgen_futures::spawn_local(async move {
-                            let _ = h.delete_role(&rid).await;
+                            if let Err(e) = h.delete_role(&rid).await {
+                                crate::handlers::warn_and_toast_with(
+                                    "delete role",
+                                    &e,
+                                    toasts.as_ref(),
+                                );
+                            }
                         });
                     }
                     set_pending_del_role.set(None);

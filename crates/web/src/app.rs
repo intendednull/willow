@@ -7,8 +7,8 @@ use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, Voi
 
 use crate::components::{
     AddServerPanel, CallPage, ChannelSidebar, CommandPalette, Composer, FileShareButton, GroveRail,
-    JoinPage, MainPaneHeader, MessageList, MobileShell, RightRail, RightRailWhich, SettingsPanel,
-    ToastStackView, WelcomeScreen,
+    JoinPage, MainPaneHeader, MessageList, MobileShell, ReadOnlyBanner, RightRail, RightRailWhich,
+    SettingsPanel, ToastStackView, WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -43,14 +43,6 @@ fn detect_platform() -> &'static str {
     } else {
         "web"
     }
-}
-
-#[allow(dead_code)]
-pub fn toggle_theme() {
-    js_sys::eval(
-        r#"var h=document.documentElement;var c=h.getAttribute('data-theme')||'dark';var n=c==='dark'?'light':'dark';h.setAttribute('data-theme',n);localStorage.setItem('willow-theme',n);"#,
-    )
-    .ok();
 }
 
 /// How many milliseconds to wait before clearing the loading state automatically.
@@ -126,6 +118,15 @@ fn new_client() -> WebClientHandle {
         relay_addr: Some(relay_url),
         ..ClientConfig::default()
     };
+    // `_event_loop` (which owns the actor `System`) is dropped here, but
+    // tracked actors continue running because their `Addr` clones survive
+    // inside `ClientHandle`. See `crates/actor/src/system.rs` — "Dropping
+    // the System without calling shutdown() will stop the system actor,
+    // but tracked actors will continue running until their addresses are
+    // dropped." On web the runtime is process-scoped (page reload tears
+    // everything down), so no graceful `System::shutdown()` is needed.
+    // If a future actor needs `stopped()` cleanup that *must* run before
+    // page close, route it via `beforeunload` rather than relying on Drop.
     let (handle, _event_loop) = ClientHandle::<willow_network::iroh::IrohNetwork>::new(config);
     SendWrapper::new(handle)
 }
@@ -152,6 +153,32 @@ pub fn App() -> impl IntoView {
     let handle_inner = (*handle).clone().with_trust_store(trust_store.clone());
     let handle: WebClientHandle = SendWrapper::new(handle_inner);
 
+    #[cfg(feature = "test-hooks")]
+    {
+        let inner_for_hooks = (*handle).clone();
+        let hooks = crate::test_hooks::WillowTestHooks::new(&inner_for_hooks);
+        if let Some(window) = web_sys::window() {
+            let _ = js_sys::Reflect::set(
+                &window,
+                &"__willow".into(),
+                &wasm_bindgen::JsValue::from(hooks),
+            );
+        }
+        // Subscribe synchronously: any ClientEvent published after this
+        // call is guaranteed to land in the dispatcher (broker mailbox is
+        // FIFO). An async subscribe would create a window between mount
+        // and confirmation in which boot-time events would be lost.
+        let rx = willow_client::event_receiver::EventReceiver::subscribe_now(
+            inner_for_hooks.event_broker(),
+            inner_for_hooks.system(),
+        );
+        let state_addr = inner_for_hooks.event_state_addr_clone();
+        let dispatcher = crate::test_hooks::install_push_dispatcher(rx, state_addr);
+        // Leak: dispatcher must live for app lifetime; in wasm32 the
+        // process IS the app, so leaking is fine.
+        std::mem::forget(dispatcher);
+    }
+
     // Provide context so child components can access the handle and state.
     provide_context(handle.clone());
     provide_context(app_state);
@@ -164,9 +191,15 @@ pub fn App() -> impl IntoView {
     // `local-search.md` §Index — recents + config do persist via
     // `crate::storage` but the inverted index itself is rebuilt per
     // session.
-    let search_index = willow_client::SearchIndexHandle::new();
+    let search_index = willow_client::SearchIndexHandle::new(handle.system());
     // Seed recents from config so the empty-state chips render on boot.
-    write.search.set_recents.set(search_index.recents());
+    {
+        let search_index = search_index.clone();
+        let set_recents = write.search.set_recents;
+        leptos::task::spawn_local(async move {
+            set_recents.set(search_index.recents().await);
+        });
+    }
     provide_context(search_index.clone());
 
     // Phase 2c — local-only nickname store. Loaded from localStorage on
@@ -278,29 +311,18 @@ pub fn App() -> impl IntoView {
 
     // Wire the service-worker bridge — the `willow-push` window event
     // fires whenever the SW forwards a focused-client push payload.
-    // Reads the payload out of `window.__willowLastPush` (stashed by
-    // `main.rs::wire_service_worker_bridge`) and routes it through the
-    // Notifier.
+    // Pulls the validated payload from `service_worker_bridge` (a
+    // module-local cell, not a global window property — issue #244)
+    // and routes it through the Notifier.
     {
         use wasm_bindgen::closure::Closure;
         use wasm_bindgen::JsCast;
         let notifier = notifier.clone();
         let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |_ev: web_sys::Event| {
-            let Some(window) = web_sys::window() else {
+            let Some(payload) = crate::service_worker_bridge::take_last_push() else {
                 return;
             };
-            let payload = js_sys::Reflect::get(
-                &window,
-                &wasm_bindgen::JsValue::from_str("__willowLastPush"),
-            )
-            .ok();
-            let Some(payload) = payload else {
-                return;
-            };
-            let cat = js_sys::Reflect::get(&payload, &"cat".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_else(|| "msg".to_string());
+            let cat = payload.cat;
             let cat_enum = match cat.as_str() {
                 "mention" => crate::notifications::Category::Mention,
                 "letter" => crate::notifications::Category::Letter,
@@ -318,8 +340,10 @@ pub fn App() -> impl IntoView {
             });
         });
         if let Some(window) = web_sys::window() {
-            let _ = window
-                .add_event_listener_with_callback("willow-push", closure.as_ref().unchecked_ref());
+            let _ = window.add_event_listener_with_callback(
+                crate::service_worker_bridge::PUSH_EVENT,
+                closure.as_ref().unchecked_ref(),
+            );
         }
         closure.forget();
     }
@@ -336,69 +360,102 @@ pub fn App() -> impl IntoView {
     }
 
     // Wire derived signals that auto-update from state actor changes.
-    crate::state::wire_derived_signals(&handle, handle.actor_system(), &write);
+    crate::state::wire_derived_signals(&handle, handle.system(), &write);
 
     // Install global keybindings (palette toggle, Esc close-stack,
     // Alt+↑ / Alt+↓ grove switch, `/` focus + ⌘F scope-flip for search).
     crate::keybindings::install(app_state, write);
 
-    // Hydrate the search index from the messages signal. Runs on every
-    // message-list change; the index itself dedups by message_id so
-    // repeated rebuilds are idempotent.
+    // Spawn the search indexer. One long-lived task hydrates the index
+    // from existing state on entry, then keeps it fresh by subscribing
+    // to `ClientEvent`s and routing message lifecycle events into the
+    // index incrementally. Replaces the prior signal-driven full
+    // `Rebuild` Effect (issue #354) — that destroyed + rebuilt every
+    // posting on every send/receive/edit AND only fed in the current
+    // channel's messages, so switching channels wiped the index for
+    // the previous channel.
     //
-    // Per `local-search.md` §Build behaviour: incremental on arrival,
-    // lazy on historical scan. We do a simple full rebuild here in v1
-    // since the in-memory backend is fast enough for typical corpora
-    // (< 10k messages). A future phase can switch to incremental insert
-    // via `ClientEvent::MessageReceived`.
+    // Bootstrap timing: `ClientHandle::new` synchronously materializes
+    // anything in `crate::storage`, so by the time we reach this point
+    // the on-disk corpus is already in the state actor. Live events
+    // arriving before the bootstrap walk completes are picked up by
+    // the subscriber loop below; `SearchIndex::insert` is idempotent
+    // on `message_id` so a doubled hit is a no-op.
+    //
+    // Letter scope (`letter_id`) stays `None` — the active-letter
+    // signal isn't yet wired into this path; tracked as the follow-up
+    // referenced from issue #355.
     {
-        let messages_sig = app_state.chat.messages;
-        let current_channel_sig = app_state.chat.current_channel;
-        let peer_id_sig = app_state.network.peer_id;
-        let active_server_sig = app_state.server.active_server_id;
+        let handle = handle.clone();
         let search = search_index.clone();
-        let write_local = write;
-        Effect::new(move |_| {
-            let msgs = messages_sig.get();
-            let current_ch = current_channel_sig.get();
-            let grove_id = active_server_sig.get();
-            let local_peer = peer_id_sig.get();
+        let active_server_sig = app_state.server.active_server_id;
+        let set_status = write.search.set_status;
+        wasm_bindgen_futures::spawn_local(async move {
+            let grove_id = {
+                let g = active_server_sig.get_untracked();
+                if g.is_empty() {
+                    None
+                } else {
+                    Some(g)
+                }
+            };
 
-            let indexable: Vec<willow_client::IndexableMessage> = msgs
-                .into_iter()
-                .map(|m| {
-                    let author_peer_id = m.author_peer_id;
-                    // Lightweight link detection — `has:link` operator
-                    // key. Proper URL parsing lives in message-row
-                    // rendering; this is the cheap version.
-                    let has_link = m.body.contains("http://") || m.body.contains("https://");
-                    willow_client::IndexableMessage {
-                        message_id: m.id,
-                        channel_id: m.channel_id.clone(),
-                        channel_name: current_ch.clone(),
-                        grove_id: if grove_id.is_empty() {
-                            None
-                        } else {
-                            Some(grove_id.clone())
-                        },
-                        letter_id: None,
-                        author_peer_id,
-                        author_handle: m.author_display_name.to_lowercase(),
-                        author_display_name: m.author_display_name,
-                        timestamp_ms: m.timestamp_ms,
-                        body: m.body,
-                        has_image: false,
-                        has_file: false,
-                        has_link,
+            // One-shot hydration over every channel + message
+            // currently in state.
+            willow_client::search::hydrate_index(&handle, &search, grove_id.clone()).await;
+            set_status.set(willow_client::SearchIndexBuildStatus::Idle);
+
+            // Subscribe to live events and update incrementally.
+            let mut rx = handle.subscribe_events().await;
+            while let Some(event) = rx.recv().await {
+                // Re-read grove on each event so a future multi-grove
+                // client picks up the right id without us caching it.
+                let grove_id = {
+                    let g = active_server_sig.get_untracked();
+                    if g.is_empty() {
+                        None
+                    } else {
+                        Some(g)
                     }
-                })
-                .collect();
-            // Ignore local peer binding to avoid unused_variables clippy
-            // noise — we keep the read so the effect subscribes in case
-            // a later phase filters by author presence.
-            let _ = local_peer;
-            search.rebuild(indexable);
-            write_local.search.set_status.set(search.status());
+                };
+                match event {
+                    ClientEvent::MessageReceived {
+                        channel,
+                        message_id,
+                        ..
+                    } => {
+                        willow_client::search::index_message(
+                            &handle,
+                            &search,
+                            &channel,
+                            &message_id,
+                            grove_id,
+                        )
+                        .await;
+                    }
+                    ClientEvent::MessageEdited {
+                        channel,
+                        message_id,
+                        ..
+                    } => {
+                        willow_client::search::reindex_message(
+                            &handle,
+                            &search,
+                            &channel,
+                            &message_id,
+                            grove_id,
+                        )
+                        .await;
+                    }
+                    ClientEvent::MessageDeleted { message_id, .. } => {
+                        search.remove_message(&message_id);
+                    }
+                    ClientEvent::ChannelDeleted(channel_id) => {
+                        search.remove_channel(&channel_id);
+                    }
+                    _ => {}
+                }
+            }
         });
     }
 
@@ -413,6 +470,7 @@ pub fn App() -> impl IntoView {
                 write.ui.set_join_token.set(Some(state::ParsedJoinToken {
                     raw: token_str.clone(),
                     link_id: token.link_id,
+                    inviter_peer_id: token.inviter_peer_id,
                     server_name: token.server_name,
                     inviter_name: token.inviter_name,
                 }));
@@ -439,6 +497,7 @@ pub fn App() -> impl IntoView {
                             .set(Some(state::ParsedJoinToken {
                                 raw: token_str.clone(),
                                 link_id: token.link_id,
+                                inviter_peer_id: token.inviter_peer_id,
                                 server_name: token.server_name,
                                 inviter_name: token.inviter_name,
                             }));
@@ -533,7 +592,8 @@ pub fn App() -> impl IntoView {
                     let status = state_for_events.ui.join_status.get_untracked();
                     if status == "connecting" {
                         if let Some(token) = state_for_events.ui.join_token.get_untracked() {
-                            handle_for_events.send_join_request(&token.link_id);
+                            handle_for_events
+                                .send_join_request(&token.link_id, token.inviter_peer_id);
                         }
                     }
                 }
@@ -863,7 +923,10 @@ pub fn App() -> impl IntoView {
 
                                     // Request mic permission SYNCHRONOUSLY in the click handler
                                     // to preserve the user gesture chain (required on mobile).
-                                    let window = web_sys::window().unwrap();
+                                    let Some(window) = web_sys::window() else {
+                                        tracing::error!("No browser window context for getUserMedia");
+                                        return;
+                                    };
                                     let navigator = window.navigator();
                                     let Ok(media_devices) = navigator.media_devices() else {
                                         tracing::error!("No media devices available");
@@ -1014,6 +1077,32 @@ pub fn App() -> impl IntoView {
                                         queue_open.set(matches!(next, RightRailWhich::SyncQueue));
                                     });
                                     let chat_channel = current_channel;
+                                    // Phase 2d: when the current channel is an
+                                    // archived ephemeral, render a read-only
+                                    // banner and hide the composer until the
+                                    // user taps `post`.
+                                    let ephemeral_meta = app_state.server.ephemeral_meta;
+                                    let archived_band = Signal::derive(move || {
+                                        let name = current_channel.get();
+                                        let entries = ephemeral_meta.get();
+                                        let Some((_, _, last, threshold)) = entries
+                                            .iter()
+                                            .find(|(n, _, _, _)| n == &name)
+                                        else {
+                                            return false;
+                                        };
+                                        let frontier = js_sys::Date::now() as u64;
+                                        let band = willow_state::derive_ephemeral_state(
+                                            *last, *threshold, frontier,
+                                        );
+                                        band == willow_state::EphemeralState::Archived
+                                    });
+                                    let (composer_revealed, set_composer_revealed) = signal(false);
+                                    // Reset reveal when switching channels.
+                                    Effect::new(move |_| {
+                                        let _ = current_channel.get();
+                                        set_composer_revealed.set(false);
+                                    });
                                     view! {
                                         <main
                                             class="chat-container main-pane"
@@ -1037,6 +1126,24 @@ pub fn App() -> impl IntoView {
                                                                 "add a channel from the grove menu."
                                                             </div>
                                                         </div>
+                                                    })
+                                                } else {
+                                                    None
+                                                }
+                                            }}
+                                            // Phase 2d read-only banner: surfaces
+                                            // above the message list when the
+                                            // current channel is an archived
+                                            // ephemeral and the composer hasn't
+                                            // been manually revealed yet.
+                                            {move || {
+                                                if archived_band.get() && !composer_revealed.get() {
+                                                    Some(view! {
+                                                        <ReadOnlyBanner
+                                                            on_expand=Callback::new(move |_| {
+                                                                set_composer_revealed.set(true);
+                                                            })
+                                                        />
                                                     })
                                                 } else {
                                                     None
@@ -1070,7 +1177,26 @@ pub fn App() -> impl IntoView {
                                                     js_sys::eval("var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();").ok();
                                                 })
                                             />
-                                            <div class="input-row">
+                                            // Phase 2d: hide the composer entirely
+                                            // for archived ephemerals until the
+                                            // user taps `post` from the banner.
+                                            // Uses a class toggle (CSS
+                                            // `.input-row--hidden`) rather than
+                                            // unmounting so the FileShareButton
+                                            // and Composer state stays. The
+                                            // typing indicator is owned by
+                                            // <Composer> per phase-3a §T11/T12,
+                                            // so no separate row is rendered
+                                            // here.
+                                            <div
+                                                class=move || {
+                                                    if archived_band.get() && !composer_revealed.get() {
+                                                        "input-row input-row--hidden"
+                                                    } else {
+                                                        "input-row"
+                                                    }
+                                                }
+                                            >
                                                 <FileShareButton
                                                     channel=current_channel
                                                 />
@@ -1123,10 +1249,15 @@ pub fn App() -> impl IntoView {
                                 queue_open_rail.set(false);
                             });
                             let on_pinned_jump = Callback::new(move |msg_id: String| {
-                                js_sys::eval(&format!(
-                                    "document.getElementById('msg-{}')?.scrollIntoView({{behavior:'smooth',block:'center'}})",
-                                    msg_id.replace('\'', "")
-                                )).ok();
+                                if let Some(elem) = web_sys::window()
+                                    .and_then(|w| w.document())
+                                    .and_then(|d| d.get_element_by_id(&format!("msg-{msg_id}")))
+                                {
+                                    let opts = web_sys::ScrollIntoViewOptions::new();
+                                    opts.set_behavior(web_sys::ScrollBehavior::Smooth);
+                                    opts.set_block(web_sys::ScrollLogicalPosition::Center);
+                                    elem.scroll_into_view_with_scroll_into_view_options(&opts);
+                                }
                                 write.ui.set_show_pinned.set(false);
                             });
                             view! {

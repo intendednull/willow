@@ -216,7 +216,23 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.mutation_handle.broadcast_on_topic(topic, data);
     }
 
-    pub fn send_join_request(&self, link_id: &str) {
+    /// Broadcast a `JoinRequest` to the inviter for `link_id` and
+    /// record the pending attempt so subsequent `JoinResponse` /
+    /// `JoinDenied` messages can be authenticated against the expected
+    /// `inviter_peer_id`.
+    ///
+    /// `inviter_peer_id` is taken straight from the
+    /// [`ops::JoinToken::inviter_peer_id`] the caller decoded; the
+    /// listener uses it to drop spoofed responses signed by anyone else
+    /// (issue #309 / SEC-A-07).
+    pub fn send_join_request(&self, link_id: &str, inviter_peer_id: willow_identity::EndpointId) {
+        // Record the pending attempt BEFORE broadcasting. If the inviter
+        // races us and replies before we've populated the map, the
+        // listener would otherwise drop the legitimate response with a
+        // "no outstanding join request" debug log.
+        self.pending_joins
+            .lock()
+            .insert(link_id.to_string(), inviter_peer_id);
         let msg = ops::WireMessage::JoinRequest {
             link_id: link_id.to_string(),
             peer_id: self.identity.endpoint_id(),
@@ -288,7 +304,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let pid = self.identity.endpoint_id();
         let name = name.to_string();
         willow_actor::state::mutate(&self.profile_state_addr, move |p| {
-            p.names.insert(pid, name);
+            p.insert_name(pid, name);
         })
         .await;
         self.broadcast_profile_via_network();
@@ -326,8 +342,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let profiles = willow_actor::state::get(&self.profile_state_addr).await;
         willow_actor::state::mutate(&self.network_meta_addr, move |n| {
             let now = util::current_time_ms();
-            n.typing_peers
-                .retain(|_, (_, ts)| now - *ts < crate::TYPING_INDICATOR_TTL_MS);
+            // Keep map + recency in lockstep: helper drops both.
+            n.sweep_typing(now, crate::TYPING_INDICATOR_TTL_MS);
             n.typing_peers
                 .iter()
                 .filter(|(pid, (ch, _))| ch == &channel && *pid != &my_id)
@@ -338,7 +354,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     //! Tests for the client-side auth guards on invite generation.
     //!

@@ -309,7 +309,7 @@ pub fn MemberList(
                                 class="member-name member-name-btn"
                                 type="button"
                                 aria-label=format!("{} — open profile", name)
-                                style=format!("color: {}", super::peer_color(&pid))
+                                style=format!("color: {}", super::peer_color_from_str(&pid))
                                 on:click=on_open_profile
                             >
                                 {name.clone()}
@@ -354,6 +354,48 @@ pub fn MemberList(
                                 }
                             }
                             <div class="member-actions">
+                                {
+                                    // Phase 2d ad-hoc spawn: any member can
+                                    // start a temp channel from a peer's row.
+                                    // The channel is created with the default
+                                    // 14-day threshold; member-seeding is
+                                    // deferred to a manual AddMember (or a
+                                    // future seed-on-create extension), per
+                                    // the plan's v1 cut.
+                                    let pid_for_temp = pid_self.clone();
+                                    let h_for_temp = handle_for_items.clone();
+                                    let is_self_temp = {
+                                        let p = pid_for_temp.clone();
+                                        move || peer_id.get() == p
+                                    };
+                                    move || (!is_self_temp()).then(|| {
+                                        let h = h_for_temp.clone();
+                                        let pid = pid_for_temp.clone();
+                                        view! {
+                                            <button
+                                                class="btn btn-sm member-start-temp"
+                                                title="start temp channel…"
+                                                on:click=move |_| {
+                                                    let h = h.clone();
+                                                    let short: String =
+                                                        pid.chars().take(6).collect();
+                                                    let name = format!("side-{short}");
+                                                    wasm_bindgen_futures::spawn_local(async move {
+                                                        if let Err(e) = h.create_ephemeral_channel(
+                                                            &name,
+                                                            willow_state::EphemeralKind::Channel,
+                                                            willow_state::DEFAULT_CHANNEL_THRESHOLD_MS,
+                                                        ).await {
+                                                            tracing::warn!(?e, "create_ephemeral_channel failed");
+                                                        }
+                                                    });
+                                                }
+                                            >
+                                                "start temp channel…"
+                                            </button>
+                                        }
+                                    })
+                                }
                                 {
                                     let is_self = {
                                         let p = pid_self.clone();

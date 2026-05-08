@@ -1,3 +1,20 @@
+//! UI-facing action methods on [`ClientHandle`].
+//!
+//! Most entry points in this module are thin pass-throughs that forward
+//! their arguments to the corresponding method on
+//! [`crate::mutations::ClientMutations`]. Their behaviour is exercised
+//! through the mutation handle directly in `tests/multi_peer_sync.rs`,
+//! `tests/trust_flow.rs`, `tests/ephemeral.rs`, and the inline `tests`
+//! module at the bottom of `lib.rs`. State-machine-level invariants are
+//! covered by `crates/state/src/tests.rs`.
+//!
+//! Methods that do non-trivial translation work *before* delegating —
+//! validation (`share_file_inline`), ID minting (`create_voice_channel`),
+//! direct event assembly with no mutation-handle helper
+//! (`set_permission`, `assign_role`), or derived-view composition
+//! (`pinned_message_ids`, `pinned_messages`, `is_pinned`) — are covered
+//! at the client tier in `tests/actions.rs`.
+
 use super::*;
 
 impl<N: willow_network::Network> ClientHandle<N> {
@@ -124,6 +141,25 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.mutation_handle.create_channel(name).await
     }
 
+    /// Create a non-permanent ("ephemeral") channel that
+    /// auto-archives after `idle_threshold_ms` of inactivity.
+    pub async fn create_ephemeral_channel(
+        &self,
+        name: &str,
+        kind: willow_state::EphemeralKind,
+        idle_threshold_ms: u64,
+    ) -> anyhow::Result<()> {
+        self.mutation_handle
+            .create_ephemeral_channel(name, kind, idle_threshold_ms)
+            .await
+    }
+
+    /// Revive an auto-archived ephemeral channel by name without
+    /// posting a message.
+    pub async fn revive_channel(&self, name: &str) -> anyhow::Result<()> {
+        self.mutation_handle.revive_channel(name).await
+    }
+
     pub async fn create_voice_channel(&self, name: &str) -> anyhow::Result<()> {
         let name = name.to_string();
         let ch_id_str = uuid::Uuid::new_v4().to_string();
@@ -133,6 +169,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 name,
                 channel_id: ch_id_str,
                 kind: willow_state::ChannelKind::Voice,
+                ephemeral: None,
             })
             .await?;
         self.mutation_handle.apply_event(&event).await;
@@ -176,11 +213,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
     pub async fn set_permission(
         &self,
         role_id: &str,
-        permission: &str,
+        permission: willow_state::Permission,
         granted: bool,
     ) -> anyhow::Result<()> {
         let role_id = role_id.to_string();
-        let permission = permission.to_string();
         let event = self
             .mutation_handle
             .build_event(willow_state::EventKind::SetPermission {

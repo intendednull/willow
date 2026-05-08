@@ -130,6 +130,8 @@ async fn last_own_message_returns_most_recent_in_channel() {
                 name: "general-b".to_string(),
                 pinned_messages: Default::default(),
                 kind: ChannelKind::Text,
+                ephemeral: None,
+                last_activity_hlc: None,
             },
         );
     })

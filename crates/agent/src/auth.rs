@@ -4,16 +4,15 @@
 //! Stdio transport skips auth (process isolation). SSE/HTTP transports
 //! require a bearer token in the `Authorization` header.
 
-use rand::Rng;
+use rand::{rngs::OsRng, RngCore};
 
 /// Token prefix for Willow agent tokens.
 const TOKEN_PREFIX: &str = "wlw_";
 
 /// Generate a 256-bit random bearer token with `wlw_` prefix.
 pub fn generate_token() -> String {
-    let mut rng = rand::thread_rng();
     let mut bytes = [0u8; 32];
-    rng.fill(&mut bytes);
+    OsRng.fill_bytes(&mut bytes);
     format!("{}{}", TOKEN_PREFIX, hex::encode(&bytes))
 }
 

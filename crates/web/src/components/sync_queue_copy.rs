@@ -123,6 +123,24 @@ pub const ACTION_RETRY_BUSY: &str = "retrying…";
 /// `action_mark_read` — inbound-tab footer action.
 pub const ACTION_MARK_READ: &str = "mark as read locally";
 
+/// `action_mark_read_busy` — rendered while
+/// `client.mark_queue_read()` is in flight across the inbound peer set.
+/// The spec pins the idle label; the busy label is an accessibility
+/// refinement so the button is not mute while waiting and a parallel
+/// to `ACTION_RETRY_BUSY`.
+pub const ACTION_MARK_READ_BUSY: &str = "marking…";
+
+/// `toast_mark_read_failed` — error-toast title rendered when one or
+/// more peers' `mark_queue_read` calls fail. Plural-aware so the user
+/// knows the partial-success shape.
+pub fn toast_mark_read_failed(n: usize) -> String {
+    if n == 1 {
+        "failed to mark 1 peer as read".to_string()
+    } else {
+        format!("failed to mark {n} peers as read")
+    }
+}
+
 /// `screen_pill_waiting` — per-row pill on the outbound tab.
 pub const SCREEN_PILL_WAITING: &str = "waiting";
 
@@ -232,5 +250,11 @@ mod tests {
     fn reconnect_gate_is_60s() {
         // Locks the spec-driven 60 s offline gate for the toast + banner.
         assert_eq!(RECONNECT_GATE_TICKS, 60);
+    }
+
+    #[test]
+    fn toast_mark_read_failed_pluralises() {
+        assert_eq!(toast_mark_read_failed(1), "failed to mark 1 peer as read");
+        assert_eq!(toast_mark_read_failed(3), "failed to mark 3 peers as read");
     }
 }

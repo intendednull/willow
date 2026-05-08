@@ -33,6 +33,17 @@ pub fn SearchSurface(
     let state = use_context::<AppState>().expect("AppState");
     let write = use_context::<AppWriteSignals>().expect("AppWriteSignals");
 
+    // Whenever the result set or scope changes, snap keyboard focus
+    // back to the first row. Without this, an `active_index` from a
+    // prior result set could outlive its data and point past the new
+    // tail (or at a different message entirely), breaking
+    // `aria-activedescendant` and `aria-selected`.
+    Effect::new(move |_| {
+        let _ = state.search.results.get();
+        let _ = state.search.scope.get();
+        write.search.set_active_index.set(0);
+    });
+
     // Debounced query driver: 120 ms after the last keystroke, parse
     // the query and run against the index under the current scope.
     //
@@ -56,9 +67,15 @@ pub fn SearchSurface(
         let handle_res = set_timeout_with_handle(
             move || {
                 let q = parse_query(&raw);
-                let results = idx.query(&q, &scope);
-                write.search.set_results.set(results);
-                write.search.set_debouncing.set(false);
+                let idx = idx.clone();
+                let scope = scope.clone();
+                let set_results = write.search.set_results;
+                let set_debouncing = write.search.set_debouncing;
+                leptos::task::spawn_local(async move {
+                    let results = idx.query(&q, &scope).await;
+                    set_results.set(results);
+                    set_debouncing.set(false);
+                });
             },
             std::time::Duration::from_millis(120),
         );
@@ -72,13 +89,18 @@ pub fn SearchSurface(
     let on_submit = {
         let idx = index.clone();
         Callback::new(move |q: String| {
-            if !q.is_empty() {
-                idx.push_recent(RecentQuery {
-                    text: q,
-                    timestamp_ms: js_sys::Date::now() as u64,
-                });
-                write.search.set_recents.set(idx.recents());
+            if q.is_empty() {
+                return;
             }
+            let idx = idx.clone();
+            let set_recents = write.search.set_recents;
+            idx.push_recent(RecentQuery {
+                text: q,
+                timestamp_ms: js_sys::Date::now() as u64,
+            });
+            leptos::task::spawn_local(async move {
+                set_recents.set(idx.recents().await);
+            });
         })
     };
 
@@ -91,16 +113,24 @@ pub fn SearchSurface(
     let on_forget_recent = {
         let idx = index.clone();
         Callback::new(move |text: String| {
+            let idx = idx.clone();
+            let set_recents = write.search.set_recents;
             idx.forget_recent(&text);
-            write.search.set_recents.set(idx.recents());
+            leptos::task::spawn_local(async move {
+                set_recents.set(idx.recents().await);
+            });
         })
     };
 
     let on_clear_all_recents = {
         let idx = index.clone();
         Callback::new(move |()| {
+            let idx = idx.clone();
+            let set_recents = write.search.set_recents;
             idx.clear_all_recents();
-            write.search.set_recents.set(idx.recents());
+            leptos::task::spawn_local(async move {
+                set_recents.set(idx.recents().await);
+            });
         })
     };
 
@@ -117,7 +147,7 @@ pub fn SearchSurface(
 
     view! {
         <div class="search-surface">
-            <SearchInput on_submit=on_submit />
+            <SearchInput on_submit=on_submit on_select=on_select_result />
             <ScopeChip focused_channel=focused_channel />
             {move || {
                 let q = state.search.query.get();

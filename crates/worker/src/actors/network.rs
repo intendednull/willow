@@ -667,6 +667,7 @@ mod tests {
                 name: "ch".to_string(),
                 channel_id: "c1".to_string(),
                 kind: willow_state::ChannelKind::Text,
+                ephemeral: None,
             },
             100,
         );

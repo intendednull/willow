@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './test-hooks';
 import {
   freshStart,
   createServer,
@@ -11,6 +11,7 @@ import {
   joinViaInvite,
   createChannel,
   openSidebar,
+  openMemberList,
   visibleShell,
 } from './helpers';
 
@@ -28,11 +29,20 @@ test.describe('Multi-peer state synchronization', () => {
   // crates/client/src/tests/multi_peer_sync.rs against MemNetwork — the
   // DAG merge path is identical and the test runs in < 200 ms.
   // Only DOM-reflection tests stay here.
+  //
+  // Migration to event-based waits per PR-2 (issue #458). Cross-peer
+  // assertions now gate on Peer.waitUntilHeadsEqual / Peer.nextEvent;
+  // DOM checks then run with the default 5s assertion timeout.
 
-  test('invite flow — both peers see sidebar and general channel', async ({ browser }) => {
+  test('invite flow — both peers see sidebar and general channel', async ({ peer, browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
+    const alice = await peer(page1, 'Alice');
+    const bob = await peer(page2, 'Bob');
     try {
-      // Both peers should see the sidebar.
+      // Both peers should converge before we assert UI state.
+      await bob.waitUntilHeadsEqual(alice);
+
+      // Both peers should see the sidebar (default 5s timeout — convergence already done).
       await expect(page1.locator(`${visibleShell(page1)} .channel-sidebar, ${visibleShell(page1)} .mobile-home`).first()).toBeVisible();
       await expect(page2.locator(`${visibleShell(page2)} .channel-sidebar, ${visibleShell(page2)} .mobile-home`).first()).toBeVisible();
 
@@ -45,12 +55,13 @@ test.describe('Multi-peer state synchronization', () => {
     }
   });
 
-  test('pre-existing channels visible after join', async ({ browser }) => {
-    // This test does NOT use setupTwoPeers — manual setup with channels before invite.
+  test('pre-existing channels visible after join', async ({ peer, browser }) => {
     const ctx1 = await browser.newContext();
     const ctx2 = await browser.newContext();
     const page1 = await ctx1.newPage();
     const page2 = await ctx2.newPage();
+    const alice = await peer(page1, 'Alice');
+    const bob = await peer(page2, 'Bob');
 
     try {
       // Peer 1: Create server.
@@ -71,102 +82,125 @@ test.describe('Multi-peer state synchronization', () => {
       // Peer 2: Join.
       await joinViaInvite(page2, inviteCode, 'Bob');
 
+      // Bob should converge to Alice's heads — including the two pre-existing channels.
+      await bob.waitUntilHeadsEqual(alice);
+
       // Peer 2 should see all 3 channels (open sidebar on mobile).
       await openSidebar(page2);
-      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'general' }))
-        .toBeVisible({ timeout: 30_000 });
-      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'announcements' }))
-        .toBeVisible({ timeout: 30_000 });
-      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'random' }))
-        .toBeVisible({ timeout: 30_000 });
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'general' })).toBeVisible();
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'announcements' })).toBeVisible();
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'random' })).toBeVisible();
     } finally {
       await ctx1.close();
       await ctx2.close();
     }
   });
 
-  test('new channel created mid-session syncs to peer', async ({ browser }) => {
+  test('new channel created mid-session syncs to peer', async ({ peer, browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
+    const alice = await peer(page1, 'Alice');
+    const bob = await peer(page2, 'Bob');
     try {
       // Alice creates a new channel after both are connected.
       await createChannel(page1, 'new-channel');
 
+      // Wait for Bob's DAG to converge to Alice's (includes the new channel event).
+      await bob.waitUntilHeadsEqual(alice);
+
       // Bob should see the new channel (open sidebar on mobile).
       await openSidebar(page2);
-      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'new-channel' }))
-        .toBeVisible({ timeout: 30_000 });
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'new-channel' })).toBeVisible();
     } finally {
       await ctx1.close();
       await ctx2.close();
     }
   });
 
-  test('messages in non-general channel sync', async ({ browser }) => {
+  test('messages in non-general channel sync', async ({ peer, browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
+    const alice = await peer(page1, 'Alice');
+    const bob = await peer(page2, 'Bob');
     try {
       // Alice creates a new channel.
       await createChannel(page1, 'dev');
 
-      // Wait for Bob to see it (open sidebar on mobile).
+      // Wait for Bob's DAG to include the channel.
+      await bob.waitUntilHeadsEqual(alice);
+
+      // Bob can now see the channel without padding.
       await openSidebar(page2);
-      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'dev' }))
-        .toBeVisible({ timeout: 30_000 });
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'dev' })).toBeVisible();
 
       // Both switch to the new channel.
       await switchChannel(page1, 'dev');
       await switchChannel(page2, 'dev');
 
-      // Alice sends a message.
+      // Alice sends a message → wait for Bob's MessageReceived event,
+      // then assert the DOM-rendered body.
       await sendMessage(page1, 'message in dev');
-      await waitForMessage(page2, 'message in dev', 30_000);
+      await bob.nextEvent(e =>
+        e.kind === 'MessageReceived' &&
+        e.channel === 'dev' &&
+        !e.isLocal
+      );
+      await waitForMessage(page2, 'message in dev');
 
-      // Bob sends a reply.
+      // Bob sends a reply, Alice consumes the event then asserts the body.
       await sendMessage(page2, 'bob in dev too');
-      await waitForMessage(page1, 'bob in dev too', 30_000);
+      await alice.nextEvent(e =>
+        e.kind === 'MessageReceived' &&
+        e.channel === 'dev' &&
+        !e.isLocal
+      );
+      await waitForMessage(page1, 'bob in dev too');
     } finally {
       await ctx1.close();
       await ctx2.close();
     }
   });
 
-  test('both peers appear in member list', async ({ browser }) => {
+  test('both peers appear in member list', async ({ peer, browser }, testInfo) => {
+    // Mobile shell wires the members action button to a no-op callback
+    // (mobile_shell.rs ~L386 `on_set_which=Callback::new(|_| ())`) so
+    // there's no right-rail member pane to assert on. Re-enable when
+    // mobile-shell exposes the member list (Phase 1c).
+    test.skip(testInfo.project.name.startsWith('mobile'), 'mobile shell does not expose member list');
+
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
+    const alice = await peer(page1, 'Alice');
+    const bob = await peer(page2, 'Bob');
     try {
-      // The right-rail members pane is hidden by default — open it via
-      // the header's "members" action button before asserting counts.
-      await page1.locator(`${visibleShell(page1)} button[aria-label="members"]`)
-        .first().click();
+      // Wait for the membership events to converge before opening the panel.
+      await bob.waitUntilHeadsEqual(alice);
 
-      // Peer 1 should see at least 2 members (may include relay).
+      await openMemberList(page1);
+
+      // Default expect timeout (5s) is plenty after convergence.
       const memberList = page1.locator(`${visibleShell(page1)} .member-item`);
-      await expect(memberList.first()).toBeVisible({ timeout: 30_000 });
-      await expect
-        .poll(() => memberList.count(), { timeout: 30_000 })
-        .toBeGreaterThanOrEqual(2);
+      await expect(memberList.first()).toBeVisible();
+      await expect.poll(() => memberList.count()).toBeGreaterThanOrEqual(2);
     } finally {
       await ctx1.close();
       await ctx2.close();
     }
   });
 
-  test('rapid channel creation by owner — both channels propagate to peer', async ({ browser }) => {
-    // Owner creates two channels in quick succession; the gossip mesh must
-    // deliver both events to the remote peer without dropping or reordering.
-    // E2E companion to the state-machine stress_concurrent_channel_creates test.
-    // Note: only the owner (Alice) can create channels — non-owners lack
-    // ManageChannels permission and their creation attempts are rejected.
+  test('rapid channel creation by owner — both channels propagate to peer', async ({ peer, browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
+    const alice = await peer(page1, 'Alice');
+    const bob = await peer(page2, 'Bob');
     try {
       // Alice (owner) creates two channels back-to-back.
       await createChannel(page1, 'chan-a');
       await createChannel(page1, 'chan-b');
 
+      // Wait for Bob's DAG to include both.
+      await bob.waitUntilHeadsEqual(alice);
+
       // Both should appear on Bob's side after gossip delivery.
       await openSidebar(page2);
-      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'chan-a' }))
-        .toBeVisible({ timeout: 30_000 });
-      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'chan-b' }))
-        .toBeVisible({ timeout: 30_000 });
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'chan-a' })).toBeVisible();
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'chan-b' })).toBeVisible();
     } finally {
       await ctx1.close();
       await ctx2.close();

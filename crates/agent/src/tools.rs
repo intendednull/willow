@@ -549,9 +549,18 @@ impl<N: Network> WillowToolRouter<N> {
             }
             "set_permission" => {
                 let p: SetPermissionParams = parse_args(&args)?;
+                let perm = willow_state::Permission::from_name(&p.permission).ok_or_else(|| {
+                    ErrorData::invalid_params(
+                        format!(
+                            "unknown permission '{}'; valid: SyncProvider, ManageChannels, ManageRoles, SendMessages, CreateInvite",
+                            p.permission
+                        ),
+                        None,
+                    )
+                })?;
                 match self
                     .client
-                    .set_permission(&p.role_id, &p.permission, p.granted)
+                    .set_permission(&p.role_id, perm, p.granted)
                     .await
                 {
                     Ok(()) => success_json(serde_json::json!({"success": true})),

@@ -167,7 +167,7 @@ pub fn CallPage(
     let handle = use_context::<WebClientHandle>().unwrap();
     let vm = use_context::<VoiceManagerHandle>().unwrap();
 
-    // Local video stream — stored globally in VoiceState so it survives remounts.
+    // Local video stream — stored globally in VoiceSignals so it survives remounts.
     let local_video_stream = app_state.voice.local_video_stream;
 
     // Duration timer — increments every second. Clean up on unmount so

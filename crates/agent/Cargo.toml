@@ -19,7 +19,7 @@ willow-identity = { path = "../identity" }
 willow-network = { path = "../network" }
 willow-state = { path = "../state" }
 
-rmcp = { version = "1.3", features = ["server", "transport-io", "transport-streamable-http-server"] }
+rmcp = { version = "1.5", features = ["server", "transport-io", "transport-streamable-http-server"] }
 axum = "0.8"
 tokio-util = "0.7"
 schemars = "1.0"
@@ -32,6 +32,7 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 rand = "0.8"
 dirs = "6"
+subtle = "2"
 
 [dev-dependencies]
 willow-client = { path = "../client", features = ["test-utils"] }

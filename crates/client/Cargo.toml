@@ -7,6 +7,11 @@ description = "UI-agnostic client library for the Willow P2P chat network"
 
 [features]
 test-utils = ["willow-network/test-utils"]
+# Read-only test instrumentation hooks. Distinct from `test-utils`:
+# `test-hooks` exposes narrow accessors for the web crate's
+# `WillowTestHooks` (Promise-returning JS pull API) without enabling
+# `MemNetwork`. See `docs/specs/2026-04-27-event-based-waits-design.md`.
+test-hooks = []
 
 [dependencies]
 willow-actor = { path = "../actor" }
@@ -28,6 +33,7 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 futures = { workspace = true }
+web-time = { workspace = true }
 regex = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

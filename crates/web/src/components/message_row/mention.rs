@@ -41,7 +41,8 @@ pub fn MentionPill(
     };
     let title = full_label.unwrap_or_else(|| label.clone());
     let aria = format!("mention {title}");
-    // TODO(profile-card.md): open the profile popover on click.
+    // TODO(plan: docs/plans/2026-04-21-ui-phase-2c-profile-card.md):
+    // open the profile popover on click.
     view! {
         <button class=class aria-label=aria title=title type="button">
             "@"{label}
