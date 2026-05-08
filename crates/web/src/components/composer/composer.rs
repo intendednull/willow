@@ -546,18 +546,51 @@ pub fn Composer(
 
     let send_disabled = move || input_text.get().trim().is_empty();
 
-    // Attach + emoji buttons: stub click handlers per plan §Ambiguity
-    // decisions point 5. The actual file dialog (`files-inline.md`,
-    // Phase 3b) and emoji picker (`reactions-pins.md`, Phase 3c) drop
-    // in here without re-shaping props — the buttons render now with
-    // the spec-mandated aria-labels so screen readers can already
-    // discover them, and the click handlers are intentional no-ops.
+    // Phase 3c.2: emoji picker open-state. The button below flips it;
+    // the popover mounts conditionally at the bottom of the composer
+    // tree. `picker_recent` is left empty in v1 — the static category
+    // browse covers the full picker contract; per-channel recents
+    // surface in a follow-up that threads the WebClientHandle context
+    // through the composer (today AppState is what's plumbed and it
+    // doesn't expose `recent_reactions`).
+    let (emoji_picker_open, set_emoji_picker_open) = signal(false);
+    let picker_recent: Signal<Vec<String>> = Signal::derive(Vec::new);
+
+    // Attach button: stub click handler per plan §Ambiguity decisions
+    // point 5; full file dialog lands in `files-inline.md` Phase 3b.
     let on_click_attach = |_ev: web_sys::MouseEvent| {
         // TODO(files-inline.md): open file dialog.
     };
-    let on_click_emoji = |_ev: web_sys::MouseEvent| {
-        // TODO(reactions-pins.md): open emoji picker popover.
+    let on_click_emoji = move |_ev: web_sys::MouseEvent| {
+        set_emoji_picker_open.update(|v| *v = !*v);
     };
+
+    // Insert a picked emoji glyph at the textarea's current caret
+    // position. Mirrors `insert_selected_mention` above — splices the
+    // glyph into the existing value, advances the caret to just after
+    // it, and closes the picker.
+    let insert_emoji_at_caret = move |glyph: String| {
+        let Some(el) = textarea_ref.get_untracked() else {
+            set_emoji_picker_open.set(false);
+            return;
+        };
+        let dom: &web_sys::HtmlTextAreaElement = &el;
+        let value = dom.value();
+        let caret_chars = dom.selection_end().ok().flatten().unwrap_or(0) as usize;
+        let caret_byte = char_index_to_byte(&value, caret_chars).unwrap_or(value.len());
+        let mut new_value = String::with_capacity(value.len() + glyph.len());
+        new_value.push_str(&value[..caret_byte]);
+        new_value.push_str(&glyph);
+        new_value.push_str(&value[caret_byte..]);
+        let new_caret_chars = byte_index_to_char(&new_value, caret_byte + glyph.len())
+            .unwrap_or_else(|| new_value.chars().count()) as u32;
+        dom.set_value(&new_value);
+        set_input_text.set(new_value);
+        let _ = dom.set_selection_range(new_caret_chars, new_caret_chars);
+        set_emoji_picker_open.set(false);
+    };
+    let on_picker_select = Callback::new(insert_emoji_at_caret);
+    let on_picker_close = Callback::new(move |()| set_emoji_picker_open.set(false));
 
     view! {
         // `input-area` retained alongside `composer` for backward
@@ -718,6 +751,21 @@ pub fn Composer(
                 peer_count=peer_count_sig
                 is_mobile=is_mobile_sig
             />
+            // Phase 3c emoji picker. Mounts conditionally below the
+            // composer pill — visibility owned by the local
+            // `emoji_picker_open` signal flipped by the smile button.
+            // Recent shelf is empty in v1; the static categories cover
+            // the full browse contract until a follow-up threads the
+            // WebClientHandle through the composer for live reads.
+            <Show when=move || emoji_picker_open.get()>
+                <div class="composer__emoji-picker-anchor">
+                    <crate::components::emoji_picker::EmojiPicker
+                        recent=picker_recent
+                        on_select=on_picker_select
+                        on_close=on_picker_close
+                    />
+                </div>
+            </Show>
         </div>
     }
 }

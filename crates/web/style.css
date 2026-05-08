@@ -6934,3 +6934,32 @@ select:focus-visible {
     background: var(--amber);
     color: var(--bg-1);
 }
+
+/* ── Phase 3c.2 — emoji picker mount anchors ────────────────────────────
+ *
+ * The picker popover is absolutely-positioned so it floats above the
+ * row / composer instead of pushing layout. Click-away dismissal is
+ * the picker's own Escape callback (wired by the host components).
+ */
+
+.composer__emoji-picker-anchor,
+.message-emoji-picker-anchor {
+    position: absolute;
+    z-index: 60;
+}
+
+.composer__emoji-picker-anchor {
+    /* Above the composer pill, anchored to the right edge so the
+     * smile button stays under it. */
+    bottom: 100%;
+    right: 0;
+    margin-bottom: 6px;
+}
+
+.message-emoji-picker-anchor {
+    /* Below the hover toolbar's smile button — the toolbar floats at
+     * top: -14px above the row, so the picker drops just under it. */
+    top: 28px;
+    right: 8px;
+}
+

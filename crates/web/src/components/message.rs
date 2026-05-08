@@ -336,6 +336,10 @@ pub fn MessageView(
     // Signal controlling the dropdown menu visibility.
     let (show_dropdown, set_show_dropdown) = signal(false);
     let (show_react_row, set_show_react_row) = signal(false);
+    // Phase 3c.2: emoji picker open-state. The hover toolbar's smile
+    // button (and the dropdown's More-reactions row) flips this; the
+    // popover mounts below the row when open.
+    let (emoji_picker_open, set_emoji_picker_open) = signal(false);
 
     // Delete confirmation state.
     let (show_del_confirm, set_show_del_confirm) = signal(false);
@@ -1125,8 +1129,6 @@ pub fn MessageView(
                                 <span class="toolbar-divider" aria-hidden="true"></span>
                             })}
                             {has_react.then(|| {
-                                let msg_for_click = msg_for_more_reactions.clone();
-                                let _ = msg_for_click; // reserved for future emoji-picker route
                                 view! {
                                     <button
                                         class="toolbar-btn"
@@ -1134,14 +1136,12 @@ pub fn MessageView(
                                         aria-label="more reactions"
                                         on:click=move |ev| {
                                             ev.stop_propagation();
-                                            // Toggle the existing React row
-                                            // inside the dropdown, opening the
-                                            // dropdown if it's closed so the
-                                            // row is visible. `reactions-pins.md`
-                                            // will replace this with a full
-                                            // emoji picker.
-                                            set_show_dropdown.set(true);
-                                            set_show_react_row.update(|v| *v = !*v);
+                                            // Phase 3c.2: open the emoji picker
+                                            // popover instead of the legacy in-
+                                            // dropdown react row. The picker
+                                            // mounts below the row; on_select
+                                            // routes through `on_react`.
+                                            set_emoji_picker_open.update(|v| *v = !*v);
                                         }
                                     >
                                         {icons::icon_smile()}
@@ -1323,6 +1323,40 @@ pub fn MessageView(
                                 None
                             }
                         }}
+                        // Phase 3c.2 emoji picker. Mounts conditionally
+                        // inside `.message-actions` so its absolute
+                        // positioning lands relative to the row. The
+                        // smile button in the hover toolbar (above)
+                        // flips `emoji_picker_open`; on_select routes
+                        // through `on_react`. Recent shelf is empty in
+                        // v1 — the static categories cover the picker
+                        // contract until a follow-up plumbs
+                        // `client.recent_reactions(channel)` through
+                        // the row.
+                        {
+                            let react_cb_for_picker = on_react;
+                            let msg_for_picker = message.clone();
+                            let on_select = Callback::new(move |glyph: String| {
+                                if let Some(cb) = react_cb_for_picker {
+                                    cb.run((msg_for_picker.clone(), glyph));
+                                }
+                                set_emoji_picker_open.set(false);
+                            });
+                            let on_close = Callback::new(move |()| {
+                                set_emoji_picker_open.set(false);
+                            });
+                            view! {
+                                <Show when=move || emoji_picker_open.get()>
+                                    <div class="message-emoji-picker-anchor">
+                                        <crate::components::emoji_picker::EmojiPicker
+                                            recent=Signal::derive(Vec::new)
+                                            on_select=on_select
+                                            on_close=on_close
+                                        />
+                                    </div>
+                                </Show>
+                            }
+                        }
                     </div>
                 })
             } else {
