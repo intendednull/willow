@@ -1,11 +1,14 @@
-// `<FileShareButton>` calls the legacy `ClientHandle::share_file_inline`,
-// which is `#[deprecated]` in favour of `upload_attachment` +
-// `send_attachment_message`. The button is scheduled for removal once
-// T9 wires the composer attach button to `<UploadDialog>`. Until
-// then, suppress the deprecation warning module-wide to keep
-// `just check` clean — the legacy reader path stays alive so
-// historical `[file:NAME:base64]` messages keep rendering.
-#![allow(deprecated)]
+//! `<FileShareButton>` — composer attach affordance.
+//!
+//! Phase 3b: routes uploads through the typed `EventKind::FileMessage`
+//! path (`upload_attachment` + `send_attachment_message`) instead of
+//! the legacy 256 KB base64 inline-body hack. Bytes go to the iroh
+//! blob store; the wire event carries only the content-addressed
+//! hash + metadata. Receivers fetch via `BlobStore::get`.
+//!
+//! The legacy `parse_inline_file` reader (below) stays alive so
+//! historical `[file:NAME:base64]` messages from pre-3b peers still
+//! render. Senders no longer emit the format.
 
 use leptos::prelude::*;
 use wasm_bindgen::closure::Closure;
@@ -14,24 +17,35 @@ use wasm_bindgen::JsCast;
 use crate::app::WebClientHandle;
 use crate::icons;
 
-/// Maximum inline file size (256 KB).
-const MAX_FILE_SIZE: u64 = 256 * 1024;
+/// Soft cap on individual attachment size (25 MB) per spec
+/// `docs/specs/2026-04-19-ui-design/files-inline.md` §File constraints.
+/// Files above this trigger an alert; the blob transport itself can
+/// handle larger payloads, so the cap exists to protect mobile peers
+/// from accidentally sharing multi-hundred-MB files until the upload
+/// dialog (T8) lands with a real progress UI.
+const MAX_ATTACHMENT_SIZE: u64 = 25 * 1024 * 1024;
 
-/// Attachment button that opens a native file picker and shares small files
-/// inline via base64-encoded messages.
+/// Attachment button that opens a native file picker and uploads the
+/// selected file through the typed `EventKind::FileMessage` flow.
 ///
-/// Files larger than 256 KB are rejected with a browser alert.
+/// Click → hidden `<input type=file>` → file → `FileReader` → bytes
+/// → `ClientHandle::upload_attachment` → `(BlobHash, size)` →
+/// `ClientHandle::send_attachment_message` with the user-facing
+/// metadata. Image dimension extraction is deferred to T8/T9 (the
+/// upload dialog gets the browser `Image` API surface for that);
+/// this minimal path always sends `width: None, height: None`,
+/// which is fine for non-images and mostly fine for images (the
+/// receiver renderer falls back to natural sizing).
 #[component]
 pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
     let handle = use_context::<WebClientHandle>().unwrap();
 
-    // Create a hidden file input and trigger it on button click.
+    // Hidden file input is triggered by button click.
     let input_ref = NodeRef::<leptos::html::Input>::new();
 
     let on_click = move |_| {
         if let Some(input) = input_ref.get() {
             let el: &web_sys::HtmlInputElement = &input;
-            // Reset so the same file can be picked again.
             el.set_value("");
             el.click();
         }
@@ -52,16 +66,18 @@ pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
         };
 
         let size = file.size() as u64;
-        if size > MAX_FILE_SIZE {
+        if size > MAX_ATTACHMENT_SIZE {
             if let Some(window) = web_sys::window() {
-                window
-                    .alert_with_message("File is too large. Maximum size is 256 KB.")
-                    .ok();
+                let _ = window.alert_with_message(
+                    "File is too large. Maximum size is 25 MB while the \
+                     upload dialog with progress is in development.",
+                );
             }
             return;
         }
 
         let filename = file.name();
+        let mime_type = file.type_();
         let ch = channel.get_untracked();
         let handle_inner = handle_change.clone();
 
@@ -91,20 +107,35 @@ pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
             let data = uint8.to_vec();
 
             wasm_bindgen_futures::spawn_local(async move {
-                if let Err(e) = handle_inner.share_file_inline(&ch, &filename, &data).await {
+                let upload = match handle_inner.upload_attachment(data).await {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window
+                                .alert_with_message(&format!("Failed to upload attachment: {e}"));
+                        }
+                        return;
+                    }
+                };
+                let (hash, size_bytes) = upload;
+                if let Err(e) = handle_inner
+                    .send_attachment_message(
+                        &ch, &hash, &filename, &mime_type, size_bytes, None, None, "", None,
+                    )
+                    .await
+                {
                     if let Some(window) = web_sys::window() {
-                        window
-                            .alert_with_message(&format!("Failed to share file: {e}"))
-                            .ok();
+                        let _ =
+                            window.alert_with_message(&format!("Failed to send attachment: {e}"));
                     }
                 }
             });
         });
 
         reader.set_onloadend(Some(cb.as_ref().unchecked_ref()));
-        reader.read_as_array_buffer(&file).ok();
-        // Intentional leak: the FileReader callback must outlive this scope.
-        // Since file picks are infrequent, the leak is acceptable.
+        let _ = reader.read_as_array_buffer(&file);
+        // Intentional leak: the FileReader callback must outlive this
+        // scope. File picks are infrequent so the leak is acceptable.
         cb.forget();
     };
 

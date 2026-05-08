@@ -129,7 +129,6 @@ pub(super) fn caption(filename: &str, size_bytes: u64) -> String {
 /// thread `on_cleanup` through Leptos so the URL revokes on dispose.
 #[cfg(target_arch = "wasm32")]
 fn bytes_to_object_url(data: &[u8], mime: &str) -> Option<String> {
-    use wasm_bindgen::JsCast;
     let array = js_sys::Uint8Array::from(data);
     let parts = js_sys::Array::new();
     parts.push(&array.buffer());
