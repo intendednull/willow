@@ -137,7 +137,10 @@ impl ChatMeta {
     /// §Quick reactions — "Override with the five most recent reactions
     /// used in *this channel*".
     pub fn note_reaction(&mut self, channel: &str, emoji: &str) {
-        let entry = self.reaction_recency.entry(channel.to_string()).or_default();
+        let entry = self
+            .reaction_recency
+            .entry(channel.to_string())
+            .or_default();
         // Dedupe: remove any previous occurrence so the LRU stays
         // unique and the most-recent click wins ordering.
         entry.retain(|e| e != emoji);

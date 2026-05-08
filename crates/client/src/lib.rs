@@ -1125,7 +1125,7 @@ pub fn test_client() -> (
     let chat_meta_addr = sys.spawn(willow_actor::StateActor::new(state_actors::ChatMeta {
         current_channel: state.chat.current_channel.clone(),
         peers: state.chat.peers.clone(),
-                reaction_recency: Default::default(),
+        reaction_recency: Default::default(),
     }));
     let profile_state_addr = sys.spawn(willow_actor::StateActor::new({
         // Seed via `insert_name` so the LRU recency queue mirrors

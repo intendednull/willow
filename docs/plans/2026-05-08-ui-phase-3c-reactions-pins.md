@@ -108,13 +108,13 @@
 
 ### Phase D — pinned-panel rewrite
 
-- [ ] **T8.** Rewrite `<PinnedPanel>` to spec entry layout (avatar + display name + timestamp + 2-line preview + footer). Empty state copy `nothing pinned yet.`. **Browser test:** AG-7. **Verify:** `just test-browser`.
+- [x] **T8.** Rewrite `<PinnedPanel>` to spec entry layout. New `<article class="pinned-entry">` markup with avatar (24 px first-letter circle on `--bg-2`) + author (`--ink-0` weight 500) + relative timestamp (`--ink-3` 11 px) + 2-line ellipsis body preview + per-entry actions row. Empty state copy is byte-exact `nothing pinned yet.` (italic, `--ink-3`, 13 px) per spec §Pinned panel contents. CSS for `.pinned-entry__*` + `.pinned-empty` appended to `style.css` using foundation tokens only. **Browser test:** AG-7 lands alongside the rest of the phase-3c browser-tier sweep in T12. **Verify:** `just check` clean.
 
-- [ ] **T9.** Add per-entry `unpin` button to `<PinnedPanel>`, permission-gated on `ManageChannels`. **Browser test:** AG-8. **Verify:** `just test-browser`.
+- [x] **T9.** Add per-entry `unpin` button to `<PinnedPanel>` permission-gated on `ManageChannels`. New `can_unpin: Signal<bool>` + `on_unpin: Callback<String>` props (both optional so existing callers compile unchanged). When `can_unpin == false`: `disabled` + `aria-disabled="true"` + tooltip `only stewards can pin here` per spec §Permission + action; click handler is a no-op. **Browser test:** AG-8 lands alongside T12. **Verify:** `just check` clean.
 
 ### Phase E — header pin button + permission gate
 
-- [ ] **T10.** Header pin IconBtn picks up `--amber` tint + mono superscript count when `pinned_message_ids(channel).len() > 0`. ARIA `pinned messages ({count})`. **Browser test:** AG-9. **Verify:** `just test-browser`.
+- [x] **T10.** Header pin IconBtn picks up `--amber` tint via the new `.action-btn--lit` class + a mono `.action-btn__count--pin` overlay when the channel has pins. New optional `pinned_count: Signal<usize>` prop on `<MainPaneHeader>`; callers thread it from `client.pinned_message_ids(channel).len()`. ARIA label flips between `pinned messages` (no pins) and `pinned messages ({count})` (with pins) per spec §Header entry point. **Browser test:** AG-9 lands alongside T12. **Verify:** `just check` clean.
 
 - [ ] **T11.** Permission-gate the row `P` keyboard binding on `ManageChannels`. **Browser test:** AG-10. **Verify:** `just test-browser`.
 

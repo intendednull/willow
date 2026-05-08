@@ -38,7 +38,10 @@ pub fn EmojiPicker(
         // Clone so the returned `Vec<&str>` doesn't outlive `recent`
         // when the memo evaluates again.
         let glyph_refs = search(&q, &recent);
-        glyph_refs.into_iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        glyph_refs
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
     });
 
     let glyphs_for_keydown = glyphs;
