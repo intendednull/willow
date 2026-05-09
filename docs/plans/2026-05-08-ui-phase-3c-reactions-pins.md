@@ -1,6 +1,6 @@
 # UI Phase 3c — Reactions & Pins Implementation Plan
 
-**Status:** draft
+**Status:** landed (foundation PR #634 + picker wireup PR #635 + close-out PR #637)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development + superpowers:test-driven-development. Every task = one commit; tick the checkbox in the same commit.
 
