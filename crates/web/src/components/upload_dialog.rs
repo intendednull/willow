@@ -120,6 +120,12 @@ pub fn UploadDialog(channel: ReadSignal<String>) -> impl IntoView {
                     tracing::warn!("UploadDialog attach: WebClientHandle missing");
                     return;
                 };
+                // Snapshot the channel at click time. If the user
+                // switches channels mid-upload, the file lands in
+                // wherever they confirmed from — matches the standard
+                // chat-app mental model ("attach to current channel")
+                // and avoids subscribing this handler to channel-switch
+                // re-renders.
                 let channel_now = channel.get_untracked();
                 let entries = queue.entries.get_untracked();
                 for entry in entries {
@@ -295,9 +301,13 @@ fn spawn_upload(
             }
         });
     });
-    reader.set_onloadend(Some(cb.as_ref().unchecked_ref()));
+    // Hand the closure to JS so the FileReader keeps it alive until
+    // `onloadend` fires. `into_js_value` is the leak-free counterpart
+    // to `forget()`: JS owns the reference, so once the reader drops
+    // (after the spawn_local future resolves) the GC reclaims it.
+    let cb_value = cb.into_js_value();
+    reader.set_onloadend(Some(cb_value.unchecked_ref()));
     let _ = reader.read_as_array_buffer(&file);
-    cb.forget();
 }
 
 #[cfg(test)]

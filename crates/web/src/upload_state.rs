@@ -94,6 +94,14 @@ impl UploadQueue {
 
     /// Clear the queue + close the dialog. Used by the footer
     /// `cancel all` action.
+    ///
+    /// Does **not** abort in-flight uploads — the `iroh-blobs` upload
+    /// future has no cancel hook today, so completing the network
+    /// transfer is unavoidable. The user-visible effect ("file isn't
+    /// sent") is preserved: the row is gone before the future
+    /// resolves, so no `FileMessage` is emitted. If the spec ever
+    /// pins down hard cancellation, `UploadEntry` needs a cancel
+    /// flag the upload future polls.
     pub fn cancel_all(&self) {
         self.entries.update(|v| v.clear());
         self.open.set(false);
@@ -110,8 +118,19 @@ impl Default for UploadQueue {
 /// (e.g. unit-test mounts that don't construct the full app shell).
 /// In production the app shell provides exactly one queue so the
 /// composer button + the dialog see the same state.
+///
+/// Logs a warning when the fallback fires — in production this means
+/// the consumer mounted before the shell ran `provide_context`, which
+/// would silently split the queue between consumers (the paperclip
+/// would flip a queue the dialog never reads). The warning surfaces
+/// the wiring bug instead of presenting it as a silent UX dead-end.
 pub fn use_upload_queue() -> UploadQueue {
     use_context::<UploadQueue>().unwrap_or_else(|| {
+        tracing::warn!(
+            "UploadQueue not in context; allocating a detached fallback. \
+             This usually means a consumer mounted above the shell's \
+             provide_context — both consumers must share one queue."
+        );
         let queue = UploadQueue::new();
         provide_context(queue);
         queue
