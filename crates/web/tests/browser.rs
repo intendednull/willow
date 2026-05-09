@@ -15296,29 +15296,70 @@ mod phase_3b_voice_note {
     async fn second_claim_pauses_first_via_shared_player() {
         let player = VoiceNotePlayer::new();
 
-        // Two independent cards sharing one player context.
-        let _container_a = mount_card(player, "aaaa".repeat(16).as_str(), "alpha.opus");
-        let _container_b = mount_card(player, "bbbb".repeat(16).as_str(), "beta.opus");
+        // Two independent cards sharing one player context. The
+        // mounts must outlive every assertion below — the
+        // pause-watching `Effect` only runs while the card is alive.
+        let container_a =
+            mount_card(player, "aaaa".repeat(16).as_str(), "alpha.opus");
+        let _container_b =
+            mount_card(player, "bbbb".repeat(16).as_str(), "beta.opus");
         tick().await;
 
-        // Card alpha claims the slot — drives the per-card `Effect`
-        // that watches `player.active`.
-        player.claim("alpha".to_string());
+        // Drive card A into the "playing" visual state by firing a
+        // synthetic `play` event on its <audio>. The headless
+        // harness can't actually play audio (no codec backend), but
+        // the event handler doesn't care — it just flips the local
+        // `playing` signal that drives the toggle button's
+        // aria-label.
+        let audio_a = container_a
+            .query_selector(".attachment--voice-note audio")
+            .unwrap()
+            .expect("card A must contain an <audio> element");
+        let play_ev = web_sys::Event::new("play").unwrap();
+        audio_a.dispatch_event(&play_ev).unwrap();
         tick().await;
-        assert_eq!(player.active.get_untracked().as_deref(), Some("alpha"));
 
-        // Card beta then claims; the shared signal is now `beta`.
-        // Card alpha's effect reads the new value and (in production)
-        // calls `audio.pause()` on its own element. We can't drive a
-        // real `<audio>` in the headless harness, but the claim
-        // semantics are the load-bearing half of AG-6.
-        player.claim("beta".to_string());
+        let toggle_a = container_a
+            .query_selector(".attachment--voice-note .attachment__voice-toggle")
+            .unwrap()
+            .expect("card A must contain the toggle button");
+        let aria_playing = toggle_a.get_attribute("aria-label").unwrap_or_default();
+        assert!(
+            aria_playing.starts_with("pause voice note"),
+            "after the play event card A advertises pause: {aria_playing}"
+        );
+
+        // Card B's id matches its own derived format
+        // (`vn-{hash[..12]}-{filename}`); claiming a competing id is
+        // enough to drive A's pause-effect because A's id won't
+        // match. Use B's *real* id so the test exercises the
+        // honest cross-card signal flow.
+        let beta_id = format!("vn-{}-beta.opus", &"bbbb".repeat(16)[..12]);
+        player.claim(beta_id.clone());
         tick().await;
-        assert_eq!(player.active.get_untracked().as_deref(), Some("beta"));
+        assert_eq!(
+            player.active.get_untracked().as_deref(),
+            Some(beta_id.as_str())
+        );
 
-        // Releasing a non-active id is a no-op (defensive against a
-        // stale paused-card racing a fresh claim).
+        // Card A's pause-effect fired: aria-label flipped back to
+        // play form *and* the local `playing` mirror cleared. Both
+        // are what AG-6 cares about — the actual `audio.pause()`
+        // call against the real element is verified by inspection
+        // (the headless `<audio>` has nothing to pause).
+        let aria_paused = toggle_a.get_attribute("aria-label").unwrap_or_default();
+        assert!(
+            aria_paused.starts_with("play voice note"),
+            "after a competing claim card A flips back to play: {aria_paused}"
+        );
+
+        // `release_if_active` only clears when the active id matches
+        // — defensive against a stale paused-card racing a fresh
+        // claim from somebody else.
         player.release_if_active("alpha");
-        assert_eq!(player.active.get_untracked().as_deref(), Some("beta"));
+        assert_eq!(
+            player.active.get_untracked().as_deref(),
+            Some(beta_id.as_str())
+        );
     }
 }

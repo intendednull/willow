@@ -105,20 +105,28 @@ pub fn AttachmentVoiceNote(
         });
     });
 
-    // Pause us when somebody else claims the player slot.
+    // Pause us when somebody else claims the player slot. Reads
+    // `playing.get_untracked()` (not subscribed) so a follow-up
+    // `release_if_active` from `on_pause` doesn't re-fire the
+    // effect with no useful work — the previous pass already wrote
+    // `playing=false` and called `audio.pause()`.
     let id_for_effect = id.clone();
     Effect::new(move |_| {
         let active = player.active.get();
-        if active.as_deref() != Some(&id_for_effect) {
-            if let Some(el) = audio_ref.get() {
-                if !el.paused() {
-                    let _ = el.pause();
-                }
-            }
-            // Mirror in our own `playing` signal so the icon flips
-            // back to `play` even when the pause came from outside.
-            set_playing.set(false);
+        if active.as_deref() == Some(&id_for_effect) {
+            return;
         }
+        if !playing.get_untracked() {
+            return;
+        }
+        if let Some(el) = audio_ref.get() {
+            if !el.paused() {
+                let _ = el.pause();
+            }
+        }
+        // Mirror in our own `playing` signal so the icon flips
+        // back to `play` even when the pause came from outside.
+        set_playing.set(false);
     });
 
     let id_play = id.clone();
@@ -325,9 +333,15 @@ fn decode_peaks_async(bytes: Vec<u8>, bars: usize, set_peaks: WriteSignal<Vec<f3
             }
         };
         let result = wasm_bindgen_futures::JsFuture::from(promise).await;
-        // Drop the AudioContext as soon as decoding settles, regardless
-        // of outcome — we never play audio through it, so holding it
-        // would just leak.
+        // Close the AudioContext explicitly so the browser releases
+        // the underlying audio output device immediately. `drop(ctx)`
+        // alone only releases the Rust handle; the JS side holds on
+        // until GC, which on a long chat scroll can stack dozens of
+        // sleeping contexts and blow past the per-tab limit
+        // (~6 on Chrome). Decode-only use isn't gated by the autoplay
+        // policy, so this never throws — the returned Promise is
+        // dropped intentionally.
+        let _ = ctx.close();
         drop(ctx);
         let buf = match result {
             Ok(v) => v,
