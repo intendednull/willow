@@ -1344,11 +1344,12 @@ pub fn MessageView(
                             let on_close = Callback::new(move |()| {
                                 set_emoji_picker_open.set(false);
                             });
+                            let recent = crate::reaction_recency::use_recent_reactions();
                             view! {
                                 <Show when=move || emoji_picker_open.get()>
                                     <div class="message-emoji-picker-anchor">
                                         <crate::components::emoji_picker::EmojiPicker
-                                            recent=Signal::derive(Vec::new)
+                                            recent=recent
                                             on_select=on_select
                                             on_close=on_close
                                         />

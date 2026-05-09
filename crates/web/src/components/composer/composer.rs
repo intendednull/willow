@@ -546,15 +546,17 @@ pub fn Composer(
 
     let send_disabled = move || input_text.get().trim().is_empty();
 
-    // Phase 3c.2: emoji picker open-state. The button below flips it;
+    // Phase 3c.3: emoji picker open-state. The button below flips it;
     // the popover mounts conditionally at the bottom of the composer
-    // tree. `picker_recent` is left empty in v1 — the static category
-    // browse covers the full picker contract; per-channel recents
-    // surface in a follow-up that threads the WebClientHandle context
-    // through the composer (today AppState is what's plumbed and it
-    // doesn't expose `recent_reactions`).
+    // tree. `picker_recent` reads the per-channel recency signal from
+    // the `ReactionRecency` context provided once at the app shell
+    // (see `crate::reaction_recency`). When no context has been
+    // provided (e.g. in unit-test mounts) the helper falls back to
+    // the spec default shelf so the picker's recent row never
+    // collapses.
     let (emoji_picker_open, set_emoji_picker_open) = signal(false);
-    let picker_recent: Signal<Vec<String>> = Signal::derive(Vec::new);
+    let picker_recent: Signal<Vec<String>> =
+        crate::reaction_recency::use_recent_reactions();
 
     // Attach button: stub click handler per plan §Ambiguity decisions
     // point 5; full file dialog lands in `files-inline.md` Phase 3b.

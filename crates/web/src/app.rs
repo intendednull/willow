@@ -185,6 +185,35 @@ pub fn App() -> impl IntoView {
     provide_context(write);
     provide_context(trust_store.clone());
 
+    // Phase 3c.3 — per-channel reaction recency. Drives the picker's
+    // "recent" shelf in both the composer's emoji button and the
+    // row's "more reactions" toolbar. The Resource refreshes when
+    // the active channel changes; same-channel updates after a fresh
+    // `react()` will surface on next channel switch (a finer
+    // refresh-on-react path is the next follow-up).
+    {
+        let recent_handle = handle.clone();
+        let current_channel_for_recency = app_state.chat.current_channel;
+        let recent_resource = LocalResource::new(move || {
+            let handle = recent_handle.clone();
+            let channel = current_channel_for_recency.get();
+            async move { handle.recent_reactions(&channel).await }
+        });
+        let recent_signal: leptos::prelude::Signal<Vec<String>> =
+            leptos::prelude::Signal::derive(move || {
+                recent_resource
+                    .get()
+                    .map(|v| v.to_vec())
+                    .unwrap_or_else(|| {
+                        crate::reaction_recency::REACTION_RECENCY_DEFAULT
+                            .iter()
+                            .map(|s| (*s).to_string())
+                            .collect()
+                    })
+            });
+        provide_context(crate::reaction_recency::ReactionRecency(recent_signal));
+    }
+
     // Local-search index handle (phase 2e). Session-scoped, in-memory,
     // dual-target. The UI hydrates it from `messages_sig` once the
     // derived signals are wired (below). Not persisted per
