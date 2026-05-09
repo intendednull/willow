@@ -33,6 +33,7 @@ web-sys = { version = "0.3", features = [
     "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition",
     "DisplayMediaStreamConstraints",
     "AudioContext", "BaseAudioContext", "AudioNode",
+    "AudioBuffer",
     "AnalyserNode", "MediaStreamAudioSourceNode",
     "RtcSignalingState", "RtcRtpTransceiver",
     "Response", "Headers",

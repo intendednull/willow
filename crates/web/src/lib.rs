@@ -27,3 +27,4 @@ pub mod trust_store;
 pub mod upload_state;
 pub mod util;
 pub mod voice;
+pub mod voice_note_player;
