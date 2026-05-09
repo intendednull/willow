@@ -162,6 +162,16 @@ pub fn icon_download() -> impl IntoView {
     )
 }
 
+/// Upload icon — tray with an arrow pointing up. Lucide-style.
+pub fn icon_upload() -> impl IntoView {
+    icon(
+        &format!(
+            r#"<svg {SVG_ATTRS}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>"#
+        ),
+        "icon-upload",
+    )
+}
+
 /// Left arrow icon.
 pub fn icon_arrow_left() -> impl IntoView {
     icon(

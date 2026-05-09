@@ -45,7 +45,9 @@ use super::meta_row::MetaRow;
 use super::placeholders::placeholder_for;
 use super::reply_bar::ReplyBar;
 use super::typing_indicator::TypingIndicator;
+use crate::components::upload_dialog::{enqueue_file_list, pasted_image_filename};
 use crate::state::ConnectionState;
+use crate::upload_state::use_upload_queue;
 
 /// Maximum number of visible textarea lines before the textarea
 /// switches from grow-to-fit to scroll. Matches the spec's
@@ -557,10 +559,55 @@ pub fn Composer(
     let (emoji_picker_open, set_emoji_picker_open) = signal(false);
     let picker_recent: Signal<Vec<String>> = crate::reaction_recency::use_recent_reactions();
 
-    // Attach button: stub click handler per plan §Ambiguity decisions
-    // point 5; full file dialog lands in `files-inline.md` Phase 3b.
-    let on_click_attach = |_ev: web_sys::MouseEvent| {
-        // TODO(files-inline.md): open file dialog.
+    // Attach button (T9): flips `<UploadDialog>` open via the shared
+    // `UploadQueue` context. Spec
+    // `docs/specs/2026-04-19-ui-design/files-inline.md` §Upload
+    // dialog says the dialog is "invoked from the compose surface's
+    // attach IconBtn (`plus`)" — that's this button.
+    let upload_queue = use_upload_queue();
+    let on_click_attach = move |_ev: web_sys::MouseEvent| {
+        upload_queue.open.set(true);
+    };
+
+    // Paste handler (T12): when the textarea's clipboard payload
+    // contains files (e.g. screenshots, copied attachments), route
+    // them to the upload queue instead of letting the textarea
+    // insert a base64 stub or empty string. Spec
+    // `docs/specs/2026-04-19-ui-design/files-inline.md`
+    // §Paste-to-upload (desktop). The `WebClientHandle` is read
+    // from context so the upload future can talk to the blob store.
+    let upload_handle = use_context::<crate::app::WebClientHandle>();
+    let on_paste = move |ev: web_sys::ClipboardEvent| {
+        let Some(dt) = ev.clipboard_data() else {
+            return;
+        };
+        let Some(files) = dt.files() else {
+            return;
+        };
+        if files.length() == 0 {
+            return;
+        }
+        // We're handling the paste — keep the textarea value clean.
+        ev.prevent_default();
+        let enqueued = enqueue_file_list(upload_queue, upload_handle.clone(), &files, |_, file| {
+            // Spec: pasted images with no upstream filename are
+            // renamed `pasted-{YYYY-MM-DD-HH-mm-ss}.png` so they
+            // surface meaningfully in the upload list. Browsers
+            // typically deliver `image.png` (Chrome) or empty
+            // (Safari) — both go through this path.
+            let name = file.name();
+            let mime = file.type_();
+            let needs_rename =
+                mime.starts_with("image/") && (name.is_empty() || name == "image.png");
+            if needs_rename {
+                Some(pasted_image_filename())
+            } else {
+                None
+            }
+        });
+        if enqueued > 0 {
+            upload_queue.open.set(true);
+        }
     };
     let on_click_emoji = move |_ev: web_sys::MouseEvent| {
         set_emoji_picker_open.update(|v| *v = !*v);
@@ -717,6 +764,7 @@ pub fn Composer(
                         }
                     }
                     on:keydown=on_keydown
+                    on:paste=on_paste
                 />
                 // Emoji button (spec §Desktop compose surface, upper
                 // row). Clicks are stubs in v1 — Phase 3c

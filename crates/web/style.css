@@ -1496,6 +1496,57 @@ select:focus-visible {
     cursor: not-allowed;
 }
 
+/* ── Drag Overlay ────────────────────────────────────────────────── */
+/* Spec: docs/specs/2026-04-19-ui-design/files-inline.md
+   §Drag-and-drop. Full-viewport tint + centered dashed --moss-2
+   panel with a 32 px upload icon and `drop to attach` label. Spec
+   §Motion: drag overlay crossfades in even under reduced motion. */
+
+.drag-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 950;
+    background: color-mix(in oklab, var(--moss-2) 18%, transparent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    animation: willow-drag-overlay-fade 120ms ease-out;
+}
+
+@keyframes willow-drag-overlay-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.drag-overlay__panel {
+    border: 2px dashed var(--moss-2);
+    border-radius: 14px;
+    padding: 32px 56px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    color: var(--ink-0);
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.drag-overlay__icon {
+    font-size: 32px;
+    color: var(--ink-0);
+}
+
+.drag-overlay__label {
+    font-size: 16px;
+    color: var(--ink-0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .drag-overlay {
+        animation: willow-drag-overlay-fade 1ms linear;
+    }
+}
+
 /* ── Member List (right sidebar) ─────────────────────────────────── */
 
 /* On desktop, the wrapper is transparent -- member-list renders normally */

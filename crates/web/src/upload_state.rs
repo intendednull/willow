@@ -14,6 +14,11 @@
 use leptos::prelude::*;
 use willow_network::BlobHash;
 
+/// Maximum per-file attachment size enforced by the upload UI. Spec:
+/// `docs/specs/2026-04-19-ui-design/files-inline.md` §File constraints
+/// (25 MB in v1).
+pub const MAX_ATTACHMENT_SIZE: u64 = 25 * 1024 * 1024;
+
 /// Per-file upload progression state.
 ///
 /// Today the underlying iroh blob store doesn't surface incremental
@@ -53,6 +58,13 @@ pub struct UploadEntry {
 pub struct UploadQueue {
     /// Whether the `<UploadDialog>` is currently mounted.
     pub open: RwSignal<bool>,
+    /// Whether a file drag is currently over the page.
+    /// Drives `<DragOverlay>` visibility per spec
+    /// `docs/specs/2026-04-19-ui-design/files-inline.md`
+    /// §Drag-and-drop. The overlay shows while files are being
+    /// dragged over the window; on drop, the overlay clears and the
+    /// dialog opens with the dropped files enqueued.
+    pub drag_active: RwSignal<bool>,
     /// Pending + completed entries, oldest at the front.
     pub entries: RwSignal<Vec<UploadEntry>>,
 }
@@ -61,6 +73,7 @@ impl UploadQueue {
     pub fn new() -> Self {
         Self {
             open: RwSignal::new(false),
+            drag_active: RwSignal::new(false),
             entries: RwSignal::new(Vec::new()),
         }
     }
