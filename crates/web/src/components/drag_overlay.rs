@@ -109,10 +109,20 @@ fn install_drag_listeners(
     });
     let _ = target.add_event_listener_with_callback("dragover", on_over.as_ref().unchecked_ref());
 
-    // dragleave: decrement depth, hide overlay when zero.
+    // dragleave: decrement depth, hide overlay when zero. When the
+    // event's `related_target` is null, the cursor truly left the
+    // window — Firefox can drop the final dragleave during nested
+    // drags, so we treat that as a hard reset and force depth to 0
+    // regardless. (Spec doesn't pin a "stuck overlay" recovery; this
+    // is the cheapest one that doesn't ask the user to refresh.)
     let depth_leave = depth.clone();
-    let on_leave = Closure::<dyn FnMut(_)>::new(move |_ev: web_sys::DragEvent| {
-        let next = (depth_leave.get() - 1).max(0);
+    let on_leave = Closure::<dyn FnMut(_)>::new(move |ev: web_sys::DragEvent| {
+        let leaving_window = ev.related_target().is_none();
+        let next = if leaving_window {
+            0
+        } else {
+            (depth_leave.get() - 1).max(0)
+        };
         depth_leave.set(next);
         if next == 0 {
             queue.drag_active.set(false);

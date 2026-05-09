@@ -777,6 +777,15 @@ pub fn App() -> impl IntoView {
             // reads. Mounted at the app shell so the listeners are
             // active for every route.
             <crate::components::DragOverlay/>
+            // Phase 3b T8 — modal upload sheet, mounted at the app
+            // shell so it's visible from both desktop + mobile shells
+            // (the previous mount inside `.shell-desktop` rendered
+            // nothing on mobile because CSS sets that subtree to
+            // `display:none`). Visibility is owned by `queue.open`
+            // and CSS positions it as a fixed overlay regardless of
+            // parent. Channel signal comes from the same app-state
+            // store both shells consume.
+            <UploadDialog channel=current_channel />
             {move || {
                 // Join link takes priority over everything.
                 if join_token_signal.get().is_some() {
@@ -1267,15 +1276,6 @@ pub fn App() -> impl IntoView {
                                                     })
                                                 />
                                             </div>
-                                            // Phase 3b T8 — modal upload sheet. Opened by the
-                                            // composer's attach button (T9), the page-level
-                                            // <DragOverlay> drop handler (T10), or the composer
-                                            // paste handler (T12) via the shared UploadQueue
-                                            // context. Mounted at the chat-pane scope so
-                                            // `current_channel` is in scope; visibility is
-                                            // owned by `queue.open` and CSS positions it as a
-                                            // fixed overlay.
-                                            <UploadDialog channel=current_channel />
                                         </main>
                                     }.into_any()
                                 }
