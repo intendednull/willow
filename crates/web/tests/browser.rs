@@ -15299,10 +15299,8 @@ mod phase_3b_voice_note {
         // Two independent cards sharing one player context. The
         // mounts must outlive every assertion below — the
         // pause-watching `Effect` only runs while the card is alive.
-        let container_a =
-            mount_card(player, "aaaa".repeat(16).as_str(), "alpha.opus");
-        let _container_b =
-            mount_card(player, "bbbb".repeat(16).as_str(), "beta.opus");
+        let container_a = mount_card(player, "aaaa".repeat(16).as_str(), "alpha.opus");
+        let _container_b = mount_card(player, "bbbb".repeat(16).as_str(), "beta.opus");
         tick().await;
 
         // Drive card A into the "playing" visual state by firing a
