@@ -13,7 +13,7 @@ willow-messaging = { path = "../messaging" }
 chacha20poly1305 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 curve25519-dalek = "4"
-hkdf = "0.12"
+hkdf = "0.13"
 sha2 = "0.10"
 blake3 = { workspace = true }
 rand = "0.8"
