@@ -1,27 +1,29 @@
-//! `<FileShareButton>` — composer attach affordance.
+//! Legacy `[file:NAME:base64]` message decoder.
 //!
-//! Phase 3b.5: clicking the paperclip flips the spec'd
-//! `<UploadDialog>` open via the [`crate::upload_state::UploadQueue`]
-//! context. The dialog owns the multi-file pick + per-file status +
-//! batch send flow per `docs/specs/2026-04-19-ui-design/files-inline.md`
-//! §Upload dialog. The button keeps the spec's `aria-label="attach
-//! file"` so screen readers read it the same way they did before.
-//!
-//! The legacy `parse_inline_file` reader (below) stays alive so
-//! historical `[file:NAME:base64]` messages from pre-3b peers still
-//! render. Senders no longer emit that format.
+//! Phase 3b T9 retired the standalone `<FileShareButton>` paperclip
+//! — the composer's `+` attach button now owns the path into
+//! `<UploadDialog>` (see `composer.rs::on_click_attach`). The
+//! `parse_inline_file` reader below stays alive so historical
+//! `[file:NAME:base64]` messages from pre-3b peers still render.
+//! Senders no longer emit that format; once enough time has passed
+//! that the wild population has rotated past those messages, the
+//! whole module can drop.
 
 use leptos::prelude::*;
 
 use crate::icons;
 use crate::upload_state::use_upload_queue;
 
-/// Composer paperclip — flips `UploadQueue::open` so the
-/// `<UploadDialog>` mounts. The `channel` prop is kept for backward
-/// compat; the dialog reads its own channel signal from context.
+/// Composer paperclip (deprecated). Retained as a stub so
+/// out-of-tree consumers (test harnesses, plugins) keep compiling
+/// across the cut-over. New surfaces should use the composer's `+`
+/// attach button instead.
+#[deprecated(note = "phase-3b T9: use the composer's `+` attach button \
+            (composer__attach) instead — it flips the same \
+            `UploadQueue::open` signal this button does.")]
 #[component]
 pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
-    let _ = channel; // dialog reads channel via its own context
+    let _ = channel;
     let queue = use_upload_queue();
     let on_click = move |_ev: web_sys::MouseEvent| {
         queue.open.set(true);

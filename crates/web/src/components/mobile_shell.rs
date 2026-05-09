@@ -24,8 +24,8 @@ use leptos::prelude::*;
 use crate::app::WebClientHandle;
 use crate::components::lifecycle::{advance, is_zero_duration, LifecycleState};
 use crate::components::{
-    BottomSheet, ChannelSidebar, Composer, FileShareButton, GroveDrawer, MainPaneHeader,
-    MessageList, RightRailWhich, TabBar,
+    BottomSheet, ChannelSidebar, Composer, GroveDrawer, MainPaneHeader, MessageList,
+    RightRailWhich, TabBar,
 };
 use crate::icons;
 use crate::state::{AppState, AppWriteSignals, SettingsTab};
@@ -441,7 +441,6 @@ where
                                             }}
                                         </div>
                                         <div class="input-row">
-                                            <FileShareButton channel=current_channel />
                                             <Composer
                                                 on_send=send
                                                 replying_to=replying_to

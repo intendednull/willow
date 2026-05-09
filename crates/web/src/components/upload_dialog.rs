@@ -25,9 +25,28 @@ use wasm_bindgen::JsCast;
 
 use crate::app::WebClientHandle;
 use crate::icons;
-use crate::upload_state::{use_upload_queue, UploadStatus};
+use crate::upload_state::{use_upload_queue, UploadStatus, MAX_ATTACHMENT_SIZE};
 
-const MAX_ATTACHMENT_SIZE: u64 = 25 * 1024 * 1024;
+/// Build the filename used for paste-from-clipboard images that
+/// arrive without a meaningful name (Chrome delivers `image.png`,
+/// Safari delivers an empty string). Spec
+/// `docs/specs/2026-04-19-ui-design/files-inline.md`
+/// §Paste-to-upload: `pasted-{YYYY-MM-DD-HH-mm-ss}.png`.
+///
+/// Public so the integration-test crate can lock in the format.
+pub fn pasted_image_filename() -> String {
+    let date = js_sys::Date::new_0();
+    format!(
+        "pasted-{:04}-{:02}-{:02}-{:02}-{:02}-{:02}.png",
+        date.get_full_year(),
+        // `get_month` is 0-indexed (January = 0); humanise.
+        date.get_month() + 1,
+        date.get_date(),
+        date.get_hours(),
+        date.get_minutes(),
+        date.get_seconds(),
+    )
+}
 
 /// Format `bytes` as a human-readable size (`1.2 KB`, `7.0 MB`).
 fn format_size(bytes: u64) -> String {
@@ -89,26 +108,7 @@ pub fn UploadDialog(channel: ReadSignal<String>) -> impl IntoView {
                 let Some(files) = el.files() else {
                     return;
                 };
-                for i in 0..files.length() {
-                    let Some(file) = files.get(i) else {
-                        continue;
-                    };
-                    let size = file.size() as u64;
-                    if size > MAX_ATTACHMENT_SIZE {
-                        if let Some(window) = web_sys::window() {
-                            let _ = window.alert_with_message(&format!(
-                                "{} is too large (max 25 MB while the upload \
-                                 dialog is in progress).",
-                                file.name(),
-                            ));
-                        }
-                        continue;
-                    }
-                    let filename = file.name();
-                    let mime = file.type_();
-                    let (id, status) = queue.push(filename.clone(), mime.clone(), size);
-                    spawn_upload(handle_change.clone(), id.clone(), status, file);
-                }
+                let _ = enqueue_file_list(queue, handle_change.clone(), &files, |_, _| None);
             };
 
             let on_cancel_all = move |_ev: web_sys::MouseEvent| {
@@ -248,12 +248,58 @@ pub fn UploadDialog(channel: ReadSignal<String>) -> impl IntoView {
     }
 }
 
+/// Iterate `files` and enqueue each into `queue`, alerting on the
+/// ones that exceed [`MAX_ATTACHMENT_SIZE`] and skipping them.
+/// Returns the number of files that were actually enqueued so the
+/// caller can decide whether to flip `queue.open`.
+///
+/// Shared by the dialog picker path (`<UploadDialog>` `on:change`),
+/// the page-level drop handler (`<DragOverlay>`), and the composer
+/// paste handler — all three drive the same FileReader → blob-store
+/// pump and want the same too-large-file alert UX.
+///
+/// `name_override` allows the caller to swap each file's reported
+/// name (e.g. paste-from-clipboard images that have no filename
+/// upstream get `pasted-{ts}.png`). When `None`, the file's existing
+/// name is used.
+pub(crate) fn enqueue_file_list(
+    queue: crate::upload_state::UploadQueue,
+    handle: Option<WebClientHandle>,
+    files: &web_sys::FileList,
+    mut name_override: impl FnMut(usize, &web_sys::File) -> Option<String>,
+) -> u32 {
+    let mut enqueued = 0u32;
+    for i in 0..files.length() {
+        let Some(file) = files.get(i) else {
+            continue;
+        };
+        let size = file.size() as u64;
+        if size > MAX_ATTACHMENT_SIZE {
+            if let Some(window) = web_sys::window() {
+                let _ = window.alert_with_message(&format!(
+                    "{} is too large (max 25 MB while the upload \
+                     dialog is in progress).",
+                    file.name(),
+                ));
+            }
+            continue;
+        }
+        let filename = name_override(i as usize, &file).unwrap_or_else(|| file.name());
+        let mime = file.type_();
+        let (id, status) = queue.push(filename, mime, size);
+        spawn_upload_for_file(handle.clone(), id, status, file);
+        enqueued += 1;
+    }
+    enqueued
+}
+
 /// Read the picked file's bytes and call `upload_attachment`,
 /// updating the entry's status to [`UploadStatus::Done`] on success
-/// or [`UploadStatus::Failed`] on error. Mirrors the bytes-pump path
-/// in `<FileShareButton>` but writes to the queue's row signal
-/// instead of triggering a send directly.
-fn spawn_upload(
+/// or [`UploadStatus::Failed`] on error. Used by the dialog picker
+/// path, the page-level drag-and-drop overlay, and the composer
+/// paste handler — all three pump bytes through the same FileReader
+/// → blob-store route.
+pub(crate) fn spawn_upload_for_file(
     handle: Option<WebClientHandle>,
     _id: String,
     status: RwSignal<UploadStatus>,

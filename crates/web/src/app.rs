@@ -6,8 +6,8 @@ use send_wrapper::SendWrapper;
 use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, VoiceSignalPayload};
 
 use crate::components::{
-    AddServerPanel, CallPage, ChannelSidebar, CommandPalette, Composer, FileShareButton, GroveRail,
-    JoinPage, MainPaneHeader, MessageList, MobileShell, ReadOnlyBanner, RightRail, RightRailWhich,
+    AddServerPanel, CallPage, ChannelSidebar, CommandPalette, Composer, GroveRail, JoinPage,
+    MainPaneHeader, MessageList, MobileShell, ReadOnlyBanner, RightRail, RightRailWhich,
     SettingsPanel, ToastStackView, UploadDialog, WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
@@ -771,6 +771,21 @@ pub fn App() -> impl IntoView {
             <crate::components::OfflineStrip/>
             <crate::components::ReconnectionToast/>
             <crate::components::WelcomeBackBanner/>
+            // Phase 3b T10 — page-level drag-and-drop overlay.
+            // Installs document-level drag/drop listeners that route
+            // dropped files into the same `UploadQueue` the dialog
+            // reads. Mounted at the app shell so the listeners are
+            // active for every route.
+            <crate::components::DragOverlay/>
+            // Phase 3b T8 — modal upload sheet, mounted at the app
+            // shell so it's visible from both desktop + mobile shells
+            // (the previous mount inside `.shell-desktop` rendered
+            // nothing on mobile because CSS sets that subtree to
+            // `display:none`). Visibility is owned by `queue.open`
+            // and CSS positions it as a fixed overlay regardless of
+            // parent. Channel signal comes from the same app-state
+            // store both shells consume.
+            <UploadDialog channel=current_channel />
             {move || {
                 // Join link takes priority over everything.
                 if join_token_signal.get().is_some() {
@@ -1218,12 +1233,11 @@ pub fn App() -> impl IntoView {
                                             // user taps `post` from the banner.
                                             // Uses a class toggle (CSS
                                             // `.input-row--hidden`) rather than
-                                            // unmounting so the FileShareButton
-                                            // and Composer state stays. The
-                                            // typing indicator is owned by
-                                            // <Composer> per phase-3a §T11/T12,
-                                            // so no separate row is rendered
-                                            // here.
+                                            // unmounting so the Composer state
+                                            // stays. The typing indicator is
+                                            // owned by <Composer> per phase-3a
+                                            // §T11/T12, so no separate row is
+                                            // rendered here.
                                             <div
                                                 class=move || {
                                                     if archived_band.get() && !composer_revealed.get() {
@@ -1233,9 +1247,6 @@ pub fn App() -> impl IntoView {
                                                     }
                                                 }
                                             >
-                                                <FileShareButton
-                                                    channel=current_channel
-                                                />
                                                 <Composer
                                                     on_send=send2
                                                     replying_to=replying_to
@@ -1265,13 +1276,6 @@ pub fn App() -> impl IntoView {
                                                     })
                                                 />
                                             </div>
-                                            // Phase 3b T8 — modal upload sheet, opened by
-                                            // <FileShareButton> (or future drag/paste handlers)
-                                            // via the shared UploadQueue context. Mounted at
-                                            // the chat-pane scope so `current_channel` is in
-                                            // scope; visibility is owned by `queue.open` and
-                                            // CSS positions it as a fixed overlay.
-                                            <UploadDialog channel=current_channel />
                                         </main>
                                     }.into_any()
                                 }
