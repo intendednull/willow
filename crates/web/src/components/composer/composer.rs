@@ -555,8 +555,7 @@ pub fn Composer(
     // the spec default shelf so the picker's recent row never
     // collapses.
     let (emoji_picker_open, set_emoji_picker_open) = signal(false);
-    let picker_recent: Signal<Vec<String>> =
-        crate::reaction_recency::use_recent_reactions();
+    let picker_recent: Signal<Vec<String>> = crate::reaction_recency::use_recent_reactions();
 
     // Attach button: stub click handler per plan §Ambiguity decisions
     // point 5; full file dialog lands in `files-inline.md` Phase 3b.
