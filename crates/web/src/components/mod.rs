@@ -122,6 +122,7 @@ mod profile_card;
 mod profile_popover;
 mod profile_sheet;
 mod queue_pill;
+pub mod reactions;
 mod read_only_banner;
 mod reconnection_toast;
 mod relay_signal_button;

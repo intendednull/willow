@@ -6287,7 +6287,7 @@ mod basic_flow {
         simulate_click(&emojis[0]);
         tick().await;
         assert!(
-            wait_for(&container, ".shell-desktop .reaction", 10_000).await,
+            wait_for(&container, ".shell-desktop .reaction-pill", 10_000).await,
             "reaction did not render after picking emoji"
         );
 
@@ -6298,7 +6298,7 @@ mod basic_flow {
         let mut found = false;
         for _ in 0..375 {
             if container2
-                .query_selector(".shell-desktop .reaction")
+                .query_selector(".shell-desktop .reaction-pill")
                 .unwrap()
                 .is_some()
             {
@@ -6862,7 +6862,7 @@ mod mobile_actions {
         simulate_click(&emoji_buttons[0]);
         tick().await;
         assert!(
-            wait_for(&container, ".shell-mobile .reaction", 10_000).await,
+            wait_for(&container, ".shell-mobile .reaction-pill", 10_000).await,
             "reaction did not render after picking emoji in sheet"
         );
     }

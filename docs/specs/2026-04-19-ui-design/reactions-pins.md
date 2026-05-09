@@ -1,7 +1,7 @@
 # Reactions and pins — emoji reactions, picker, pinned panel
 
 **Parent:** [README.md](README.md)
-**Status:** draft
+**Status:** landed (phase 3c PR #634 foundation + 3c.2 PR #635 picker wireup + 3c.3 close-out)
 **Dependencies:** [`foundation.md`](foundation.md),
 [`layout-primitives.md`](layout-primitives.md),
 [`message-row.md`](message-row.md)
@@ -208,23 +208,33 @@ Color is never the sole signifier.
 
 ## Acceptance criteria
 
-- [ ] Reaction pills render with count; click toggles the local
+- [x] Reaction pills render with count; click toggles the local
       user's reaction; hover shows reactor list (desktop); add-chip
       appears on row hover (desktop); mobile adds via the action
-      sheet.
-- [ ] Quick-reaction list feeds both the desktop hover toolbar and
+      sheet. *(`<ReactionStrip>` + `reactor_tooltip` + `<AddReactionChip>`
+      — phase 3c.3.)*
+- [x] Quick-reaction list feeds both the desktop hover toolbar and
       the mobile action sheet; defaults to `👍 ❤️ 🍃 💚 👀` until a
-      channel-scoped recency list supersedes it.
-- [ ] Emoji picker opens at 320 × 360, with search, categories,
+      channel-scoped recency list supersedes it. *(LRU on `ChatMeta`
+      + `ReactionRecency` context — phase 3c + 3c.3.)*
+- [x] Emoji picker opens at 320 × 360, with search, categories,
       and recents; arrow keys + `Enter` insert; `Escape` closes.
-- [ ] Pin action is greyed for users without `ManageChannels`, with
+      *(`<EmojiPicker>` — phase 3c + 3c.2 callsite wiring.)*
+- [x] Pin action is greyed for users without `ManageChannels`, with
       the tooltip in §Copy; permitted users can pin and unpin from
       both the desktop overflow menu and the mobile action sheet.
-- [ ] Header pin IconBtn shows a superscript count when > 0 and tints
-      amber; click opens the pinned panel.
-- [ ] Pinned panel lists pinned messages newest-first, jump-to scrolls
+      *(`local_can_manage_channels` + per-entry unpin — phase 3c + 3c.3.)*
+- [x] Header pin IconBtn shows a superscript count when > 0 and tints
+      amber; click opens the pinned panel. *(`<MainPaneHeader>` +
+      `pinned_count` prop — phase 3c.)*
+- [x] Pinned panel lists pinned messages newest-first, jump-to scrolls
       and flashes the parent, unpin honours the permission check.
-- [ ] Every interactive element has an ARIA label per §Accessibility.
+      *(`<PinnedPanel>` rewrite — phase 3c.)*
+- [x] Every interactive element has an ARIA label per §Accessibility.
+      *(`add reaction`, `download {filename}`, `react with {emoji}`,
+      `{emoji} reacted by {count} — toggle your reaction`,
+      `pinned messages ({count})`, `jump to pinned message`,
+      `unpin message`, `close pinned panel` — phase 3c + 3c.3.)*
 
 ## Open questions
 

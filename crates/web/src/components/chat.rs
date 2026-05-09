@@ -219,6 +219,14 @@ pub fn MessageList(
     let kb_on_react = on_react;
     let kb_on_pin = on_pin;
     let kb_on_focus_composer = on_focus_composer;
+    // Phase 3c.3 — gate the `P` keybinding on `ManageChannels` per
+    // spec `reactions-pins.md` §Permission + action. Falls back to
+    // `false` when AppState context is absent (unit-test mounts
+    // without the full shell), so the keystroke is a silent no-op
+    // rather than firing an unauthorised pin event.
+    let kb_can_pin: leptos::prelude::Signal<bool> = use_context::<crate::state::AppState>()
+        .map(|s| s.server.local_can_manage_channels.into())
+        .unwrap_or_else(|| leptos::prelude::Signal::derive(|| false));
 
     let handle_list_keydown = move |ev: web_sys::KeyboardEvent| {
         let msgs = messages.get_untracked();
@@ -293,6 +301,16 @@ pub fn MessageList(
             }
             "p" | "P" => {
                 ev.prevent_default();
+                // Phase 3c.3: silent no-op when the local peer lacks
+                // `ManageChannels` per spec `reactions-pins.md`
+                // §Permission + action. The visible affordances
+                // (overflow menu, action sheet, pinned-panel unpin)
+                // grey out + show the `only stewards can pin here`
+                // tooltip; the keybinding's silent fallback matches
+                // the spec's "no surprises" intent.
+                if !kb_can_pin.get_untracked() {
+                    return;
+                }
                 if let (Some(msg), Some(cb)) = (msgs.get(idx), kb_on_pin) {
                     cb.run(msg.clone());
                 }

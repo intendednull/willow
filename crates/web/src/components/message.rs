@@ -274,13 +274,11 @@ pub fn MessageView(
     let show_edited = message.edited && !message.deleted;
     let author = message.author_display_name.clone();
     let body = message.body.clone();
-    let mut reactions: Vec<(String, usize)> = message
-        .reactions
-        .iter()
-        .map(|(emoji, authors)| (emoji.clone(), authors.len()))
-        .collect();
-    reactions.sort_by(|a, b| a.0.cmp(&b.0));
-    let has_reactions = !reactions.is_empty();
+    // `<ReactionStrip>` (phase 3c.3) sorts + counts internally from
+    // the projection-resolved `HashMap<emoji, reactor display names>`.
+    // We only need the truthy `has_reactions` gate here so the strip
+    // doesn't render an empty `.reactions-strip` div on every row.
+    let has_reactions = !message.reactions.is_empty();
 
     // Phase 2a Task 4: derive self-mention highlight from the
     // projection-populated `mentions` field. The existing `is_mention`
@@ -1344,11 +1342,12 @@ pub fn MessageView(
                             let on_close = Callback::new(move |()| {
                                 set_emoji_picker_open.set(false);
                             });
+                            let recent = crate::reaction_recency::use_recent_reactions();
                             view! {
                                 <Show when=move || emoji_picker_open.get()>
                                     <div class="message-emoji-picker-anchor">
                                         <crate::components::emoji_picker::EmojiPicker
-                                            recent=Signal::derive(Vec::new)
+                                            recent=recent
                                             on_select=on_select
                                             on_close=on_close
                                         />
@@ -1547,24 +1546,31 @@ pub fn MessageView(
             } else { None }}
             {if has_reactions {
                 let react_cb = on_react_for_reactions;
+                let msg_for_strip = message.clone();
+                let raw_reactions = message.reactions.clone();
+                // Local display name from AppState — drives the
+                // `.reaction-pill--reacted` highlight on pills the
+                // viewer has clicked. Falls back to `None` (no
+                // highlight) when the AppState context is absent
+                // (e.g. unit-test mounts without the full shell).
+                let local_name: String = use_context::<crate::state::AppState>()
+                    .map(|app| app.server.display_name.get_untracked())
+                    .unwrap_or_default();
+                let on_react_curried = Callback::new(move |emoji: String| {
+                    if let Some(ref cb) = react_cb {
+                        cb.run((msg_for_strip.clone(), emoji));
+                    }
+                });
+                let on_open_picker = Callback::new(move |()| {
+                    set_emoji_picker_open.set(true);
+                });
                 Some(view! {
-                    <div class="reactions">
-                        {reactions.into_iter().map(|(emoji, count)| {
-                            let emoji_for_click = emoji.clone();
-                            let msg_clone = message.clone();
-                            let cb_clone = react_cb;
-                            view! {
-                                <button class="reaction" on:click=move |ev| {
-                                    ev.stop_propagation();
-                                    if let Some(ref cb) = cb_clone {
-                                        cb.run((msg_clone.clone(), emoji_for_click.clone()));
-                                    }
-                                }>
-                                    {emoji} " " {count.to_string()}
-                                </button>
-                            }
-                        }).collect::<Vec<_>>()}
-                    </div>
+                    <crate::components::reactions::ReactionStrip
+                        reactions=raw_reactions
+                        local_display_name=local_name
+                        on_react=on_react_curried
+                        on_open_picker=on_open_picker
+                    />
                 })
             } else {
                 None

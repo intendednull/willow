@@ -6963,3 +6963,92 @@ select:focus-visible {
     right: 8px;
 }
 
+/* ── Phase 3c.3 — reactions strip + add-reaction chip ──────────────────
+ *
+ * Spec: docs/specs/2026-04-19-ui-design/reactions-pins.md §Reactions.
+ * Foundation tokens only.
+ */
+
+.reactions-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 6px;
+}
+
+.reaction-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    color: var(--ink-1);
+    font-size: 12px;
+    cursor: pointer;
+    line-height: 1;
+}
+
+@media (max-width: 720px) {
+    .reaction-pill {
+        font-size: 11px;
+    }
+}
+
+.reaction-pill:hover,
+.reaction-pill:focus-visible {
+    border-color: var(--ink-3);
+    outline: none;
+}
+
+.reaction-pill--reacted {
+    border-color: var(--moss-1);
+    background: color-mix(in oklab, var(--moss-2) 18%, var(--bg-2));
+}
+
+.reaction-pill__count {
+    color: var(--ink-2);
+    font-weight: 500;
+}
+
+/* Add-reaction chip — desktop hover-only per spec. Hidden on mobile
+ * because the action sheet exposes the same flow. */
+.add-reaction-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: transparent;
+    border: 1px dashed var(--line);
+    color: var(--ink-3);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 120ms;
+}
+
+.message:hover .add-reaction-chip,
+.message:focus-within .add-reaction-chip,
+.add-reaction-chip:focus-visible {
+    opacity: 1;
+}
+
+.add-reaction-chip:hover {
+    color: var(--ink-1);
+    border-color: var(--ink-3);
+}
+
+@media (max-width: 720px) {
+    .add-reaction-chip {
+        display: none;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .add-reaction-chip {
+        transition: none;
+    }
+}
+
+
