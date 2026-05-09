@@ -192,6 +192,11 @@ pub fn App() -> impl IntoView {
     // the same `UploadQueue`.
     provide_context(crate::upload_state::UploadQueue::new());
 
+    // Phase 3b T6 — single-instance voice-note player. Each
+    // `<AttachmentVoiceNote>` reads this from context to coordinate
+    // "starting one pauses any other" per spec §Voice note.
+    provide_context(crate::voice_note_player::VoiceNotePlayer::new());
+
     // Phase 3c.3 — per-channel reaction recency. Drives the picker's
     // "recent" shelf in both the composer's emoji button and the
     // row's "more reactions" toolbar. The Resource refreshes when

@@ -862,7 +862,11 @@ pub fn MessageView(
                     }
                     .into_any(),
                     AttachmentKind::VoiceNote => view! {
-                        <AttachmentVoiceNote filename=attachment.filename.clone() />
+                        <AttachmentVoiceNote
+                            hash=attachment.hash.clone()
+                            filename=attachment.filename.clone()
+                            size_bytes=attachment.size_bytes
+                        />
                     }
                     .into_any(),
                 };

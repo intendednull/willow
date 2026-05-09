@@ -215,9 +215,13 @@ easing. Drag overlay crossfades in under reduced motion.
 - [x] File cards render with mime icon, filename, size, download
       IconBtn, and respect `max-width: 420px` desktop / `100%` mobile.
       *(`<AttachmentFileCard>` — phase 3b T4.)*
-- [ ] Voice notes render the waveform + play / pause + mm:ss timer
-      card, and starting one pauses any other. *(Placeholder ships in
-      phase 3b; full surface in T6.)*
+- [x] Voice notes render the waveform + play / pause + mm:ss timer
+      card, and starting one pauses any other.
+      *(`<AttachmentVoiceNote>` + `VoiceNotePlayer` coordinator —
+      phase 3b T6. Waveform peaks come from `AudioContext.decodeAudioData`
+      with a flat baseline fallback if decoding fails; playback uses
+      a card-local `<audio>` element so the player works even when
+      the codec for waveform extraction isn't available.)*
 - [x] Upload dialog opens from the composer attach button with a
       picker row, per-file rows + cancel, and the footer actions in
       §Copy. *(`<UploadDialog>` + `UploadQueue` context — phase 3b T8.

@@ -15228,3 +15228,136 @@ mod phase_3b_paste_filename {
         }
     }
 }
+
+/// Phase 3b T6 — voice-note card mounts the spec surface and the
+/// single-instance coordinator pauses other cards on claim.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/files-inline.md` §Voice
+/// note + acceptance criteria AG-5 / AG-6. The DOM tier covers the
+/// surface (toggle button + waveform + timer) and the coordinator's
+/// claim/release semantics. Real audio decoding + playback timing
+/// needs a real browser; that's out of scope for the wasm-pack
+/// harness (no codec backend), so the test here drives the
+/// `VoiceNotePlayer` claim signal directly to assert other cards
+/// react to a competing claim.
+mod phase_3b_voice_note {
+    use super::*;
+    use willow_web::components::attachment::AttachmentVoiceNote;
+    use willow_web::voice_note_player::VoiceNotePlayer;
+
+    fn mount_card(player: VoiceNotePlayer, hash: &str, filename: &str) -> web_sys::HtmlElement {
+        let h = hash.to_string();
+        let f = filename.to_string();
+        mount_test(move || {
+            provide_context(player);
+            view! {
+                <AttachmentVoiceNote
+                    hash=h
+                    filename=f
+                    size_bytes=4_096
+                />
+            }
+        })
+    }
+
+    #[wasm_bindgen_test]
+    async fn voice_note_card_renders_spec_surface() {
+        let player = VoiceNotePlayer::new();
+        let container = mount_card(player, "deadbeef".repeat(8).as_str(), "hello.opus");
+        tick().await;
+
+        // Spec §Voice note: card with toggle button, waveform strip,
+        // timer.
+        let card =
+            query(&container, ".attachment--voice-note").expect("voice-note card root must mount");
+        assert!(query(&container, ".attachment__voice-toggle").is_some());
+        assert!(query(&container, ".attachment__voice-waveform").is_some());
+        assert!(query(&container, ".attachment__voice-timer").is_some());
+
+        // Initial timer reads `0:00 / --:--` (no metadata loaded yet).
+        let timer = query(&container, ".attachment__voice-timer").unwrap();
+        assert_eq!(text(&timer), "0:00 / --:--");
+
+        // Idle aria label is the play form.
+        let toggle = query(&container, ".attachment__voice-toggle").unwrap();
+        let aria = toggle.get_attribute("aria-label").unwrap_or_default();
+        assert!(
+            aria.starts_with("play voice note"),
+            "aria-label starts in play form: {aria}"
+        );
+
+        // The card root contains an <audio> element so playback hooks
+        // can attach. Using contains() avoids brittle DOM ordering.
+        let audio = card.query_selector("audio").unwrap();
+        assert!(audio.is_some(), "card must contain an <audio> element");
+    }
+
+    #[wasm_bindgen_test]
+    async fn second_claim_pauses_first_via_shared_player() {
+        let player = VoiceNotePlayer::new();
+
+        // Two independent cards sharing one player context. The
+        // mounts must outlive every assertion below — the
+        // pause-watching `Effect` only runs while the card is alive.
+        let container_a = mount_card(player, "aaaa".repeat(16).as_str(), "alpha.opus");
+        let _container_b = mount_card(player, "bbbb".repeat(16).as_str(), "beta.opus");
+        tick().await;
+
+        // Drive card A into the "playing" visual state by firing a
+        // synthetic `play` event on its <audio>. The headless
+        // harness can't actually play audio (no codec backend), but
+        // the event handler doesn't care — it just flips the local
+        // `playing` signal that drives the toggle button's
+        // aria-label.
+        let audio_a = container_a
+            .query_selector(".attachment--voice-note audio")
+            .unwrap()
+            .expect("card A must contain an <audio> element");
+        let play_ev = web_sys::Event::new("play").unwrap();
+        audio_a.dispatch_event(&play_ev).unwrap();
+        tick().await;
+
+        let toggle_a = container_a
+            .query_selector(".attachment--voice-note .attachment__voice-toggle")
+            .unwrap()
+            .expect("card A must contain the toggle button");
+        let aria_playing = toggle_a.get_attribute("aria-label").unwrap_or_default();
+        assert!(
+            aria_playing.starts_with("pause voice note"),
+            "after the play event card A advertises pause: {aria_playing}"
+        );
+
+        // Card B's id matches its own derived format
+        // (`vn-{hash[..12]}-{filename}`); claiming a competing id is
+        // enough to drive A's pause-effect because A's id won't
+        // match. Use B's *real* id so the test exercises the
+        // honest cross-card signal flow.
+        let beta_id = format!("vn-{}-beta.opus", &"bbbb".repeat(16)[..12]);
+        player.claim(beta_id.clone());
+        tick().await;
+        assert_eq!(
+            player.active.get_untracked().as_deref(),
+            Some(beta_id.as_str())
+        );
+
+        // Card A's pause-effect fired: aria-label flipped back to
+        // play form *and* the local `playing` mirror cleared. Both
+        // are what AG-6 cares about — the actual `audio.pause()`
+        // call against the real element is verified by inspection
+        // (the headless `<audio>` has nothing to pause).
+        let aria_paused = toggle_a.get_attribute("aria-label").unwrap_or_default();
+        assert!(
+            aria_paused.starts_with("play voice note"),
+            "after a competing claim card A flips back to play: {aria_paused}"
+        );
+
+        // `release_if_active` only clears when the active id matches
+        // — defensive against a stale paused-card racing a fresh
+        // claim from somebody else.
+        player.release_if_active("alpha");
+        assert_eq!(
+            player.active.get_untracked().as_deref(),
+            Some(beta_id.as_str())
+        );
+    }
+}

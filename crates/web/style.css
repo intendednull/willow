@@ -6970,6 +6970,97 @@ select:focus-visible {
     line-height: 1.4;
 }
 
+/* ── Voice-note card ──────────────────────────────────────────────
+ * Spec: docs/specs/2026-04-19-ui-design/files-inline.md §Voice note.
+ * `--bg-2` card on `--line` border, radius 10 px, 10/12 padding,
+ * max-width 420 px desktop. Play/pause IconBtn (32x32, --moss-2),
+ * waveform strip (24 px tall, --moss-1 bars on --bg-1, --moss-2
+ * progress fill), elapsed/total timer in font-mono / 11 px / --ink-3
+ * with mm:ss / mm:ss format.
+ */
+
+.attachment--voice-note {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+    max-width: 420px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+@media (max-width: 720px) {
+    .attachment--voice-note {
+        max-width: 100%;
+    }
+}
+
+.attachment__voice-toggle {
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    border-radius: 16px;
+    border: 1px solid var(--moss-2);
+    background: transparent;
+    color: var(--moss-2);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.attachment__voice-toggle:hover,
+.attachment__voice-toggle:focus-visible {
+    background: rgba(66, 92, 61, 0.18);
+    color: var(--ink-0);
+    outline: none;
+}
+
+.attachment__voice-toggle .icon {
+    font-size: 14px;
+}
+
+.attachment__voice-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.attachment__voice-waveform {
+    width: 100%;
+    height: 24px;
+    display: block;
+    background: var(--bg-1);
+    border-radius: 4px;
+}
+
+.attachment__voice-bar {
+    fill: var(--moss-1);
+}
+
+.attachment__voice-bar--played {
+    fill: var(--moss-2);
+}
+
+.attachment__voice-timer {
+    color: var(--ink-3);
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+.attachment__voice-audio {
+    /* Native controls suppressed — the card drives play/pause via the
+       toggle button. The element stays focusable for screen readers
+       so they still announce state changes. */
+    display: none;
+}
+
 /* ── Phase 3c — emoji picker, pinned panel, header pin badge ───────────
  *
  * Spec: docs/specs/2026-04-19-ui-design/reactions-pins.md.
