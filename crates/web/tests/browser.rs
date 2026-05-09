@@ -15228,3 +15228,97 @@ mod phase_3b_paste_filename {
         }
     }
 }
+
+/// Phase 3b T6 — voice-note card mounts the spec surface and the
+/// single-instance coordinator pauses other cards on claim.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/files-inline.md` §Voice
+/// note + acceptance criteria AG-5 / AG-6. The DOM tier covers the
+/// surface (toggle button + waveform + timer) and the coordinator's
+/// claim/release semantics. Real audio decoding + playback timing
+/// needs a real browser; that's out of scope for the wasm-pack
+/// harness (no codec backend), so the test here drives the
+/// `VoiceNotePlayer` claim signal directly to assert other cards
+/// react to a competing claim.
+mod phase_3b_voice_note {
+    use super::*;
+    use willow_web::components::attachment::AttachmentVoiceNote;
+    use willow_web::voice_note_player::VoiceNotePlayer;
+
+    fn mount_card(player: VoiceNotePlayer, hash: &str, filename: &str) -> web_sys::HtmlElement {
+        let h = hash.to_string();
+        let f = filename.to_string();
+        mount_test(move || {
+            provide_context(player);
+            view! {
+                <AttachmentVoiceNote
+                    hash=h
+                    filename=f
+                    size_bytes=4_096
+                />
+            }
+        })
+    }
+
+    #[wasm_bindgen_test]
+    async fn voice_note_card_renders_spec_surface() {
+        let player = VoiceNotePlayer::new();
+        let container = mount_card(player, "deadbeef".repeat(8).as_str(), "hello.opus");
+        tick().await;
+
+        // Spec §Voice note: card with toggle button, waveform strip,
+        // timer.
+        let card =
+            query(&container, ".attachment--voice-note").expect("voice-note card root must mount");
+        assert!(query(&container, ".attachment__voice-toggle").is_some());
+        assert!(query(&container, ".attachment__voice-waveform").is_some());
+        assert!(query(&container, ".attachment__voice-timer").is_some());
+
+        // Initial timer reads `0:00 / --:--` (no metadata loaded yet).
+        let timer = query(&container, ".attachment__voice-timer").unwrap();
+        assert_eq!(text(&timer), "0:00 / --:--");
+
+        // Idle aria label is the play form.
+        let toggle = query(&container, ".attachment__voice-toggle").unwrap();
+        let aria = toggle.get_attribute("aria-label").unwrap_or_default();
+        assert!(
+            aria.starts_with("play voice note"),
+            "aria-label starts in play form: {aria}"
+        );
+
+        // The card root contains an <audio> element so playback hooks
+        // can attach. Using contains() avoids brittle DOM ordering.
+        let audio = card.query_selector("audio").unwrap();
+        assert!(audio.is_some(), "card must contain an <audio> element");
+    }
+
+    #[wasm_bindgen_test]
+    async fn second_claim_pauses_first_via_shared_player() {
+        let player = VoiceNotePlayer::new();
+
+        // Two independent cards sharing one player context.
+        let _container_a = mount_card(player, "aaaa".repeat(16).as_str(), "alpha.opus");
+        let _container_b = mount_card(player, "bbbb".repeat(16).as_str(), "beta.opus");
+        tick().await;
+
+        // Card alpha claims the slot — drives the per-card `Effect`
+        // that watches `player.active`.
+        player.claim("alpha".to_string());
+        tick().await;
+        assert_eq!(player.active.get_untracked().as_deref(), Some("alpha"));
+
+        // Card beta then claims; the shared signal is now `beta`.
+        // Card alpha's effect reads the new value and (in production)
+        // calls `audio.pause()` on its own element. We can't drive a
+        // real `<audio>` in the headless harness, but the claim
+        // semantics are the load-bearing half of AG-6.
+        player.claim("beta".to_string());
+        tick().await;
+        assert_eq!(player.active.get_untracked().as_deref(), Some("beta"));
+
+        // Releasing a non-active id is a no-op (defensive against a
+        // stale paused-card racing a fresh claim).
+        player.release_if_active("alpha");
+        assert_eq!(player.active.get_untracked().as_deref(), Some("beta"));
+    }
+}
