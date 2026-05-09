@@ -6862,7 +6862,7 @@ mod mobile_actions {
         simulate_click(&emoji_buttons[0]);
         tick().await;
         assert!(
-            wait_for(&container, ".shell-mobile .reaction", 10_000).await,
+            wait_for(&container, ".shell-mobile .reaction-pill", 10_000).await,
             "reaction did not render after picking emoji in sheet"
         );
     }
