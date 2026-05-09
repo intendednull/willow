@@ -272,6 +272,13 @@ pub struct ServerSignals {
     pub ephemeral_meta: ReadSignal<EphemeralMetaList>,
     /// Peer IDs that have the SyncProvider permission.
     pub sync_provider_ids: ReadSignal<HashSet<String>>,
+    /// `true` when the local peer holds `Permission::ManageChannels`
+    /// (or is the implicit-all-permissions admin/owner). Phase 3c.3
+    /// gates the row `P` keyboard binding + the pinned-panel unpin
+    /// button on this signal per spec
+    /// `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+    /// §Permission + action.
+    pub local_can_manage_channels: ReadSignal<bool>,
     /// Peer IDs that have the Administrator permission.
     pub admin_ids: ReadSignal<HashSet<String>>,
 }
@@ -404,6 +411,7 @@ pub struct ServerWriteSignals {
     pub set_ephemeral_meta: WriteSignal<EphemeralMetaList>,
     pub set_sync_provider_ids: WriteSignal<HashSet<String>>,
     pub set_admin_ids: WriteSignal<HashSet<String>>,
+    pub set_local_can_manage_channels: WriteSignal<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -507,6 +515,7 @@ pub fn create_signals() -> InitialSignals {
     let (ephemeral_meta, set_ephemeral_meta) = signal(EphemeralMetaList::new());
     let (sync_provider_ids, set_sync_provider_ids) = signal(HashSet::<String>::new());
     let (admin_ids, set_admin_ids) = signal(HashSet::<String>::new());
+    let (local_can_manage_channels, set_local_can_manage_channels) = signal(false);
 
     // UI panel signals (purely local — never derived)
     let (show_settings, set_show_settings) = signal(false);
@@ -626,6 +635,7 @@ pub fn create_signals() -> InitialSignals {
             ephemeral_meta,
             sync_provider_ids,
             admin_ids,
+            local_can_manage_channels,
         },
         ui: UiState {
             show_settings,
@@ -713,6 +723,7 @@ pub fn create_signals() -> InitialSignals {
             set_ephemeral_meta,
             set_sync_provider_ids,
             set_admin_ids,
+            set_local_can_manage_channels,
         },
         ui: UiWriteSignals {
             set_show_settings,
@@ -904,6 +915,23 @@ pub fn wire_derived_signals<N: willow_network::Network>(
             .collect::<std::collections::HashSet<String>>()
     });
     leptos::prelude::Effect::new(move || write.server.set_admin_ids.set(admin_ids.get()));
+
+    // Phase 3c.3 — gate the row `P` keybinding + the pinned-panel
+    // unpin button on `Permission::ManageChannels`. Admins implicitly
+    // have all permissions; explicit grants flow through
+    // `peer_permissions`.
+    let local_can_manage = derived_signal(&views.event_state, system, move |es| {
+        es.has_permission(
+            &local_pid,
+            &willow_client::willow_state::Permission::ManageChannels,
+        )
+    });
+    leptos::prelude::Effect::new(move || {
+        write
+            .server
+            .set_local_can_manage_channels
+            .set(local_can_manage.get())
+    });
 
     let channel_kinds = derived_signal(&views.event_state, system, |es| {
         es.channels
