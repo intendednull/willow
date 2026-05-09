@@ -1321,6 +1321,181 @@ select:focus-visible {
     padding: 6px 10px;
 }
 
+/* ── Upload Dialog ───────────────────────────────────────────────── */
+/* Spec: docs/specs/2026-04-19-ui-design/files-inline.md §Upload dialog.
+   Modal sheet on --bg-1, --line border, radius 12 px, --shadow-2.
+   Scrim absorbs click-away dismissal. */
+
+.upload-dialog__scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 900;
+}
+
+.upload-dialog {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 901;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow-2);
+    padding: 16px;
+    min-width: 360px;
+    max-width: 520px;
+    width: calc(100vw - 32px);
+    max-height: calc(100vh - 64px);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.upload-dialog__picker {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.upload-dialog__browse {
+    background: transparent;
+    color: var(--ink-0);
+    border: 1px solid var(--moss-1);
+    border-radius: 8px;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 14px;
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--transition-fast);
+}
+
+.upload-dialog__browse:hover {
+    background: rgba(66, 92, 61, 0.18);
+}
+
+.upload-dialog__hint {
+    color: var(--ink-2);
+    font-size: 13px;
+}
+
+.upload-dialog__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    max-height: 50vh;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.upload-dialog__list:empty {
+    display: none;
+}
+
+.upload-dialog__row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.upload-dialog__icon {
+    color: var(--ink-2);
+    font-size: 18px;
+    flex-shrink: 0;
+}
+
+.upload-dialog__filename {
+    flex: 1;
+    min-width: 0;
+    color: var(--ink-1);
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.upload-dialog__size {
+    color: var(--ink-2);
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.upload-dialog__status {
+    color: var(--ink-2);
+    font-size: 12px;
+    flex-shrink: 0;
+    min-width: 70px;
+    text-align: right;
+}
+
+.upload-dialog__cancel {
+    background: transparent;
+    border: none;
+    color: var(--ink-2);
+    cursor: pointer;
+    padding: 4px 6px;
+    border-radius: 6px;
+    flex-shrink: 0;
+    transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.upload-dialog__cancel:hover {
+    color: var(--ink-0);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.upload-dialog__footer {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+}
+
+.upload-dialog__spacer {
+    flex: 1;
+}
+
+.upload-dialog__cancel-all,
+.upload-dialog__confirm {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--ink-1);
+    border-radius: 8px;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 14px;
+    -webkit-tap-highlight-color: transparent;
+    transition: background var(--transition-fast), border-color var(--transition-fast),
+        color var(--transition-fast);
+}
+
+.upload-dialog__cancel-all:hover {
+    color: var(--ink-0);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.upload-dialog__confirm {
+    border-color: var(--moss-1);
+    color: var(--ink-0);
+}
+
+.upload-dialog__confirm:hover:not([disabled]) {
+    background: rgba(66, 92, 61, 0.18);
+}
+
+.upload-dialog__confirm[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 /* ── Member List (right sidebar) ─────────────────────────────────── */
 
 /* On desktop, the wrapper is transparent -- member-list renders normally */

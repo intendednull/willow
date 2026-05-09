@@ -15023,3 +15023,111 @@ mod phase_3a_composer {
         );
     }
 }
+
+/// Phase 3b T8 — `<UploadDialog>` mount and `confirm_disabled` flip.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/files-inline.md` §Upload dialog.
+/// Lowest-tier coverage per CLAUDE.md: a single-client DOM render that
+/// asserts (a) visibility tracks `queue.open`, (b) the picker / scrim /
+/// footer all mount, and (c) the `attach to message` button's
+/// `disabled` state flips when at least one entry resolves to
+/// `Done(_)`.
+mod phase_3b_upload_dialog {
+    use super::*;
+    use willow_network::BlobHash;
+    use willow_web::components::UploadDialog;
+    use willow_web::upload_state::{UploadQueue, UploadStatus};
+
+    fn mount_dialog(queue: UploadQueue, channel: ReadSignal<String>) -> web_sys::HtmlElement {
+        mount_test(move || {
+            provide_context(queue);
+            view! { <UploadDialog channel=channel /> }
+        })
+    }
+
+    #[wasm_bindgen_test]
+    async fn dialog_hidden_until_queue_opens() {
+        let queue = UploadQueue::new();
+        let (channel, _) = signal("general".to_string());
+        let container = mount_dialog(queue, channel);
+        tick().await;
+
+        // Closed: no scrim, no sheet.
+        assert!(query(&container, ".upload-dialog__scrim").is_none());
+        assert!(query(&container, ".upload-dialog").is_none());
+
+        // Flip open and confirm the picker, scrim, and footer appear.
+        queue.open.set(true);
+        tick().await;
+        assert!(query(&container, ".upload-dialog__scrim").is_some());
+        assert!(query(&container, ".upload-dialog").is_some());
+        assert!(
+            query(&container, ".upload-dialog__browse").is_some(),
+            "picker browse button must mount"
+        );
+        assert!(
+            query(&container, ".upload-dialog__cancel-all").is_some(),
+            "footer cancel-all must mount"
+        );
+        assert!(
+            query(&container, ".upload-dialog__confirm").is_some(),
+            "footer confirm must mount"
+        );
+
+        // Flip closed and confirm everything tears down.
+        queue.open.set(false);
+        tick().await;
+        assert!(query(&container, ".upload-dialog__scrim").is_none());
+        assert!(query(&container, ".upload-dialog").is_none());
+    }
+
+    #[wasm_bindgen_test]
+    async fn confirm_button_enables_when_an_entry_completes() {
+        let queue = UploadQueue::new();
+        let (channel, _) = signal("general".to_string());
+        let container = mount_dialog(queue, channel);
+
+        queue.open.set(true);
+        tick().await;
+        let confirm = query(&container, ".upload-dialog__confirm")
+            .expect("confirm button must mount when dialog is open")
+            .dyn_into::<web_sys::HtmlButtonElement>()
+            .unwrap();
+        assert!(
+            confirm.disabled(),
+            "confirm starts disabled with an empty queue"
+        );
+
+        // Push an entry — still uploading, still disabled.
+        let (_id, status) = queue.push("notes.txt".to_string(), "text/plain".to_string(), 42);
+        tick().await;
+        assert!(
+            confirm.disabled(),
+            "confirm stays disabled while the only entry is still Uploading"
+        );
+
+        // Flip the row to Done — confirm enables.
+        let dummy_hash = BlobHash::from_bytes([0u8; 32]);
+        status.set(UploadStatus::Done(dummy_hash));
+        tick().await;
+        assert!(
+            !confirm.disabled(),
+            "confirm enables once at least one entry resolves to Done"
+        );
+
+        // A row landing in Failed should not re-enable confirm by
+        // itself. Push a second entry, mark it Failed; confirm stays
+        // tied to the first row.
+        let (_id2, status2) = queue.push(
+            "broken.bin".to_string(),
+            "application/octet-stream".to_string(),
+            7,
+        );
+        status2.set(UploadStatus::Failed("nope".to_string()));
+        tick().await;
+        assert!(
+            !confirm.disabled(),
+            "confirm stays enabled because the first entry is still Done"
+        );
+    }
+}

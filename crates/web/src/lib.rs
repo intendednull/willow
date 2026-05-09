@@ -24,5 +24,6 @@ pub mod state_bridge;
 #[cfg(feature = "test-hooks")]
 pub mod test_hooks;
 pub mod trust_store;
+pub mod upload_state;
 pub mod util;
 pub mod voice;
