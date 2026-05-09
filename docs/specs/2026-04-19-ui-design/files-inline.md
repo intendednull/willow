@@ -218,10 +218,12 @@ easing. Drag overlay crossfades in under reduced motion.
 - [ ] Voice notes render the waveform + play / pause + mm:ss timer
       card, and starting one pauses any other. *(Placeholder ships in
       phase 3b; full surface in T6.)*
-- [ ] Upload dialog opens from the composer attach button with a
-      picker row, per-file progress + cancel, and the footer actions
-      in §Copy. *(Phase 3b ships a single-file direct upload via the
-      paperclip; full dialog is T8.)*
+- [x] Upload dialog opens from the composer attach button with a
+      picker row, per-file rows + cancel, and the footer actions in
+      §Copy. *(`<UploadDialog>` + `UploadQueue` context — phase 3b T8.
+      v1 ships binary `uploading` / `done` / `failed` status; the
+      progress bar drops in once `iroh-blobs` exposes incremental
+      progress hooks.)*
 - [ ] Drag-and-drop anywhere in the desktop window opens the upload
       dialog with dropped files enqueued; the overlay uses the copy
       in §Copy. *(T10.)*
@@ -229,8 +231,9 @@ easing. Drag overlay crossfades in under reduced motion.
       upload dialog instead of inserting text. *(T12.)*
 - [ ] Every interactive element has an ARIA label per §Accessibility.
       *(`download {filename}` + `attach file` shipped in phase 3b;
-      voice-note + upload-cancel + drag-overlay labels land with
-      T6 / T8 / T10.)*
+      `cancel upload of {filename}` + dialog `upload attachments` role
+      shipped in T8; voice-note + drag-overlay labels land with
+      T6 / T10.)*
 
 ## Open questions
 
