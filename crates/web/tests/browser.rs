@@ -15131,3 +15131,100 @@ mod phase_3b_upload_dialog {
         );
     }
 }
+
+/// Phase 3b T10 — `<DragOverlay>` visibility tracks `queue.drag_active`.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/files-inline.md`
+/// §Drag-and-drop. The overlay shows while a drag is over the
+/// window; on drop the overlay clears and the dialog opens with
+/// the dropped files enqueued. Real DataTransfer drop semantics
+/// (with files) need a real browser drag — covered by the Playwright
+/// spec (T11). The browser-tier test below pins the cheap half:
+/// signal-driven mount/unmount + spec copy.
+mod phase_3b_drag_overlay {
+    use super::*;
+    use willow_web::components::DragOverlay;
+    use willow_web::upload_state::UploadQueue;
+
+    #[wasm_bindgen_test]
+    async fn overlay_visibility_tracks_drag_active_signal() {
+        let queue = UploadQueue::new();
+        let container = mount_test(move || {
+            provide_context(queue);
+            view! { <DragOverlay /> }
+        });
+        tick().await;
+
+        // Closed: no overlay rendered.
+        assert!(query(&container, ".drag-overlay").is_none());
+
+        // Drag begins → overlay mounts with the spec copy + panel.
+        queue.drag_active.set(true);
+        tick().await;
+        let overlay = query(&container, ".drag-overlay")
+            .expect("overlay must mount when drag_active is true");
+        assert!(query(&container, ".drag-overlay__panel").is_some());
+        let label =
+            query(&container, ".drag-overlay__label").expect("overlay must contain the label span");
+        assert_eq!(text(&label), "drop to attach");
+        assert_eq!(
+            overlay.get_attribute("aria-hidden").as_deref(),
+            Some("true"),
+            "overlay is decorative; aria-hidden hides it from AT trees"
+        );
+
+        // Drag ends → overlay tears down.
+        queue.drag_active.set(false);
+        tick().await;
+        assert!(query(&container, ".drag-overlay").is_none());
+    }
+}
+
+/// Phase 3b T12 — `pasted_image_filename()` produces the spec format.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/files-inline.md`
+/// §Paste-to-upload — `pasted-{YYYY-MM-DD-HH-mm-ss}.png`. The full
+/// paste-to-upload route needs a synthetic ClipboardEvent with
+/// files attached; that's a real-browser concern handled by the
+/// Playwright spec (T11). Here we lock in the filename format.
+mod phase_3b_paste_filename {
+    use super::*;
+    use willow_web::components::upload_dialog::pasted_image_filename;
+
+    #[wasm_bindgen_test]
+    fn filename_matches_spec_pattern() {
+        let name = pasted_image_filename();
+        // pasted-YYYY-MM-DD-HH-mm-ss.png — 26 chars total when the
+        // year is a 4-digit number.
+        assert!(
+            name.starts_with("pasted-"),
+            "filename must start with `pasted-`: {name}"
+        );
+        assert!(
+            name.ends_with(".png"),
+            "filename must end with `.png`: {name}"
+        );
+        // Pattern: pasted-YYYY-MM-DD-HH-mm-ss.png — strip prefix
+        // + suffix, expect five hyphens delimiting six numeric runs.
+        let core = name
+            .strip_prefix("pasted-")
+            .and_then(|s| s.strip_suffix(".png"))
+            .expect("prefix + suffix must round-trip");
+        let parts: Vec<&str> = core.split('-').collect();
+        assert_eq!(
+            parts.len(),
+            6,
+            "expected YYYY-MM-DD-HH-mm-ss (6 parts), got {parts:?}"
+        );
+        assert_eq!(parts[0].len(), 4, "year is 4 digits");
+        for (i, p) in parts.iter().enumerate().skip(1) {
+            assert_eq!(p.len(), 2, "part {i} must be 2-digit zero-padded: {p}");
+        }
+        for p in &parts {
+            assert!(
+                p.chars().all(|c| c.is_ascii_digit()),
+                "all parts must be digits: {p}"
+            );
+        }
+    }
+}

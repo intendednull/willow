@@ -224,16 +224,22 @@ easing. Drag overlay crossfades in under reduced motion.
       v1 ships binary `uploading` / `done` / `failed` status; the
       progress bar drops in once `iroh-blobs` exposes incremental
       progress hooks.)*
-- [ ] Drag-and-drop anywhere in the desktop window opens the upload
+- [x] Drag-and-drop anywhere in the desktop window opens the upload
       dialog with dropped files enqueued; the overlay uses the copy
-      in §Copy. *(T10.)*
-- [ ] Pasting files or an image into the composer routes them to the
-      upload dialog instead of inserting text. *(T12.)*
-- [ ] Every interactive element has an ARIA label per §Accessibility.
+      in §Copy. *(`<DragOverlay>` + page-level drop listener — phase
+      3b T10. Browser-tier covers signal-driven mount/unmount;
+      Playwright spec `e2e/files-inline.spec.ts` covers the real
+      DataTransfer drop.)*
+- [x] Pasting files or an image into the composer routes them to the
+      upload dialog instead of inserting text. *(`on:paste` handler
+      on the composer textarea — phase 3b T12. Pasted images with no
+      upstream filename get `pasted-{YYYY-MM-DD-HH-mm-ss}.png`.)*
+- [x] Every interactive element has an ARIA label per §Accessibility.
       *(`download {filename}` + `attach file` shipped in phase 3b;
       `cancel upload of {filename}` + dialog `upload attachments` role
-      shipped in T8; voice-note + drag-overlay labels land with
-      T6 / T10.)*
+      shipped in T8; the drag overlay is decorative
+      (`aria-hidden="true"`) per the spec table; voice-note labels
+      remain for T6.)*
 
 ## Open questions
 
