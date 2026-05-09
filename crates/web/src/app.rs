@@ -8,7 +8,7 @@ use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, Voi
 use crate::components::{
     AddServerPanel, CallPage, ChannelSidebar, CommandPalette, Composer, FileShareButton, GroveRail,
     JoinPage, MainPaneHeader, MessageList, MobileShell, ReadOnlyBanner, RightRail, RightRailWhich,
-    SettingsPanel, ToastStackView, WelcomeScreen,
+    SettingsPanel, ToastStackView, UploadDialog, WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -184,6 +184,13 @@ pub fn App() -> impl IntoView {
     provide_context(app_state);
     provide_context(write);
     provide_context(trust_store.clone());
+
+    // Phase 3b — `<UploadDialog>` queue context. Provided once at
+    // the shell so the composer attach button (which flips
+    // `queue.open`), the dialog itself (which renders + drives the
+    // queue), and any future drag-overlay or paste handler all see
+    // the same `UploadQueue`.
+    provide_context(crate::upload_state::UploadQueue::new());
 
     // Phase 3c.3 — per-channel reaction recency. Drives the picker's
     // "recent" shelf in both the composer's emoji button and the
@@ -1258,6 +1265,13 @@ pub fn App() -> impl IntoView {
                                                     })
                                                 />
                                             </div>
+                                            // Phase 3b T8 — modal upload sheet, opened by
+                                            // <FileShareButton> (or future drag/paste handlers)
+                                            // via the shared UploadQueue context. Mounted at
+                                            // the chat-pane scope so `current_channel` is in
+                                            // scope; visibility is owned by `queue.open` and
+                                            // CSS positions it as a fixed overlay.
+                                            <UploadDialog channel=current_channel />
                                         </main>
                                     }.into_any()
                                 }

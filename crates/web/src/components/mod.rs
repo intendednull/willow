@@ -139,6 +139,7 @@ mod temp_channel_create;
 mod toast;
 mod trust_badge;
 mod unread_badge;
+mod upload_dialog;
 mod voice;
 mod welcome;
 mod welcome_back_banner;
@@ -198,6 +199,7 @@ pub use temp_channel_create::{TempChannelCreateForm, TEMP_CAP_DAYS, TEMP_DEFAULT
 pub use toast::*;
 pub use trust_badge::*;
 pub use unread_badge::*;
+pub use upload_dialog::UploadDialog;
 pub use voice::*;
 pub use welcome::*;
 pub use welcome_back_banner::*;
