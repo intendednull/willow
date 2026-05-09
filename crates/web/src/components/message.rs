@@ -1092,7 +1092,6 @@ pub fn MessageView(
                 // `@media (max-width: 720px)` CSS rule; the long-press action
                 // sheet remains the mobile entry.
                 let react_cb_for_quick = on_react;
-                let msg_for_more_reactions = msg_for_react.clone();
                 Some(view! {
                     <div class="message-actions">
                         <div class="message-hover-toolbar" role="toolbar" aria-label="message actions">
