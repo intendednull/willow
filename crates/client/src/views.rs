@@ -673,15 +673,18 @@ pub fn compute_messages_view(
                 .collect();
             let mention_segments = parse_mentions(&m.body, &peer_refs, &local_peer_id);
             let mentions = extract_mention_peers(&mention_segments);
-            // Stamp pinned from the channel's pinned-message set.
+            // Stamp pinned from the channel's pinned-message map.
             // `ServerState::channels[cid].pinned_messages` is a
-            // `BTreeSet<EventHash>` owned by the pin-event projection in
-            // willow-state; message-row.md §Pins consumes it here as a
-            // quiet 1 px amber row marker + `pinned` badge.
+            // `BTreeMap<EventHash, PinMetadata>` owned by the
+            // pin-event projection in willow-state; message-row.md
+            // §Pins consumes it here as a quiet 1 px amber row marker +
+            // `pinned` badge. The metadata value (pinner + pin time)
+            // surfaces separately on the pinned-panel projection for
+            // the `pinned by {name} · {when}` footer.
             let pinned = events
                 .channels
                 .get(&m.channel_id)
-                .map(|ch| ch.pinned_messages.contains(&m.id))
+                .map(|ch| ch.pinned_messages.contains_key(&m.id))
                 .unwrap_or(false);
             // Queue-note derivation. Phase 2b wires the full
             // tri-state: `Pending` (local author still waiting on
@@ -1156,7 +1159,9 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, HashMap};
     use willow_identity::Identity;
-    use willow_state::{Channel, ChannelKind, ChatMessage, Member, Profile, ServerState};
+    use willow_state::{
+        Channel, ChannelKind, ChatMessage, Member, PinMetadata, Profile, ServerState,
+    };
 
     fn fresh_state(owner: EndpointId) -> ServerState {
         ServerState::new("srv", "Test", owner)
@@ -1374,7 +1379,13 @@ mod tests {
             .get_mut("ch-1")
             .unwrap()
             .pinned_messages
-            .insert(msg_hash);
+            .insert(
+                msg_hash,
+                PinMetadata {
+                    pinner: owner,
+                    pinned_at_ms: 1_000,
+                },
+            );
 
         let events = Arc::new(state);
         let registry = Arc::new(ServerRegistry::default());
@@ -1403,7 +1414,13 @@ mod tests {
         push_channel(&mut state, "ch-1", "general");
         let msg_hash = push_message(&mut state, "ch-1", owner, "pin me", 1_000);
         let ch = state.channels.get_mut("ch-1").unwrap();
-        ch.pinned_messages.insert(msg_hash);
+        ch.pinned_messages.insert(
+            msg_hash,
+            PinMetadata {
+                pinner: owner,
+                pinned_at_ms: 1_000,
+            },
+        );
         ch.pinned_messages.remove(&msg_hash);
 
         let events = Arc::new(state);

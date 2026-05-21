@@ -218,8 +218,12 @@ impl<N: willow_network::Network> ClientHandle<N> {
             es.channels
                 .get(&channel_id)
                 .map(|ch| {
+                    // `pinned_messages` is keyed by message hash; the
+                    // metadata value (pinner + pin time) is consumed
+                    // by the pinned-panel projection in `views.rs` and
+                    // ignored here.
                     let mut ids: Vec<willow_state::EventHash> =
-                        ch.pinned_messages.iter().cloned().collect();
+                        ch.pinned_messages.keys().copied().collect();
                     ids.sort();
                     ids
                 })

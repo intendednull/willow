@@ -1557,7 +1557,7 @@ fn pin_message_by_member_is_applied() {
         .get("ch1")
         .unwrap()
         .pinned_messages
-        .contains(&msg_hash));
+        .contains_key(&msg_hash));
 }
 
 #[test]
@@ -1622,7 +1622,7 @@ fn pin_message_by_kicked_member_is_rejected() {
             .get("ch1")
             .unwrap()
             .pinned_messages
-            .contains(&msg_hash),
+            .contains_key(&msg_hash),
         "kicked peer must not mutate pinned_messages",
     );
 }
@@ -1690,7 +1690,7 @@ fn pin_message_by_non_member_is_rejected() {
             .get("ch1")
             .unwrap()
             .pinned_messages
-            .contains(&msg_hash),
+            .contains_key(&msg_hash),
         "non-member must not mutate pinned_messages",
     );
 }
@@ -1749,7 +1749,7 @@ fn unpin_message_by_member_is_applied() {
         .get("ch1")
         .unwrap()
         .pinned_messages
-        .contains(&msg_hash));
+        .contains_key(&msg_hash));
 }
 
 #[test]
@@ -1790,7 +1790,7 @@ fn unpin_message_by_kicked_member_is_rejected() {
         .get("ch1")
         .unwrap()
         .pinned_messages
-        .contains(&msg_hash));
+        .contains_key(&msg_hash));
 
     // Kick peer.
     let kick = managed.dag().create_event(
@@ -1833,7 +1833,7 @@ fn unpin_message_by_kicked_member_is_rejected() {
             .get("ch1")
             .unwrap()
             .pinned_messages
-            .contains(&msg_hash),
+            .contains_key(&msg_hash),
         "kicked peer must not unpin",
     );
 }
@@ -1910,7 +1910,7 @@ fn unpin_message_by_non_member_is_rejected() {
             .get("ch1")
             .unwrap()
             .pinned_messages
-            .contains(&msg_hash),
+            .contains_key(&msg_hash),
         "non-member must not unpin",
     );
 }

@@ -720,7 +720,7 @@ fn pin_and_unpin_message() {
     let state = materialize(&dag);
     let channel = state.channels.get(&ch_id).expect("channel should exist");
     assert!(
-        channel.pinned_messages.contains(&msg.hash),
+        channel.pinned_messages.contains_key(&msg.hash),
         "message should be pinned"
     );
 
@@ -737,8 +737,71 @@ fn pin_and_unpin_message() {
     let state = materialize(&dag);
     let channel = state.channels.get(&ch_id).expect("channel should exist");
     assert!(
-        !channel.pinned_messages.contains(&msg.hash),
+        !channel.pinned_messages.contains_key(&msg.hash),
         "message should be unpinned"
+    );
+}
+
+/// `PinMessage` apply must capture the pinner's `EndpointId` and the
+/// event's `timestamp_hint_ms` into `Channel::pinned_messages`. The
+/// `pinned by {name} · {when}` footer in the pinned-panel UI reads
+/// these fields directly from the materialized state without walking
+/// the DAG (see
+/// `docs/specs/2026-05-21-pinned-message-metadata-design.md`).
+#[test]
+fn pin_message_captures_pinner_and_timestamp() {
+    let owner = Identity::generate();
+    let mut dag = test_dag(&owner);
+    let ch_id = "general".to_string();
+    do_emit(
+        &mut dag,
+        &owner,
+        EventKind::CreateChannel {
+            name: "general".into(),
+            channel_id: ch_id.clone(),
+            kind: crate::types::ChannelKind::Text,
+            ephemeral: None,
+        },
+    );
+    let msg = do_emit(
+        &mut dag,
+        &owner,
+        EventKind::Message {
+            channel_id: ch_id.clone(),
+            body: "pin me".into(),
+            reply_to: None,
+        },
+    );
+
+    // Use a non-zero timestamp_hint_ms on the pin event so the
+    // assertion proves the field is copied from the event rather
+    // than defaulted.
+    const PIN_AT_MS: u64 = 1_700_000_123_456;
+    let pin_event = dag.create_event(
+        &owner,
+        EventKind::PinMessage {
+            channel_id: ch_id.clone(),
+            message_id: msg.hash,
+        },
+        vec![],
+        PIN_AT_MS,
+    );
+    dag.insert(pin_event).unwrap();
+
+    let state = materialize(&dag);
+    let channel = state.channels.get(&ch_id).expect("channel exists");
+    let meta = channel
+        .pinned_messages
+        .get(&msg.hash)
+        .expect("PinMessage must populate PinMetadata for the message");
+    assert_eq!(
+        meta.pinner,
+        owner.endpoint_id(),
+        "PinMetadata.pinner must equal event.author",
+    );
+    assert_eq!(
+        meta.pinned_at_ms, PIN_AT_MS,
+        "PinMetadata.pinned_at_ms must equal event.timestamp_hint_ms",
     );
 }
 

@@ -14,9 +14,10 @@ use crate::event::{Event, EventKind, Permission, ProposedAction, MAX_ENCRYPTED_K
 use crate::hash::EventHash;
 use crate::server::{PendingProposal, ServerState};
 use crate::types::{
-    Channel, ChatMessage, FileAttachment, Member, PinnedFragment, Profile, PROFILE_CAP_BIO,
-    PROFILE_CAP_CREST_COLOR, PROFILE_CAP_ELSEWHERE_ENTRY, PROFILE_CAP_ELSEWHERE_LEN,
-    PROFILE_CAP_PINNED_BODY, PROFILE_CAP_PRONOUNS, PROFILE_CAP_SINCE, PROFILE_CAP_TAGLINE,
+    Channel, ChatMessage, FileAttachment, Member, PinMetadata, PinnedFragment, Profile,
+    PROFILE_CAP_BIO, PROFILE_CAP_CREST_COLOR, PROFILE_CAP_ELSEWHERE_ENTRY,
+    PROFILE_CAP_ELSEWHERE_LEN, PROFILE_CAP_PINNED_BODY, PROFILE_CAP_PRONOUNS, PROFILE_CAP_SINCE,
+    PROFILE_CAP_TAGLINE,
 };
 
 /// Truncate `s` to at most `cap` UTF-8 characters.
@@ -381,7 +382,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                     Channel {
                         id: channel_id.clone(),
                         name: name.clone(),
-                        pinned_messages: BTreeSet::new(),
+                        pinned_messages: BTreeMap::new(),
                         kind: kind.clone(),
                         ephemeral: ephemeral.clone(),
                         last_activity_hlc: None,
@@ -833,7 +834,18 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 return ApplyResult::Rejected(format!("author '{}' is not a member", event.author));
             }
             if let Some(ch) = state.channels.get_mut(channel_id) {
-                ch.pinned_messages.insert(*message_id);
+                // Capture pinner identity + pin time from the event so
+                // the pinned-panel UI can render the
+                // `pinned by {name} · {when}` footer without walking
+                // the DAG. See
+                // `docs/specs/2026-05-21-pinned-message-metadata-design.md`.
+                ch.pinned_messages.insert(
+                    *message_id,
+                    PinMetadata {
+                        pinner: event.author,
+                        pinned_at_ms: event.timestamp_hint_ms,
+                    },
+                );
             }
         }
 

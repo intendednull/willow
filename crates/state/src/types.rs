@@ -11,6 +11,29 @@ use willow_identity::EndpointId;
 
 use crate::hash::EventHash;
 
+/// Metadata captured at the moment a message is pinned.
+///
+/// Surfaced by the pinned-panel UI to render the `pinned by {name} ·
+/// {when}` footer (spec
+/// `docs/specs/2026-04-19-ui-design/reactions-pins.md` §Pinned panel
+/// contents, line 123). Populated by the `PinMessage` apply branch in
+/// `materialize::apply_event` from the source event's `author` and
+/// `timestamp_hint_ms` so the metadata travels with the materialized
+/// state and the renderer never has to walk the DAG.
+///
+/// See `docs/specs/2026-05-21-pinned-message-metadata-design.md` for
+/// the schema rationale + the rejected alternatives (derive-from-DAG
+/// and parallel `pin_metadata` index).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinMetadata {
+    /// Peer id of the user who emitted the `PinMessage` event.
+    pub pinner: EndpointId,
+    /// Wall-clock timestamp hint in milliseconds, copied from the
+    /// `PinMessage` event's `timestamp_hint_ms`. Display only — never
+    /// used for ordering inside the state machine.
+    pub pinned_at_ms: u64,
+}
+
 /// Channel kind — text chat or voice.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChannelKind {
@@ -30,9 +53,13 @@ pub struct Channel {
     pub id: String,
     /// Display name (e.g. "general").
     pub name: String,
-    /// Hashes of pinned messages in this channel.
+    /// Pinned messages in this channel keyed by message hash. The
+    /// value carries the pinner identity + pin time so the pinned-panel
+    /// UI can render the `pinned by {name} · {when}` footer without
+    /// walking the DAG (see
+    /// `docs/specs/2026-05-21-pinned-message-metadata-design.md`).
     #[serde(default)]
-    pub pinned_messages: BTreeSet<EventHash>,
+    pub pinned_messages: BTreeMap<EventHash, PinMetadata>,
     /// Text or voice.
     #[serde(default)]
     pub kind: ChannelKind,
