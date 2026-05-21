@@ -2985,6 +2985,209 @@ async fn pinned_panel_close_button_fires_callback() {
     assert!(closed.get_untracked(), "close callback should have fired");
 }
 
+// ── Phase 3c — visibility fixes (PR-A) ──────────────────────────────────────
+//
+// The header pin tint + per-entry unpin button landed component-side in PRs
+// #634 / #635 / #637 but no caller threaded the new optional props, so the
+// affordances never reached the live UI. These tests assert the prop
+// boundary at the smallest granularity that proves the wiring works.
+
+mod phase_3c_callsite_wiring {
+    use leptos::prelude::*;
+    use wasm_bindgen_test::*;
+    use willow_web::components::{MainPaneHeader, PinnedPanel, RightRailWhich};
+
+    use super::{make_msg, mount_test, query, simulate_click, text, tick};
+
+    /// AG-9: when the active channel has pinned messages, the header pin
+    /// button picks up the `.action-btn--lit` class (amber tint) and
+    /// renders an `.action-btn__count--pin` superscript with the count.
+    /// `MainPaneHeader` exposes `pinned_count` as an optional prop — this
+    /// test mounts the component directly with a count of 2, which is
+    /// exactly what `app.rs` now derives from `pinned_messages.len()`.
+    #[wasm_bindgen_test]
+    async fn header_pin_button_renders_amber_with_count_when_channel_has_pins() {
+        let (channel, _) = signal("general".to_string());
+        let (which, _) = signal(RightRailWhich::None);
+        let which_sig = Signal::derive(move || which.get());
+        let pinned_count = Signal::derive(|| 2usize);
+
+        let container = mount_test(move || {
+            view! {
+                <MainPaneHeader
+                    channel=channel
+                    which=which_sig
+                    on_set_which=Callback::new(move |_: RightRailWhich| ())
+                    on_search_click=Callback::new(move |_: ()| ())
+                    pinned_count=pinned_count
+                />
+            }
+        });
+        tick().await;
+
+        let pin_btn = query(&container, "button[aria-label^=\"pinned messages\"]")
+            .expect("pin button rendered");
+        let classes = pin_btn.get_attribute("class").unwrap_or_default();
+        assert!(
+            classes.contains("action-btn--lit"),
+            "pin button has amber `action-btn--lit` class when channel has pins, got: {classes}"
+        );
+
+        let count_el = query(&container, ".action-btn__count--pin")
+            .expect("count overlay rendered when pinned_count > 0");
+        assert_eq!(
+            text(&count_el).trim(),
+            "2",
+            "count overlay shows the pinned-message count"
+        );
+
+        // ARIA label flips to `pinned messages (N)` per spec §Header entry point.
+        let aria = pin_btn.get_attribute("aria-label").unwrap_or_default();
+        assert_eq!(
+            aria, "pinned messages (2)",
+            "aria-label exposes the count to assistive tech"
+        );
+    }
+
+    /// AG-9 (negative): when the channel has no pins, the pin button keeps
+    /// its baseline class set and does NOT render the count overlay. Locks
+    /// in the threshold so a future regression that always renders the
+    /// overlay would fail.
+    #[wasm_bindgen_test]
+    async fn header_pin_button_has_no_count_when_channel_empty() {
+        let (channel, _) = signal("general".to_string());
+        let (which, _) = signal(RightRailWhich::None);
+        let which_sig = Signal::derive(move || which.get());
+        let pinned_count = Signal::derive(|| 0usize);
+
+        let container = mount_test(move || {
+            view! {
+                <MainPaneHeader
+                    channel=channel
+                    which=which_sig
+                    on_set_which=Callback::new(move |_: RightRailWhich| ())
+                    on_search_click=Callback::new(move |_: ()| ())
+                    pinned_count=pinned_count
+                />
+            }
+        });
+        tick().await;
+
+        let pin_btn = query(&container, "button[aria-label=\"pinned messages\"]")
+            .expect("pin button rendered with bare aria-label");
+        let classes = pin_btn.get_attribute("class").unwrap_or_default();
+        assert!(
+            !classes.contains("action-btn--lit"),
+            "pin button has no amber class when count is zero, got: {classes}"
+        );
+        assert!(
+            query(&container, ".action-btn__count--pin").is_none(),
+            "count overlay is absent when pinned_count == 0"
+        );
+    }
+
+    /// AG-8: the pinned panel's per-entry unpin button renders when
+    /// `can_unpin` is true, is enabled, and clicking it fires the
+    /// `on_unpin` callback with the message id.
+    #[wasm_bindgen_test]
+    async fn pinned_panel_per_entry_unpin_renders_when_can_unpin() {
+        let msg = make_msg("Alice", "pin me then unpin me", 1000);
+        let msg_id = msg.id.clone();
+        let (msgs, _) = signal(vec![msg]);
+        let (clicked_id, set_clicked_id) = signal(Option::<String>::None);
+        let can_unpin = Signal::derive(|| true);
+
+        let container = mount_test(move || {
+            view! {
+                <PinnedPanel
+                    messages=msgs
+                    can_unpin=can_unpin
+                    on_jump=move |_: String| {}
+                    on_unpin=Callback::new(move |id: String| set_clicked_id.set(Some(id)))
+                    on_close=move |_| {}
+                />
+            }
+        });
+        tick().await;
+
+        let unpin_btn = query(&container, ".pinned-entry__unpin")
+            .expect("unpin button renders when on_unpin is wired");
+        // Enabled when can_unpin = true.
+        assert_eq!(
+            unpin_btn.get_attribute("aria-disabled").as_deref(),
+            Some("false"),
+            "unpin button is not aria-disabled when caller has ManageChannels"
+        );
+        assert!(
+            !unpin_btn.has_attribute("disabled"),
+            "unpin button is not `disabled` when can_unpin == true"
+        );
+
+        simulate_click(&unpin_btn);
+        tick().await;
+
+        assert_eq!(
+            clicked_id.get_untracked().as_deref(),
+            Some(msg_id.as_str()),
+            "on_unpin callback fires with the row's message id"
+        );
+    }
+
+    /// AG-8: when the local peer lacks `ManageChannels`, the per-entry
+    /// unpin button still renders (so the affordance is discoverable) but
+    /// is `disabled` + `aria-disabled="true"` and its tooltip is the
+    /// spec-exact `only stewards can pin here`. Clicking does NOT fire
+    /// the callback.
+    #[wasm_bindgen_test]
+    async fn pinned_panel_per_entry_unpin_disabled_without_permission() {
+        let msg = make_msg("Alice", "pinned but locked", 1000);
+        let (msgs, _) = signal(vec![msg]);
+        let (clicked_id, set_clicked_id) = signal(Option::<String>::None);
+        let can_unpin = Signal::derive(|| false);
+
+        let container = mount_test(move || {
+            view! {
+                <PinnedPanel
+                    messages=msgs
+                    can_unpin=can_unpin
+                    on_jump=move |_: String| {}
+                    on_unpin=Callback::new(move |id: String| set_clicked_id.set(Some(id)))
+                    on_close=move |_| {}
+                />
+            }
+        });
+        tick().await;
+
+        let unpin_btn = query(&container, ".pinned-entry__unpin")
+            .expect("unpin button still renders so the affordance is discoverable");
+        assert_eq!(
+            unpin_btn.get_attribute("aria-disabled").as_deref(),
+            Some("true"),
+            "aria-disabled flips to `true` when can_unpin == false"
+        );
+        assert!(
+            unpin_btn.has_attribute("disabled"),
+            "native `disabled` attribute is set so click is suppressed"
+        );
+        assert_eq!(
+            unpin_btn.get_attribute("title").as_deref(),
+            Some("only stewards can pin here"),
+            "tooltip is the spec-exact permission-denied copy"
+        );
+
+        // Clicking a disabled button should NOT fire the callback. The
+        // panel's click handler also gates on `!unpin_disabled()`, so
+        // even if the browser dispatches the synthetic event the
+        // callback short-circuits.
+        simulate_click(&unpin_btn);
+        tick().await;
+        assert!(
+            clicked_id.get_untracked().is_none(),
+            "on_unpin callback does NOT fire when can_unpin == false"
+        );
+    }
+}
+
 // ── Typing Indicator Tests ──────────────────────────────────────────────────
 
 #[wasm_bindgen_test]
