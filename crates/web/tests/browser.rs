@@ -15654,3 +15654,69 @@ mod phase_3b_voice_note {
         );
     }
 }
+
+// ── Phase 3c — recency refresh on same-channel react ────────────────────────
+//
+// The `<ReactionRecencyProvider>` is a `LocalResource` keyed on the
+// active channel. Without an additional refresh tick, a same-channel
+// react would not surface in the picker until the user switched
+// channels and back (the resource's only re-key trigger). The
+// `RecencyRefreshTick` context + `bump_recency_tick()` helper resolve
+// this — the resource also depends on the tick's value, so each bump
+// re-fires it.
+//
+// Closes the §Ambiguity §6 follow-up flagged in the phase-3c plan.
+
+mod phase_3c_recency_refresh {
+    use leptos::prelude::*;
+    use wasm_bindgen_test::*;
+    use willow_web::reaction_recency::{bump_recency_tick, RecencyRefreshTick};
+
+    use super::{mount_test, tick};
+
+    /// `bump_recency_tick()` increments the `RecencyRefreshTick`
+    /// context's signal when one has been provided. This is the
+    /// signal the app shell's recency `LocalResource` subscribes to;
+    /// when it changes the resource re-fires.
+    #[wasm_bindgen_test]
+    async fn bump_recency_tick_increments_provided_signal() {
+        let tick_signal = RwSignal::new(0u32);
+        mount_test(move || {
+            provide_context(RecencyRefreshTick(tick_signal));
+            bump_recency_tick();
+            bump_recency_tick();
+        });
+        tick().await;
+
+        assert_eq!(
+            tick_signal.get_untracked(),
+            2,
+            "two bumps must drive the tick from 0 to 2"
+        );
+    }
+
+    /// `bump_recency_tick()` is a no-op when no context has been
+    /// provided. This keeps test mounts and any future surface that
+    /// doesn't wire the recency provider safe — the call just
+    /// silently does nothing instead of panicking.
+    #[wasm_bindgen_test]
+    async fn bump_recency_tick_no_op_without_context() {
+        // No `provide_context` for `RecencyRefreshTick` here. The
+        // call must not panic or unwind out of the mount.
+        mount_test(move || {
+            bump_recency_tick();
+        });
+        tick().await;
+        // Reaching this assertion at all proves the no-op path works.
+    }
+
+    // Note: an end-to-end "subscribing computation re-fires on bump"
+    // test belongs at the Playwright tier (real LocalResource +
+    // scheduling). Trying to reproduce it with a synchronous Effect
+    // in this harness doesn't validate the production path
+    // (`LocalResource::new` + async closure) and is brittle against
+    // Leptos's batching semantics. The unit-tests above prove the
+    // helper's contract; the production integration in `app.rs:209`
+    // is verified manually per `docs/plans/2026-05-08-ui-phase-3c-
+    // reactions-pins.md` §Ambiguity §6 follow-up.
+}

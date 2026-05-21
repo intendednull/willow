@@ -151,10 +151,21 @@ pub fn make_react_handler(
         let ch = state.chat.current_channel.get_untracked();
         let h = handle.clone();
         let toasts = use_context::<ToastStack>();
+        // Capture the tick context up front so the spawned future
+        // doesn't need a context lookup. On success we bump it so
+        // the recency `LocalResource` re-fires and the freshly-
+        // clicked emoji floats to the top of the picker without
+        // waiting for a channel switch.
+        let tick = use_context::<crate::reaction_recency::RecencyRefreshTick>();
         wasm_bindgen_futures::spawn_local(async move {
             if let Some(hash) = parse_event_hash(&msg.id) {
-                if let Err(e) = h.react(&ch, &hash, &emoji).await {
-                    warn_and_toast_with("add reaction", &e, toasts.as_ref());
+                match h.react(&ch, &hash, &emoji).await {
+                    Ok(()) => {
+                        if let Some(crate::reaction_recency::RecencyRefreshTick(t)) = tick {
+                            t.update(|n| *n = n.wrapping_add(1));
+                        }
+                    }
+                    Err(e) => warn_and_toast_with("add reaction", &e, toasts.as_ref()),
                 }
             }
         });

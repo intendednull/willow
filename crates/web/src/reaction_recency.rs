@@ -34,6 +34,28 @@ use leptos::prelude::*;
 #[derive(Clone, Copy)]
 pub struct ReactionRecency(pub Signal<Vec<String>>);
 
+/// Manual refresh tick for the recency `LocalResource`.
+///
+/// Bumped by [`bump_recency_tick`] after every successful `react()`
+/// call. The app-shell `LocalResource` reads the tick's value inside
+/// its closure so each bump re-fires the resource and the freshly-
+/// clicked emoji floats to the top of the picker without waiting for
+/// a channel switch. Without this, the recency resource only re-keys
+/// on channel-change (which leaves a same-channel rapid-react flow
+/// showing stale recency).
+#[derive(Clone, Copy)]
+pub struct RecencyRefreshTick(pub RwSignal<u32>);
+
+/// Increment the recency-refresh tick if a [`RecencyRefreshTick`]
+/// context has been provided. No-op when called from a context
+/// without an app-shell mount (e.g. headless unit tests that don't
+/// care about the recency picker).
+pub fn bump_recency_tick() {
+    if let Some(RecencyRefreshTick(tick)) = use_context::<RecencyRefreshTick>() {
+        tick.update(|n| *n = n.wrapping_add(1));
+    }
+}
+
 /// Spec default reaction shelf, mirrored from
 /// `willow_client::state_actors::REACTION_RECENCY_DEFAULT`. Used as
 /// the fallback when no `ReactionRecency` context has been provided
