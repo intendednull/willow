@@ -28,6 +28,18 @@ pub fn RightRail(
     /// Called when the user clicks "jump" on a pinned message.
     #[prop(into)]
     on_pinned_jump: Callback<String>,
+    /// Drives the per-entry `unpin` button's enabled state in the
+    /// pinned panel. Callers thread their local-peer `ManageChannels`
+    /// permission signal so the button greys out when the user can't
+    /// unpin. Optional so test mounts that only render the members /
+    /// thread panes don't have to construct a stub signal.
+    #[prop(optional, into)]
+    can_unpin: Option<Signal<bool>>,
+    /// Called with the message id when the user clicks the per-entry
+    /// `unpin` button in the pinned panel. Optional — when absent, the
+    /// pinned panel does not render the unpin affordance at all.
+    #[prop(optional)]
+    on_unpin: Option<Callback<String>>,
 ) -> impl IntoView {
     let is_open = Signal::derive(move || !matches!(which.get(), RightRailWhich::None));
     let aria_label = move || match which.get() {
@@ -65,15 +77,44 @@ pub fn RightRail(
                     RightRailWhich::Pinned => {
                         let on_jump = on_pinned_jump;
                         let on_close_cb = on_close;
+                        // Unwrap the optional permission signal with a
+                        // safe default so tests / harnesses that omit
+                        // it get the locked-down behaviour (button
+                        // greyed). When `on_unpin` is `None` the
+                        // pinned panel suppresses the unpin button
+                        // entirely (button is opt-in on the callback).
+                        let can_unpin_sig = can_unpin
+                            .unwrap_or_else(|| Signal::derive(|| false));
                         view! {
                             <div class="right-rail-pane" data-pane="pinned">
-                                <PinnedPanel
-                                    messages=pinned_messages
-                                    on_jump=move |id: String| on_jump.run(id)
-                                    on_close=move |_| {
-                                        if let Some(cb) = on_close_cb { cb.run(()); }
+                                {
+                                    let on_jump_inner = on_jump;
+                                    let on_close_inner = on_close_cb;
+                                    if let Some(unpin_cb) = on_unpin {
+                                        view! {
+                                            <PinnedPanel
+                                                messages=pinned_messages
+                                                can_unpin=can_unpin_sig
+                                                on_jump=move |id: String| on_jump_inner.run(id)
+                                                on_unpin=unpin_cb
+                                                on_close=move |_| {
+                                                    if let Some(cb) = on_close_inner { cb.run(()); }
+                                                }
+                                            />
+                                        }.into_any()
+                                    } else {
+                                        view! {
+                                            <PinnedPanel
+                                                messages=pinned_messages
+                                                can_unpin=can_unpin_sig
+                                                on_jump=move |id: String| on_jump_inner.run(id)
+                                                on_close=move |_| {
+                                                    if let Some(cb) = on_close_inner { cb.run(()); }
+                                                }
+                                            />
+                                        }.into_any()
                                     }
-                                />
+                                }
                             </div>
                         }.into_any()
                     },
