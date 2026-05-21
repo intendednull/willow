@@ -1159,6 +1159,13 @@ pub fn App() -> impl IntoView {
                                         let _ = current_channel.get();
                                         set_composer_revealed.set(false);
                                     });
+                                    // Phase 3c — surface the pinned-message count to
+                                    // the header so the pin IconBtn picks up the
+                                    // `--amber` tint + mono superscript count when
+                                    // the active channel has pins, per spec
+                                    // `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+                                    // §Header entry point.
+                                    let pinned_count = Signal::derive(move || pinned_messages.get().len());
                                     view! {
                                         <main
                                             class="chat-container main-pane"
@@ -1170,6 +1177,7 @@ pub fn App() -> impl IntoView {
                                                 which=which_signal
                                                 on_set_which=on_set_which
                                                 on_search_click=Callback::new(move |_| write.ui.set_show_palette.set(true))
+                                                pinned_count=pinned_count
                                             />
                                             {move || {
                                                 if channels_signal.get().is_empty() {
