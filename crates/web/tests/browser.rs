@@ -15685,7 +15685,6 @@ mod phase_3c_recency_refresh {
             provide_context(RecencyRefreshTick(tick_signal));
             bump_recency_tick();
             bump_recency_tick();
-            ()
         });
         tick().await;
 
@@ -15706,7 +15705,6 @@ mod phase_3c_recency_refresh {
         // call must not panic or unwind out of the mount.
         mount_test(move || {
             bump_recency_tick();
-            ()
         });
         tick().await;
         // Reaching this assertion at all proves the no-op path works.
@@ -15733,7 +15731,6 @@ mod phase_3c_recency_refresh {
                 let _ = tick_signal.get();
                 fire_count.update(|n| *n += 1);
             });
-            ()
         });
         tick().await;
         // First run wired up the subscription and ran once.
