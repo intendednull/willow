@@ -199,14 +199,21 @@ pub fn App() -> impl IntoView {
 
     // Phase 3c.3 — per-channel reaction recency. Drives the picker's
     // "recent" shelf in both the composer's emoji button and the
-    // row's "more reactions" toolbar. The Resource refreshes when
-    // the active channel changes; same-channel updates after a fresh
-    // `react()` will surface on next channel switch (a finer
-    // refresh-on-react path is the next follow-up).
+    // row's "more reactions" toolbar. The Resource re-keys when
+    // (a) the active channel changes, or (b) `react_tick` is bumped
+    // by `bump_recency_tick()` after a successful `react()` call.
+    // The tick path is what makes a freshly-clicked emoji appear at
+    // the top of the picker without waiting for a channel switch.
     {
+        let react_tick = RwSignal::new(0u32);
+        provide_context(crate::reaction_recency::RecencyRefreshTick(react_tick));
+
         let recent_handle = handle.clone();
         let current_channel_for_recency = app_state.chat.current_channel;
         let recent_resource = LocalResource::new(move || {
+            // Read the tick so the resource subscribes to it; the
+            // value itself is unused — only the change matters.
+            let _ = react_tick.get();
             let handle = recent_handle.clone();
             let channel = current_channel_for_recency.get();
             async move { handle.recent_reactions(&channel).await }
