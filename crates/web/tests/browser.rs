@@ -3220,8 +3220,8 @@ mod phase_3c_callsite_wiring {
         });
         tick().await;
 
-        let footer = query(&container, ".pinned-entry__footer")
-            .expect(".pinned-entry__footer must render");
+        let footer =
+            query(&container, ".pinned-entry__footer").expect(".pinned-entry__footer must render");
         let footer_text = text(&footer);
         assert!(
             footer_text.contains("pinned by"),
