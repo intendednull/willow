@@ -8,7 +8,7 @@ use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, Voi
 use crate::components::{
     AddServerPanel, CallPage, ChannelSidebar, CommandPalette, Composer, GroveRail, JoinPage,
     MainPaneHeader, MessageList, MobileShell, ReadOnlyBanner, RightRail, RightRailWhich,
-    SettingsPanel, ToastStackView, UploadDialog, WelcomeScreen,
+    SettingsPanel, ToastStack, ToastStackView, UploadDialog, WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -1320,6 +1320,34 @@ pub fn App() -> impl IntoView {
                                 }
                                 write.ui.set_show_pinned.set(false);
                             });
+                            // Phase 3c — per-entry `unpin` button in the pinned
+                            // panel is permission-gated on `ManageChannels` per
+                            // spec `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+                            // §Pinned panel contents. Permission signal greys the
+                            // button + flips its tooltip; the callback mirrors the
+                            // `make_pin_handler` async/toast pattern but always
+                            // unpins (the panel only lists already-pinned rows).
+                            let can_unpin: Signal<bool> =
+                                app_state.server.local_can_manage_channels.into();
+                            let unpin_handle = handle.clone();
+                            let on_unpin = Callback::new(move |id: String| {
+                                let ch = current_channel.get_untracked();
+                                let h = unpin_handle.clone();
+                                let toasts = use_context::<ToastStack>();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let Ok(hash) = id.parse::<willow_client::willow_state::EventHash>() else {
+                                        tracing::warn!(id, "pinned panel unpin: invalid event hash");
+                                        return;
+                                    };
+                                    if let Err(e) = h.unpin_message(&ch, &hash).await {
+                                        crate::handlers::warn_and_toast_with(
+                                            "unpin message",
+                                            &e,
+                                            toasts.as_ref(),
+                                        );
+                                    }
+                                });
+                            });
                             view! {
                                 <RightRail
                                     which=rail_which
@@ -1328,6 +1356,8 @@ pub fn App() -> impl IntoView {
                                     peer_id=peer_id
                                     pinned_messages=pinned_messages
                                     on_pinned_jump=on_pinned_jump
+                                    can_unpin=can_unpin
+                                    on_unpin=on_unpin
                                 />
                             }
                         }
