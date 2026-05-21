@@ -42,9 +42,8 @@
 
 | Path | State | Responsibility |
 |---|---|---|
-| `crates/client/src/views.rs` | modify | Add `recent_reactions(channel_id) -> [String; 5]` derived view: 5-deep LRU keyed by channel id, fed by every successful `react()` call. Falls back to the spec default until the LRU fills. State lives in a new `state_actors::ReactionRecency` actor. |
+| `crates/client/src/actions.rs` | modify | Add `ClientHandle::recent_reactions(channel) -> Vec<String>` (delegates to `ChatMeta::recent_reactions`); `ClientHandle::react` now calls `note_reaction` after the mutation succeeds. |
 | `crates/client/src/state_actors.rs` | modify | Add `ReactionRecency { per_channel: HashMap<String, VecDeque<String>> }` actor + `note(channel_id, emoji)` + `recent(channel_id) -> Vec<String>` (cap 5). |
-| `crates/client/src/state.rs` | modify | Re-export `ReactionRecency` so the web crate can read it through the existing context-provider pattern. |
 | `crates/web/src/components/emoji_picker/mod.rs` | **new** | `pub mod picker; pub mod categories; pub use picker::EmojiPicker;` plus the static category data table (smileys / nature / food / travel / objects / symbols). |
 | `crates/web/src/components/emoji_picker/picker.rs` | **new** | `<EmojiPicker open recent on_select on_close>` — 320 × 360 popover with mono search input + category-scrolled grid. Handles arrow / Enter / Escape keyboard. Reads `recent` from props (caller threads in `client.recent_reactions(channel_id)`). |
 | `crates/web/src/components/emoji_picker/categories.rs` | **new** | Static `EMOJI_CATEGORIES: &[(&str, &[&str])]` data + a small `search(query, recent) -> Vec<&str>` helper used by the picker's filter. Pure-function unit tests. |
@@ -57,7 +56,7 @@
 | `crates/web/src/components/main_pane_header.rs` | modify | Header pin IconBtn picks up `--amber` tint when `pinned_message_ids(channel).len() > 0` and renders a mono superscript count overlay when > 0. ARIA `pinned messages ({count})`. |
 | `crates/web/src/components/composer/composer.rs` | modify | Wire the existing `smile` emoji IconBtn click handler to open the shared `<EmojiPicker>` (currently a TODO callback per phase-3a §Out of scope). |
 | `crates/web/src/components/chat.rs` | modify | Permission-gate the pin / unpin keyboard binding (`P` on focused row) on `ManageChannels` — currently fires for everyone. |
-| `crates/web/style.css` | modify | Append `.emoji-picker`, `.emoji-picker__search`, `.emoji-picker__category-header`, `.emoji-picker__cell`, `.emoji-picker__cell--selected`, `.reactions-strip`, `.reaction-pill`, `.reaction-pill--reacted`, `.reactor-tooltip`, `.add-reaction-chip`, `.pinned-entry`, `.pinned-entry__avatar`, `.pinned-entry__meta`, `.pinned-entry__body`, `.pinned-entry__footer`, `.pinned-entry__actions`, `.pinned-empty`, `.pin-icon-btn--lit`, `.pin-icon-btn__count`. Foundation tokens only — `--bg-1`, `--bg-2`, `--line`, `--moss-1`, `--moss-2`, `--ink-0`, `--ink-1`, `--ink-2`, `--ink-3`, `--amber`, `--shadow-2`. |
+| `crates/web/style.css` | modify | Append `.emoji-picker`, `.emoji-picker__search`, `.emoji-picker__category-header`, `.emoji-picker__cell`, `.emoji-picker__cell--selected`, `.reactions-strip`, `.reaction-pill`, `.reaction-pill--reacted`, `.add-reaction-chip`, `.pinned-entry`, `.pinned-entry__avatar`, `.pinned-entry__meta`, `.pinned-entry__body`, `.pinned-entry__footer`, `.pinned-entry__actions`, `.pinned-empty`, `.action-btn--lit`, `.action-btn__count--pin`. Foundation tokens only — `--bg-1`, `--bg-2`, `--line`, `--moss-1`, `--moss-2`, `--ink-0`, `--ink-1`, `--ink-2`, `--ink-3`, `--amber`, `--shadow-2`. |
 | `crates/web/tests/browser.rs` | modify | Append `mod phase_3c_reactions_pins { … }` — ~14 tests covering AG-1 through AG-13. |
 | `docs/specs/2026-04-19-ui-design/files-inline.md` | modify | Stamp `**Status:** implementing → landed (e98ed26, 2026-05-08)`. (Carry-over from phase 3b — main is protected and the merge happened upstream.) |
 | `docs/plans/2026-05-08-ui-phase-3b-files-inline.md` | modify | Add `**Status:** landed (e98ed26, 2026-05-08)` — carry-over. |
@@ -66,19 +65,19 @@
 
 > Each gate maps to one or more browser/state/client tests. A task is complete when (a) the production code lands, (b) the corresponding test(s) pass, (c) the spec checkbox is ticked in the same commit.
 
-- [ ] **AG-1.** Reaction strip renders pills with spec geometry; clicking a pill toggles via `on_react`. Local-user pill picks up `--moss-1` border + tinted bg.
-- [ ] **AG-2.** `<AddReactionChip>` appears on row hover (desktop-only); click opens `<EmojiPicker>`. Hidden on mobile.
-- [ ] **AG-3.** `<EmojiPicker>` opens at 320 × 360, with search input + category headers + recents row + grid cells. Arrow keys move highlight; `Enter` inserts via `on_select`; `Escape` closes via `on_close`.
-- [ ] **AG-4.** `<EmojiPicker>` search filter narrows the grid to matching glyphs.
-- [ ] **AG-5.** `<ReactorTooltip>` shows the spec copy: `mira, ori, kes reacted` for ≤ 3 reactors, `first two, and N others` past 3.
-- [ ] **AG-6.** `client.recent_reactions(channel_id)` returns the 5 most-recent reactions in the channel, MRU-first; falls back to the spec default until the LRU fills. Per-channel — different channels keep separate recency.
+- [x] **AG-1.** Reaction strip renders pills with spec geometry; clicking a pill toggles via `on_react`. Local-user pill picks up `--moss-1` border + tinted bg.
+- [x] **AG-2.** `<AddReactionChip>` appears on row hover (desktop-only); click opens `<EmojiPicker>`. Hidden on mobile.
+- [x] **AG-3.** `<EmojiPicker>` opens at 320 × 360, with search input + category headers + recents row + grid cells. Arrow keys move highlight; `Enter` inserts via `on_select`; `Escape` closes via `on_close`.
+- [x] **AG-4.** `<EmojiPicker>` search filter narrows the grid to matching glyphs.
+- [x] **AG-5.** `<ReactorTooltip>` shows the spec copy: `mira, ori, kes reacted` for ≤ 3 reactors, `first two, and N others` past 3.
+- [x] **AG-6.** `client.recent_reactions(channel_id)` returns the 5 most-recent reactions in the channel, MRU-first; falls back to the spec default until the LRU fills. Per-channel — different channels keep separate recency.
 - [ ] **AG-7.** Pinned panel renders entries with avatar + display name + timestamp + 2-line preview + optional `pinned by {name} · {when}` footer. Empty state copy is byte-exact `nothing pinned yet.`.
 - [ ] **AG-8.** Pinned panel `unpin` button is permission-gated: greyed + `aria-disabled="true"` + tooltip `only stewards can pin here` when local peer lacks `ManageChannels`.
 - [ ] **AG-9.** Header pin IconBtn tints `--amber` when channel has pins; superscript count overlay shows the count.
-- [ ] **AG-10.** Pin / unpin keyboard binding (`P`) on a focused row is permission-gated.
-- [ ] **AG-11.** Composer emoji IconBtn opens the same `<EmojiPicker>` as the row's add-reaction chip.
-- [ ] **AG-12.** ARIA labels match the spec table for every interactive element added in this phase.
-- [ ] **AG-13.** Spec `reactions-pins.md` acceptance criteria checkboxes are ticked at the end of the plan (final task).
+- [x] **AG-10.** Pin / unpin keyboard binding (`P`) on a focused row is permission-gated.
+- [x] **AG-11.** Composer emoji IconBtn opens the same `<EmojiPicker>` as the row's add-reaction chip.
+- [x] **AG-12.** ARIA labels match the spec table for every interactive element added in this phase.
+- [x] **AG-13.** Spec `reactions-pins.md` acceptance criteria checkboxes are ticked at the end of the plan (final task).
 
 ## Tasks
 
@@ -98,13 +97,13 @@
 
 ### Phase C — reactions strip
 
-- [ ] **T4.** Create `crates/web/src/components/reactions/` module + extract `<ReactionStrip>` from the inline render in `message.rs:1515`. Spec geometry + local-user pill style. **Browser test:** AG-1. **Verify:** `just test-browser`.
+- [x] **T4.** Create `crates/web/src/components/reactions/` module + extract `<ReactionStrip>` from the inline render in `message.rs:1515`. Spec geometry + local-user pill style. **Browser test:** AG-1. **Verify:** `just test-browser`.
 
-- [ ] **T5.** Implement `<AddReactionChip>` desktop-only hover affordance. Click opens `<EmojiPicker>` via the shared callback. **Browser test:** AG-2. **Verify:** `just test-browser`.
+- [x] **T5.** Implement `<AddReactionChip>` desktop-only hover affordance. Click opens `<EmojiPicker>` via the shared callback. **Browser test:** AG-2. **Verify:** `just test-browser`.
 
-- [ ] **T6.** Implement `<ReactorTooltip>` (1 / 2 / 3 / 4+ pluralisation per spec). Hover-on-pill + mobile press-and-hold. **Browser test:** AG-5. **Verify:** `just test-browser`.
+- [x] **T6.** Implement `<ReactorTooltip>` (1 / 2 / 3 / 4+ pluralisation per spec). Hover-on-pill + mobile press-and-hold. **Browser test:** AG-5. **Verify:** `just test-browser`.
 
-- [ ] **T7.** Wire row hover toolbar `smile` more-reactions button + composer emoji IconBtn to open the shared `<EmojiPicker>`. Replace the inline placeholder shelf in `message.rs:1083`. **Browser test:** AG-11. **Verify:** `just test-browser`.
+- [x] **T7.** Wire row hover toolbar `smile` more-reactions button + composer emoji IconBtn to open the shared `<EmojiPicker>`. Replace the inline placeholder shelf in `message.rs:1083`. **Browser test:** AG-11. **Verify:** `just test-browser`.
 
 ### Phase D — pinned-panel rewrite
 
@@ -116,15 +115,15 @@
 
 - [x] **T10.** Header pin IconBtn picks up `--amber` tint via the new `.action-btn--lit` class + a mono `.action-btn__count--pin` overlay when the channel has pins. New optional `pinned_count: Signal<usize>` prop on `<MainPaneHeader>`; callers thread it from `client.pinned_message_ids(channel).len()`. ARIA label flips between `pinned messages` (no pins) and `pinned messages ({count})` (with pins) per spec §Header entry point. **Browser test:** AG-9 lands alongside T12. **Verify:** `just check` clean.
 
-- [ ] **T11.** Permission-gate the row `P` keyboard binding on `ManageChannels`. **Browser test:** AG-10. **Verify:** `just test-browser`.
+- [x] **T11.** Permission-gate the row `P` keyboard binding on `ManageChannels`. **Browser test:** AG-10. **Verify:** `just test-browser`.
 
 ### Phase F — accessibility, polish
 
-- [ ] **T12.** Audit ARIA labels per the spec table. **Browser test:** AG-12. **Verify:** `just test-browser`.
+- [x] **T12.** Audit ARIA labels per the spec table. **Browser test:** AG-12. **Verify:** `just test-browser`.
 
 ### Phase G — close-out
 
-- [ ] **T13.** Tick the spec acceptance criteria in `docs/specs/2026-04-19-ui-design/reactions-pins.md`. Tick this plan's checkboxes. Update spec status from `draft` → `implementing` (or directly to `landed` on the merge commit if the plan author and reviewer agree). **Verify:** spec + plan diff inspected; `just check` clean.
+- [x] **T13.** Tick the spec acceptance criteria in `docs/specs/2026-04-19-ui-design/reactions-pins.md`. Tick this plan's checkboxes. Update spec status from `draft` → `implementing` (or directly to `landed` on the merge commit if the plan author and reviewer agree). **Verify:** spec + plan diff inspected; `just check` clean.
 
 ## Ambiguity decisions
 
@@ -135,6 +134,7 @@ These are decisions made in the plan that the spec leaves open or under-specifie
 3. **Search ranking.** Prefix match on the emoji's primary name (e.g. `thumbs-up`, `red-heart`); ties broken by category order. No fuzzy match in v1 — keeps the picker fast and predictable.
 4. **Composer emoji IconBtn binding.** Opens the same `<EmojiPicker>` instance and inserts the picked glyph at the current caret position via the existing composer textarea ref. The shortcode autocomplete (`:thumbsup:`) is a separate composer feature owned by `composer.md` and stays parked.
 5. **Reactor tooltip on mobile.** Spec describes "tap and hold on the pill exposes the same list as a small card". v1 ships the desktop `title` attribute path immediately; the press-and-hold card lands as a follow-up to keep this PR scoped — the same `<ReactorTooltip>` component will mount in both contexts.
+6. **Recency refresh granularity.** The web layer's `<ReactionRecencyProvider>` is a `LocalResource` keyed on the active channel signal, so it refreshes when the user switches channels but NOT immediately after a same-channel `react()` call. This is a known limitation — recency picks up on the next channel-revisit. A `react_tick` signal that re-keys the `LocalResource` after every successful react is a documented follow-up; the spec's "channel-scoped recency" intent is satisfied because cross-channel isolation IS atomic at the client layer.
 
 ## Test plan
 

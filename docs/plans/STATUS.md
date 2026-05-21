@@ -22,11 +22,14 @@ At a glance, for each UI-design phase plan in `docs/plans/`, which state-layer p
 | [`2026-04-21-ui-phase-2c-profile-card.md`](2026-04-21-ui-phase-2c-profile-card.md) | Profile popover / sheet, 17 fields, crest banner, nickname editor | `EventKind::UpdateProfile(Box<ProfileDelta>)` + extended `Profile` fields (pronouns, bio, tagline, crest, pinned, elsewhere, since) | yes | `UpdateProfile` present (line ~322). Nickname store is local-only per spec — no event needed. |
 | [`2026-04-21-ui-phase-2e-local-search.md`](2026-04-21-ui-phase-2e-local-search.md) | On-device search index, scope ladder, results surface, palette bridge | no new `EventKind`; `SearchScope::ThisLetter` + `SearchScope::AllLetters` reserved on the client side | partial | The two letter scopes have no backing `EventKind` — there is no `Letter` / DM variant in `event.rs`. Plan flags this with `TODO(letters-dms.md)` on letter-scope filter branches. The audit that prompted this status file (issue #337) called out exactly this drift. |
 | [`2026-04-25-ui-phase-2d-ephemeral-channels.md`](2026-04-25-ui-phase-2d-ephemeral-channels.md) | Auto-archive on inactivity, archives surface, kind chip, revive | `CreateChannel.ephemeral: Option<EphemeralConfig>` + `EventKind::ChannelRevive { channel_id }` + `Channel.last_activity_hlc` | yes | Both present (lines ~250, ~263). Replaces the `_ephemeral-` name-prefix heuristic from 1a. |
+| [`2026-04-26-ui-phase-3a-composer.md`](2026-04-26-ui-phase-3a-composer.md) | Composer — formatting toolbar, mention autocomplete, slash commands, drafts | none new — view layer + drafts are local | yes | All composer behaviors are UI + local-state; no new EventKind. |
+| [`2026-05-08-ui-phase-3b-files-inline.md`](2026-05-08-ui-phase-3b-files-inline.md) | Files & inline attachments — upload dialog, drag-and-drop, paste-to-upload, inline image/file/voice-note rendering | uses existing `Content::File` / `Content::Voice` variants in `willow-messaging` (already shipped) | yes | Per-file progress bar deferred pending `iroh-blobs` incremental hook; all other acceptance criteria ticked. |
+| [`2026-05-08-ui-phase-3c-reactions-pins.md`](2026-05-08-ui-phase-3c-reactions-pins.md) | Reactions & pins — EmojiPicker, ReactionStrip + AddReactionChip + ReactorTooltip, pinned-panel rewrite, header pin amber tint + count, P-key permission gate | uses existing `EventKind::Reaction` + `PinMessage` + `UnpinMessage` | yes | Pinned-by footer + same-channel react-recency refresh are documented follow-ups; everything else landed via PRs #634/#635/#637. |
 
 ## Aggregate
 
-- **12 plans tabulated.**
-- **9 yes** (state-layer prereqs all landed or none required).
+- **15 plans tabulated.**
+- **12 yes** (state-layer prereqs all landed or none required).
 - **3 partial** — 2a (whisper placeholder gate, no `WhisperStart`), 2b (peer tombstone + inbound heartbeat deferred), 2e (letter scopes reserved with no `Letter` `EventKind`).
 - **0 no** — every plan has at least started landing in `crates/state/src/event.rs` or is intentionally view-layer-only.
 
