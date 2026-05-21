@@ -7195,6 +7195,22 @@ select:focus-visible {
     overflow: hidden;
 }
 
+/*
+ * `pinned by {name} · {when}` footer per spec
+ * `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+ * §Pinned panel contents (line 123): --ink-3, 10 px, mono `when`.
+ */
+.pinned-entry__footer {
+    color: var(--ink-3);
+    font-family: var(--font-ui);
+    font-size: 10px;
+    margin-top: 4px;
+}
+
+.pinned-entry__footer-when {
+    font-family: var(--font-mono);
+}
+
 .pinned-entry__actions {
     display: inline-flex;
     gap: 8px;

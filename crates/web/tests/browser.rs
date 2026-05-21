@@ -2986,12 +2986,19 @@ async fn pinned_panel_close_button_fires_callback() {
     assert!(closed.get_untracked(), "close callback should have fired");
 }
 
-// ── Phase 3c — visibility fixes (PR-A) ──────────────────────────────────────
+// ── Phase 3c — visibility fixes + pinned-by footer ──────────────────────────
 //
-// The header pin tint + per-entry unpin button landed component-side in PRs
-// #634 / #635 / #637 but no caller threaded the new optional props, so the
-// affordances never reached the live UI. These tests assert the prop
-// boundary at the smallest granularity that proves the wiring works.
+// Two phase-3c gaps land here together:
+//   - **AG-8 / AG-9 (callsite wiring).** The header pin tint + per-entry
+//     unpin button landed component-side in PRs #634 / #635 / #637 but no
+//     caller threaded the new optional props, so the affordances never
+//     reached the live UI.
+//   - **AG-7 (pinned-by footer).** `<PinnedPanel>` must render a
+//     `pinned by {name} · {when}` footer whenever the row's
+//     `pinned_metadata` is `Some(_)`, per spec §Pinned panel contents.
+//
+// Both sets of tests share the same `make_msg` fixture + DOM helpers, so
+// they live in one module for clarity.
 
 mod phase_3c_callsite_wiring {
     use leptos::prelude::*;
@@ -3185,6 +3192,88 @@ mod phase_3c_callsite_wiring {
         assert!(
             clicked_id.get_untracked().is_none(),
             "on_unpin callback does NOT fire when can_unpin == false"
+        );
+    }
+    /// AG-7: `<PinnedPanel>` must render a `.pinned-entry__footer`
+    /// carrying the spec-exact `pinned by {name} · {when}` copy whenever
+    /// the row's `pinned_metadata` is `Some(_)`. Drives the footer
+    /// contract in `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+    /// §Pinned panel contents, line 123.
+    #[wasm_bindgen_test]
+    async fn pinned_panel_renders_pinned_by_footer_when_metadata_present() {
+        let mut msg = make_msg("Mira", "pinned body", 1_000);
+        msg.pinned = true;
+        msg.pinned_metadata = Some(willow_client::PinnedMetadata {
+            pinner_display_name: "ori".into(),
+            pinned_at_ms: 1_000,
+        });
+        let (msgs, _) = signal(vec![msg]);
+
+        let container = mount_test(move || {
+            view! {
+                <PinnedPanel
+                    messages=msgs
+                    on_jump=move |_: String| ()
+                    on_close=move |_: ()| ()
+                />
+            }
+        });
+        tick().await;
+
+        let footer = query(&container, ".pinned-entry__footer")
+            .expect(".pinned-entry__footer must render");
+        let footer_text = text(&footer);
+        assert!(
+            footer_text.contains("pinned by"),
+            "footer must start with `pinned by`, got: {footer_text:?}"
+        );
+        assert!(
+            footer_text.contains("ori"),
+            "footer must include the pinner name, got: {footer_text:?}"
+        );
+        assert!(
+            footer_text.contains("·"),
+            "footer must include the spec's middot separator, got: {footer_text:?}"
+        );
+        let when_span = query(&container, ".pinned-entry__footer-when").expect(
+            ".pinned-entry__footer-when must render so the spec's mono `when` is styleable",
+        );
+        assert!(
+            !text(&when_span).trim().is_empty(),
+            "`when` span must carry the relative-time string",
+        );
+    }
+
+    /// AG-7 (negative): defense-in-depth against leaking the footer onto
+    /// unpinned rows or rows where the pinner metadata never materialized.
+    /// When `pinned_metadata` is `None`, `<PinnedPanel>` must omit the
+    /// `.pinned-entry__footer` element entirely.
+    #[wasm_bindgen_test]
+    async fn pinned_panel_omits_footer_when_metadata_absent() {
+        let msg = make_msg("Mira", "no pinner metadata", 1_000);
+        // `make_msg` defaults `pinned_metadata` to `None`. The row is
+        // therefore still rendered (`<PinnedPanel>` doesn't gate on
+        // `pinned`) but the footer line must NOT appear.
+        let (msgs, _) = signal(vec![msg]);
+
+        let container = mount_test(move || {
+            view! {
+                <PinnedPanel
+                    messages=msgs
+                    on_jump=move |_: String| ()
+                    on_close=move |_: ()| ()
+                />
+            }
+        });
+        tick().await;
+
+        assert!(
+            query(&container, ".pinned-entry").is_some(),
+            "the pinned entry should still render (smoke check on the fixture)",
+        );
+        assert!(
+            query(&container, ".pinned-entry__footer").is_none(),
+            "footer must be omitted when `pinned_metadata` is None",
         );
     }
 }

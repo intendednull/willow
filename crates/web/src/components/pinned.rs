@@ -98,6 +98,24 @@ pub fn PinnedPanel(
                         let on_jump = on_jump.clone();
                         let unpin_disabled = move || !can_unpin.get();
                         let unpin_aria_label = "unpin message".to_string();
+                        // `pinned by {name} · {when}` footer — spec
+                        // `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+                        // §Pinned panel contents, line 123. Rendered
+                        // only when the projection populated
+                        // `pinned_metadata`; absent metadata omits the
+                        // entire <footer> per the
+                        // `pinned-message-metadata-design` doc's
+                        // omission contract.
+                        let pinner_footer = msg.pinned_metadata.as_ref().map(|meta| {
+                            let name = meta.pinner_display_name.clone();
+                            let pin_when = pinned_timestamp(meta.pinned_at_ms);
+                            view! {
+                                <footer class="pinned-entry__footer">
+                                    "pinned by " {name} " · "
+                                    <span class="pinned-entry__footer-when">{pin_when}</span>
+                                </footer>
+                            }
+                        });
                         view! {
                             <article class="pinned-entry">
                                 <div class="pinned-entry__meta">
@@ -110,6 +128,7 @@ pub fn PinnedPanel(
                                 <div class="pinned-entry__body">
                                     {render_body_with_links(&body)}
                                 </div>
+                                {pinner_footer}
                                 <div class="pinned-entry__actions">
                                     <button
                                         class="pinned-entry__jump"
