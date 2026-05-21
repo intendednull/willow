@@ -375,6 +375,7 @@ mod tests {
             reply_preview: None,
             mentions,
             pinned: false,
+            pinned_metadata: None,
             queue_note: crate::state::QueueNote::None,
             whisper: false,
             attachment: None,

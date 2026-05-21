@@ -135,6 +135,7 @@ fn make_msg(author: &str, body: &str, timestamp_ms: u64) -> willow_client::Displ
         reply_preview: None,
         mentions: Vec::new(),
         pinned: false,
+        pinned_metadata: None,
         queue_note: willow_client::QueueNote::None,
         whisper: false,
         attachment: None,

@@ -86,6 +86,28 @@ pub enum QueueNote {
     Pending,
 }
 
+/// Pinned-message attribution + time, surfaced to the pinned-panel
+/// renderer for the `pinned by {name} · {when}` footer
+/// (`docs/specs/2026-04-19-ui-design/reactions-pins.md` §Pinned panel
+/// contents). Populated by the view projection in `views.rs` from
+/// `Channel::pinned_messages[hash]`; the display name is resolved at
+/// projection time via the same `resolve_display_name` ladder used by
+/// the row author name (profile → ProfileState → `unknown peer`).
+///
+/// `Some` when the carrying `DisplayMessage.pinned == true` and the
+/// channel's `PinMetadata` is present; `None` otherwise. The renderer
+/// gates the footer on `pinned_metadata.is_some()` so missing pinner
+/// data never leaks an empty footer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinnedMetadata {
+    /// Human display name of the peer who pinned the message.
+    pub pinner_display_name: String,
+    /// Wall-clock pin time in milliseconds (from the `PinMessage`
+    /// event's `timestamp_hint_ms`). The renderer formats this via
+    /// the same `format_relative_time` helper used for message rows.
+    pub pinned_at_ms: u64,
+}
+
 /// A message prepared for display. Computed on-the-fly from
 /// event_state, never stored. Display names are resolved at
 /// construction time so they're never stale.
@@ -120,6 +142,13 @@ pub struct DisplayMessage {
     /// the projection to drive the row marker + badge + run-break rule
     /// per `docs/specs/2026-04-19-ui-design/message-row.md` §Pins.
     pub pinned: bool,
+    /// `Some(_)` when [`Self::pinned`] is `true` and the channel's
+    /// `PinMetadata` is present in the materialized state. Surfaces
+    /// the pinner display name + pin time so the pinned-panel
+    /// renderer can show the `pinned by {name} · {when}` footer
+    /// (`docs/specs/2026-04-19-ui-design/reactions-pins.md` §Pinned
+    /// panel contents, line 123). `None` for non-pinned rows.
+    pub pinned_metadata: Option<PinnedMetadata>,
     /// Whether this message is part of a whisper (violet-rule placeholder).
     ///
     /// Phase 2a Task 8 reserves the layout + styling surface behind an
