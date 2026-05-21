@@ -71,7 +71,7 @@
 - [x] **AG-4.** `<EmojiPicker>` search filter narrows the grid to matching glyphs.
 - [x] **AG-5.** `<ReactorTooltip>` shows the spec copy: `mira, ori, kes reacted` for ≤ 3 reactors, `first two, and N others` past 3.
 - [x] **AG-6.** `client.recent_reactions(channel_id)` returns the 5 most-recent reactions in the channel, MRU-first; falls back to the spec default until the LRU fills. Per-channel — different channels keep separate recency.
-- [ ] **AG-7.** Pinned panel renders entries with avatar + display name + timestamp + 2-line preview + optional `pinned by {name} · {when}` footer. Empty state copy is byte-exact `nothing pinned yet.`.
+- [x] **AG-7.** Pinned panel renders entries with avatar + display name + timestamp + 2-line preview + optional `pinned by {name} · {when}` footer. Empty state copy is byte-exact `nothing pinned yet.`. *(Footer + `PinMetadata` state-schema change landed in the phase-3c close-out PR — see `docs/specs/2026-05-21-pinned-message-metadata-design.md`.)*
 - [x] **AG-8.** Pinned panel `unpin` button is permission-gated: greyed + `aria-disabled="true"` + tooltip `only stewards can pin here` when local peer lacks `ManageChannels`.
 - [x] **AG-9.** Header pin IconBtn tints `--amber` when channel has pins; superscript count overlay shows the count.
 - [x] **AG-10.** Pin / unpin keyboard binding (`P`) on a focused row is permission-gated.

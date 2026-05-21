@@ -215,7 +215,7 @@ pub mod event_receiver {
         }
     }
 }
-pub use state::{DisplayMessage, QueueNote};
+pub use state::{DisplayMessage, PinnedMetadata, QueueNote};
 pub use views::{
     derive_archives_view, since_hint, ArchivedChannelSummary, ArchivesView, ProfileDelta,
     ProfileView,

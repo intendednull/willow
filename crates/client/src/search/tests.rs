@@ -969,6 +969,7 @@ mod from_display_message_tests {
             reply_preview: None,
             mentions: Vec::new(),
             pinned: false,
+            pinned_metadata: None,
             whisper: false,
             queue_note: QueueNote::None,
             attachment: None,

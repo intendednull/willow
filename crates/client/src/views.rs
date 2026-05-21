@@ -18,7 +18,7 @@ use willow_identity::EndpointId;
 
 use crate::mentions::{extract_mention_peers, parse_mentions, PeerRef};
 use crate::presence::{derive_peer_presence, derive_self_presence, PresenceInputs, PresenceState};
-use crate::state::{DisplayMessage, QueueNote};
+use crate::state::{DisplayMessage, PinnedMetadata, QueueNote};
 use crate::state_actors::*;
 
 // ───── Profile card surfaces (phase 2c) ─────────────────────────────────
@@ -673,16 +673,29 @@ pub fn compute_messages_view(
                 .collect();
             let mention_segments = parse_mentions(&m.body, &peer_refs, &local_peer_id);
             let mentions = extract_mention_peers(&mention_segments);
-            // Stamp pinned from the channel's pinned-message set.
+            // Stamp pinned from the channel's pinned-message map.
             // `ServerState::channels[cid].pinned_messages` is a
-            // `BTreeSet<EventHash>` owned by the pin-event projection in
-            // willow-state; message-row.md §Pins consumes it here as a
-            // quiet 1 px amber row marker + `pinned` badge.
-            let pinned = events
+            // `BTreeMap<EventHash, PinMetadata>` owned by the
+            // pin-event projection in willow-state; message-row.md
+            // §Pins consumes the `pinned` bool here as a quiet 1 px
+            // amber row marker + `pinned` badge.
+            //
+            // When the row is pinned we also project the
+            // `PinMetadata` value into a `PinnedMetadata` that
+            // resolves the pinner's display name via the same
+            // `resolve_display_name` ladder used for the row author.
+            // The renderer in `pinned.rs` reads this for the
+            // `pinned by {name} · {when}` footer
+            // (reactions-pins.md §Pinned panel contents, line 123).
+            let pin_meta = events
                 .channels
                 .get(&m.channel_id)
-                .map(|ch| ch.pinned_messages.contains(&m.id))
-                .unwrap_or(false);
+                .and_then(|ch| ch.pinned_messages.get(&m.id));
+            let pinned = pin_meta.is_some();
+            let pinned_metadata = pin_meta.map(|meta| PinnedMetadata {
+                pinner_display_name: resolve_display_name(events, profiles, &meta.pinner),
+                pinned_at_ms: meta.pinned_at_ms,
+            });
             // Queue-note derivation. Phase 2b wires the full
             // tri-state: `Pending` (local author still waiting on
             // acks) + `LateArrival` (remote author was offline near
@@ -732,6 +745,7 @@ pub fn compute_messages_view(
                 reply_preview,
                 mentions,
                 pinned,
+                pinned_metadata,
                 queue_note,
                 whisper,
                 attachment: m.attachment.clone(),
@@ -1156,7 +1170,9 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, HashMap};
     use willow_identity::Identity;
-    use willow_state::{Channel, ChannelKind, ChatMessage, Member, Profile, ServerState};
+    use willow_state::{
+        Channel, ChannelKind, ChatMessage, Member, PinMetadata, Profile, ServerState,
+    };
 
     fn fresh_state(owner: EndpointId) -> ServerState {
         ServerState::new("srv", "Test", owner)
@@ -1374,7 +1390,13 @@ mod tests {
             .get_mut("ch-1")
             .unwrap()
             .pinned_messages
-            .insert(msg_hash);
+            .insert(
+                msg_hash,
+                PinMetadata {
+                    pinner: owner,
+                    pinned_at_ms: 1_000,
+                },
+            );
 
         let events = Arc::new(state);
         let registry = Arc::new(ServerRegistry::default());
@@ -1403,7 +1425,13 @@ mod tests {
         push_channel(&mut state, "ch-1", "general");
         let msg_hash = push_message(&mut state, "ch-1", owner, "pin me", 1_000);
         let ch = state.channels.get_mut("ch-1").unwrap();
-        ch.pinned_messages.insert(msg_hash);
+        ch.pinned_messages.insert(
+            msg_hash,
+            PinMetadata {
+                pinner: owner,
+                pinned_at_ms: 1_000,
+            },
+        );
         ch.pinned_messages.remove(&msg_hash);
 
         let events = Arc::new(state);
@@ -1420,6 +1448,147 @@ mod tests {
         assert!(
             !view.messages[0].pinned,
             "UnpinMessage must flip `pinned` back to false on projection"
+        );
+    }
+
+    /// `DisplayMessage.pinned_metadata` must surface the pinner's
+    /// resolved display name + the captured `pinned_at_ms` whenever a
+    /// row projects to `pinned == true`. Drives the
+    /// `pinned by {name} · {when}` footer in the pinned panel
+    /// (`docs/specs/2026-04-19-ui-design/reactions-pins.md` §Pinned
+    /// panel contents).
+    #[test]
+    fn projection_pinned_metadata_populated_with_resolved_display_name() {
+        let owner = Identity::generate().endpoint_id();
+        let pinner_id = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        // Make the pinner a member with a profile, so
+        // `resolve_display_name` returns the profile's display name.
+        state.members.insert(
+            pinner_id,
+            Member {
+                peer_id: pinner_id,
+                roles: Default::default(),
+                display_name: None,
+            },
+        );
+        state.profiles.insert(pinner_id, {
+            let mut p = Profile::new(pinner_id);
+            p.display_name = "mira".into();
+            p
+        });
+        push_channel(&mut state, "ch-1", "general");
+        let msg_hash = push_message(&mut state, "ch-1", owner, "pin me", 1_000);
+        state
+            .channels
+            .get_mut("ch-1")
+            .unwrap()
+            .pinned_messages
+            .insert(
+                msg_hash,
+                PinMetadata {
+                    pinner: pinner_id,
+                    pinned_at_ms: 1_700_000_000_000,
+                },
+            );
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+            reaction_recency: Default::default(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let queue_meta = Arc::new(QueueMeta::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, &queue_meta, owner);
+        assert_eq!(view.messages.len(), 1);
+        let pm = view.messages[0]
+            .pinned_metadata
+            .as_ref()
+            .expect("pinned row must carry PinnedMetadata");
+        assert_eq!(
+            pm.pinner_display_name, "mira",
+            "pinner_display_name must resolve via profile.display_name",
+        );
+        assert_eq!(
+            pm.pinned_at_ms, 1_700_000_000_000,
+            "pinned_at_ms must equal the source PinMetadata value",
+        );
+    }
+
+    /// `DisplayMessage.pinned_metadata` must fall back through the
+    /// same `resolve_display_name` ladder as the row author —
+    /// `unknown peer` when neither the server profile registry nor
+    /// the local `ProfileState.names` map carries an entry for the
+    /// pinner. Keeps the footer renderable even when profile sync is
+    /// lagging.
+    #[test]
+    fn projection_pinned_metadata_falls_back_to_unknown_peer() {
+        let owner = Identity::generate().endpoint_id();
+        let stranger = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        push_channel(&mut state, "ch-1", "general");
+        let msg_hash = push_message(&mut state, "ch-1", owner, "pin me", 1_000);
+        state
+            .channels
+            .get_mut("ch-1")
+            .unwrap()
+            .pinned_messages
+            .insert(
+                msg_hash,
+                PinMetadata {
+                    pinner: stranger,
+                    pinned_at_ms: 42,
+                },
+            );
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+            reaction_recency: Default::default(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let queue_meta = Arc::new(QueueMeta::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, &queue_meta, owner);
+        let pm = view.messages[0]
+            .pinned_metadata
+            .as_ref()
+            .expect("pinned row must carry PinnedMetadata even when profile is missing");
+        assert_eq!(
+            pm.pinner_display_name, "unknown peer",
+            "missing profile must surface the `unknown peer` fallback",
+        );
+        assert_eq!(pm.pinned_at_ms, 42);
+    }
+
+    /// Non-pinned rows must leave `pinned_metadata` as `None` — the
+    /// renderer gates the footer on `Some(_)`, so leaking a stale
+    /// value here would surface a "pinned by …" line on an unpinned
+    /// row.
+    #[test]
+    fn projection_pinned_metadata_is_none_for_unpinned_row() {
+        let owner = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        push_channel(&mut state, "ch-1", "general");
+        let _ = push_message(&mut state, "ch-1", owner, "not pinned", 1_000);
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+            reaction_recency: Default::default(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let queue_meta = Arc::new(QueueMeta::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, &queue_meta, owner);
+        assert!(!view.messages[0].pinned);
+        assert!(
+            view.messages[0].pinned_metadata.is_none(),
+            "unpinned rows must not carry PinnedMetadata",
         );
     }
 

@@ -57,5 +57,5 @@ pub use sync::{
 };
 pub use types::{
     Channel, ChannelKind, ChatMessage, CrestPattern, FileAttachment, Member, MuteState,
-    PinnedFragment, PinnedKind, Profile, ProfileDelta, Role,
+    PinMetadata, PinnedFragment, PinnedKind, Profile, ProfileDelta, Role,
 };

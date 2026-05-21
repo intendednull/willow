@@ -121,7 +121,11 @@ The pinned panel is the right-rail / overlay slot:
 - Each entry: mini message card — avatar (24 px), display name (body
   weight 500), timestamp (`--ink-3`, 11 px), body preview (2 lines
   max, ellipsis), optional `pinned by {name} · {when}` footer row
-  (`--ink-3`, 10 px, mono `when`).
+  (`--ink-3`, 10 px, mono `when`). The footer is omitted when the
+  pinner's `PinMetadata` has not yet materialized for this peer
+  (rare; resolves on the next profile sync). Schema for
+  `PinMetadata` lives in
+  [`../2026-05-21-pinned-message-metadata-design.md`](../2026-05-21-pinned-message-metadata-design.md).
 - Entry actions (right-aligned on hover / always on mobile): `jump to`
   (scrolls the channel list to the parent message and flashes it via
   the same 180 ms `willow-pop-in` as reply-jump), `unpin`
@@ -227,9 +231,12 @@ Color is never the sole signifier.
 - [x] Header pin IconBtn shows a superscript count when > 0 and tints
       amber; click opens the pinned panel. *(`<MainPaneHeader>` +
       `pinned_count` prop — phase 3c.)*
-- [x] Pinned panel lists pinned messages newest-first, jump-to scrolls
-      and flashes the parent, unpin honours the permission check.
-      *(`<PinnedPanel>` rewrite — phase 3c.)*
+- [x] Pinned panel lists pinned messages newest-first, each entry
+      shows a `pinned by {name} · {when}` footer (omitted only when
+      pinner metadata is not yet materialized), jump-to scrolls and
+      flashes the parent, unpin honours the permission check.
+      *(`<PinnedPanel>` rewrite — phase 3c; footer + `PinMetadata`
+      state-schema change — phase 3c close-out.)*
 - [x] Every interactive element has an ARIA label per §Accessibility.
       *(`add reaction`, `download {filename}`, `react with {emoji}`,
       `{emoji} reacted by {count} — toggle your reaction`,
