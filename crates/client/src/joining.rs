@@ -282,12 +282,13 @@ impl<N: willow_network::Network> ClientHandle<N> {
         };
         let token = ops::JoinToken {
             inviter_peer_id: pid,
-            server_id,
+            server_id: server_id.clone(),
             link_id: link.link_id.clone(),
             server_name,
             inviter_name,
         };
         self.join_links.lock().push(link);
+        self.persist_join_links_for(&server_id);
         Ok(token.encode())
     }
 
@@ -297,7 +298,41 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
     pub async fn delete_join_link(&self, link_id: &str) {
         let link_id = link_id.to_string();
+        // Find which server this link belongs to before we drop it so we
+        // can persist the post-delete state for that server.
+        let server_id = self
+            .join_links
+            .lock()
+            .iter()
+            .find(|l| l.link_id == link_id)
+            .map(|l| l.server_id.clone());
         self.join_links.lock().retain(|l| l.link_id != link_id);
+        if let Some(sid) = server_id {
+            self.persist_join_links_for(&sid);
+        }
+    }
+
+    /// Snapshot the current join-links for `server_id` and forward them
+    /// to the persistence actor. No-op when persistence is disabled (the
+    /// handler itself short-circuits in that case, but checking here
+    /// avoids an unnecessary actor round-trip).
+    fn persist_join_links_for(&self, server_id: &str) {
+        if !self.persistence_enabled {
+            return;
+        }
+        let links: Vec<ops::JoinLink> = self
+            .join_links
+            .lock()
+            .iter()
+            .filter(|l| l.server_id == server_id)
+            .cloned()
+            .collect();
+        let _ = self
+            .persistence_addr
+            .do_send(crate::persistence_actor::PersistJoinLinks {
+                server_id: server_id.to_string(),
+                links,
+            });
     }
 
     pub async fn set_display_name(&self, name: &str) {
