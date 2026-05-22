@@ -593,18 +593,77 @@ async fn process_received_message<T: TopicHandle>(
                 return;
             }
             let _ = peer_id; // the verified `signer` is the grant target below
-            let should_respond = {
+                             // Three possible outcomes:
+                             //   - Link valid → bump `used`, send `JoinResponse`.
+                             //   - Link found but not currently usable (disabled / expired /
+                             //     exhausted) → reply with `JoinDenied { reason }` so the
+                             //     joiner sees a concrete error instead of an opaque timeout.
+                             //   - Link not found → drop silently. This is the
+                             //     anti-enumeration property: if the inviter never created
+                             //     this `link_id`, attackers cannot probe by trial. Only
+                             //     `link_id`s that *exist* (and that this peer therefore
+                             //     plausibly created) receive a denial; everything else is
+                             //     indistinguishable from "wrong inviter."
+            #[derive(Clone)]
+            enum LinkOutcome {
+                Respond,
+                Deny(&'static str),
+                Silent,
+            }
+            // Track which server we charged the use against so we can
+            // persist the bumped `used` count once we drop the lock —
+            // otherwise the counter resets on restart and an exhausted
+            // link looks fresh again.
+            let mut bumped_server: Option<String> = None;
+            let outcome = {
                 let mut links = ctx.join_links.lock();
-                let valid = links
-                    .iter_mut()
-                    .find(|l| l.link_id == link_id && l.is_valid());
-                if let Some(link) = valid {
-                    link.used += 1;
-                    true
+                if let Some(link) = links.iter_mut().find(|l| l.link_id == link_id) {
+                    if link.is_valid() {
+                        link.used += 1;
+                        bumped_server = Some(link.server_id.clone());
+                        LinkOutcome::Respond
+                    } else if !link.active {
+                        LinkOutcome::Deny("link_disabled")
+                    } else {
+                        // Either `used >= max_uses` or `expires_at` is in
+                        // the past — spec collapses both under `link_expired`.
+                        LinkOutcome::Deny("link_expired")
+                    }
                 } else {
-                    false
+                    LinkOutcome::Silent
                 }
             };
+            if let Some(sid) = bumped_server {
+                let snapshot: Vec<crate::ops::JoinLink> = ctx
+                    .join_links
+                    .lock()
+                    .iter()
+                    .filter(|l| l.server_id == sid)
+                    .cloned()
+                    .collect();
+                warn_if_err(
+                    ctx.persistence
+                        .do_send(crate::persistence_actor::PersistJoinLinks {
+                            server_id: sid,
+                            links: snapshot,
+                        }),
+                    "persistence.do_send PersistJoinLinks (used++)",
+                );
+            }
+            let should_respond = matches!(outcome, LinkOutcome::Respond);
+            if let LinkOutcome::Deny(reason) = &outcome {
+                let msg = crate::ops::WireMessage::JoinDenied {
+                    link_id: link_id.clone(),
+                    target_peer: signer,
+                    reason: (*reason).to_string(),
+                };
+                if let Some(data) = crate::ops::pack_wire(&msg, &ctx.identity) {
+                    warn_if_err(
+                        topic.broadcast(bytes::Bytes::from(data)).await,
+                        "topic.broadcast JoinDenied",
+                    );
+                }
+            }
             if should_respond {
                 // Generate invite for the requesting peer using event_state + registry.
                 let server_registry = ctx.server_registry.clone();
@@ -1789,6 +1848,212 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, ClientEvent::JoinLinkResponse { .. })),
             "JoinResponse without matching pending entry must be ignored"
+        );
+    }
+
+    // ─── JoinDenied emission on the inviter side ───────────────────────
+    //
+    // The spec promises that when a joiner sends a `JoinRequest` for a
+    // link that exists but is disabled/expired/exhausted, the inviter
+    // replies with `JoinDenied { reason }` so the joiner sees a concrete
+    // error instead of a 30-second timeout. Anti-enumeration: unknown
+    // `link_id`s receive no reply (silent drop).
+    //
+    // The tests below subscribe a second peer (`observer`) to the same
+    // hub topic as the inviter, drive the inviter's listener with a
+    // signed `JoinRequest`, then assert on what the observer received
+    // from the inviter's outbound broadcast. `MemTopicEvents::next`
+    // skips self-messages, so the inviter cannot observe its own
+    // broadcasts; that's why we need the second peer.
+
+    /// Build an inviter `ListenerCtx` driven by a shared hub topic, plus
+    /// an `observer` topic on the same hub used to read the inviter's
+    /// outbound broadcasts.
+    async fn make_inviter_and_observer() -> (
+        ClientHandle<willow_network::mem::MemNetwork>,
+        ListenerCtx,
+        <willow_network::mem::MemNetwork as Network>::Topic,
+        <willow_network::mem::MemNetwork as Network>::Events,
+    ) {
+        let (client, _rx) = test_client();
+        let hub = willow_network::mem::MemHub::new();
+        let inviter_net = willow_network::mem::MemNetwork::new(&hub);
+        let (topic, _inviter_events) = inviter_net
+            .subscribe(willow_network::topic_id("join-denied-emit-test"), vec![])
+            .await
+            .expect("inviter subscribe must succeed");
+        let observer_net = willow_network::mem::MemNetwork::new(&hub);
+        let (_observer_topic, observer_events) = observer_net
+            .subscribe(willow_network::topic_id("join-denied-emit-test"), vec![])
+            .await
+            .expect("observer subscribe must succeed");
+        let ctx = ListenerCtx {
+            event_state: client.event_state_addr.clone(),
+            chat_meta: client.chat_meta_addr.clone(),
+            profiles: client.profile_state_addr.clone(),
+            network: client.network_meta_addr.clone(),
+            voice: client.voice_state_addr.clone(),
+            persistence: client.persistence_addr.clone(),
+            persistence_enabled: false,
+            event_broker: client.event_broker.clone(),
+            identity: client.identity.clone(),
+            join_links: Arc::clone(&client.join_links),
+            pending_joins: Arc::clone(&client.pending_joins),
+            dag: client.dag_addr.clone(),
+            server_registry: client.server_registry_addr.clone(),
+            on_neighbor_up: None,
+        };
+        (client, ctx, topic, observer_events)
+    }
+
+    /// Drain the next `JoinDenied` reason from the observer's topic
+    /// event stream, with a short settle window. Returns `None` if
+    /// nothing arrives in the deadline.
+    async fn next_join_denied_reason(
+        events: &mut <willow_network::mem::MemNetwork as Network>::Events,
+        deadline: std::time::Duration,
+    ) -> Option<String> {
+        use willow_network::{GossipEvent, TopicEvents};
+        let task = async {
+            loop {
+                let Some(Ok(evt)) = events.next().await else {
+                    return None;
+                };
+                let GossipEvent::Received(msg) = evt else {
+                    continue;
+                };
+                let Some((wire, _signer)) = crate::ops::unpack_wire(&msg.content) else {
+                    continue;
+                };
+                if let crate::ops::WireMessage::JoinDenied { reason, .. } = wire {
+                    return Some(reason);
+                }
+            }
+        };
+        tokio::time::timeout(deadline, task).await.ok().flatten()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn join_request_for_disabled_link_replies_with_link_disabled() {
+        let (client, ctx, topic, mut observer) = make_inviter_and_observer().await;
+        let link_id = "disabled-link".to_string();
+        client.join_links.lock().push(crate::ops::JoinLink {
+            link_id: link_id.clone(),
+            server_id: "unused".into(),
+            max_uses: 10,
+            used: 0,
+            active: false, // disabled by inviter
+            expires_at: None,
+            created_at: 0,
+        });
+
+        let bob = willow_identity::Identity::generate();
+        let bob_id = bob.endpoint_id();
+        let bytes = crate::ops::pack_wire(
+            &crate::ops::WireMessage::JoinRequest {
+                link_id: link_id.clone(),
+                peer_id: bob_id,
+            },
+            &bob,
+        )
+        .expect("pack must succeed");
+        process_received_message(&bytes, bob_id, &ctx, &topic).await;
+
+        let reason =
+            next_join_denied_reason(&mut observer, std::time::Duration::from_millis(500)).await;
+        assert_eq!(reason, Some("link_disabled".to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn join_request_for_expired_link_replies_with_link_expired() {
+        let (client, ctx, topic, mut observer) = make_inviter_and_observer().await;
+        let link_id = "expired-link".to_string();
+        client.join_links.lock().push(crate::ops::JoinLink {
+            link_id: link_id.clone(),
+            server_id: "unused".into(),
+            max_uses: 10,
+            used: 0,
+            active: true,
+            // Expired one second before "now" — `current_time_ms()` is
+            // monotonic-ish; this guarantees `is_valid()` returns false.
+            expires_at: Some(crate::util::current_time_ms().saturating_sub(1_000)),
+            created_at: 0,
+        });
+
+        let bob = willow_identity::Identity::generate();
+        let bob_id = bob.endpoint_id();
+        let bytes = crate::ops::pack_wire(
+            &crate::ops::WireMessage::JoinRequest {
+                link_id: link_id.clone(),
+                peer_id: bob_id,
+            },
+            &bob,
+        )
+        .expect("pack must succeed");
+        process_received_message(&bytes, bob_id, &ctx, &topic).await;
+
+        let reason =
+            next_join_denied_reason(&mut observer, std::time::Duration::from_millis(500)).await;
+        assert_eq!(reason, Some("link_expired".to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn join_request_for_exhausted_link_replies_with_link_expired() {
+        let (client, ctx, topic, mut observer) = make_inviter_and_observer().await;
+        let link_id = "exhausted-link".to_string();
+        client.join_links.lock().push(crate::ops::JoinLink {
+            link_id: link_id.clone(),
+            server_id: "unused".into(),
+            max_uses: 1,
+            used: 1, // already used up
+            active: true,
+            expires_at: None,
+            created_at: 0,
+        });
+
+        let bob = willow_identity::Identity::generate();
+        let bob_id = bob.endpoint_id();
+        let bytes = crate::ops::pack_wire(
+            &crate::ops::WireMessage::JoinRequest {
+                link_id: link_id.clone(),
+                peer_id: bob_id,
+            },
+            &bob,
+        )
+        .expect("pack must succeed");
+        process_received_message(&bytes, bob_id, &ctx, &topic).await;
+
+        // Spec collapses "max_uses reached" and "expires_at in the past"
+        // under the same `link_expired` reason — both mean "this link
+        // can no longer be used."
+        let reason =
+            next_join_denied_reason(&mut observer, std::time::Duration::from_millis(500)).await;
+        assert_eq!(reason, Some("link_expired".to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn join_request_for_unknown_link_id_is_silent() {
+        let (_client, ctx, topic, mut observer) = make_inviter_and_observer().await;
+
+        let bob = willow_identity::Identity::generate();
+        let bob_id = bob.endpoint_id();
+        let bytes = crate::ops::pack_wire(
+            &crate::ops::WireMessage::JoinRequest {
+                link_id: "no-such-link".to_string(),
+                peer_id: bob_id,
+            },
+            &bob,
+        )
+        .expect("pack must succeed");
+        process_received_message(&bytes, bob_id, &ctx, &topic).await;
+
+        // Anti-enumeration: unknown `link_id` MUST NOT produce a reply.
+        // The inviter must look indistinguishable from "wrong inviter."
+        let reason =
+            next_join_denied_reason(&mut observer, std::time::Duration::from_millis(250)).await;
+        assert_eq!(
+            reason, None,
+            "unknown link_id must not produce a JoinDenied (anti-enumeration)"
         );
     }
 }

@@ -808,7 +808,15 @@ impl<N: willow_network::Network> ClientHandle<N> {
             state_actors::DagState::default(),
         ));
         let topics: Arc<RwLock<HashMap<String, N::Topic>>> = Arc::new(RwLock::new(HashMap::new()));
-        let join_links = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        // Hydrate join_links from per-server persistence so links survive a
+        // page reload (previously lost — see audit follow-up).
+        let mut initial_join_links: Vec<ops::JoinLink> = Vec::new();
+        if config.persistence {
+            for sid in state.servers.keys() {
+                initial_join_links.extend(storage::load_join_links(sid));
+            }
+        }
+        let join_links = Arc::new(parking_lot::Mutex::new(initial_join_links));
         let pending_joins = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
 
         // Build StateRefs for derived actor sources.
