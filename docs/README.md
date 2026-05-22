@@ -69,7 +69,7 @@ Every entry below carries one of:
 - [Epoch-driven channel key rotation](specs/2026-04-24-epoch-key-rotation.md) — derives fresh channel encryption epoch from every membership-changing state event. `[active]`
 - [Direct messages — seal+gift-wrap deferral to MLS](specs/2026-04-24-seal-gift-wrap-dms.md) — captures NIP-17/44/59 investigation; defers DMs to a future MLS-over-Willow spec. `[active]`
 - [Bech32-with-HRP user-facing identifiers](specs/2026-04-24-bech32-identifiers.md) — all UI-visible identifiers encoded as bech32m strings with type-tagging human-readable prefix. `[active]`
-- [Shareable join links](specs/2026-03-27-shareable-join-links-design.md) — single URL triggers automatic P2P key exchange, replacing multi-step invite flow. `[active]`
+- [Shareable join links](specs/2026-03-27-shareable-join-links-design.md) — single URL triggers automatic P2P key exchange, replacing multi-step invite flow. `[landed]`
 
 **Plans**
 
