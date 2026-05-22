@@ -1,6 +1,8 @@
 # UI Phase 3c — Reactions & Pins Implementation Plan
 
+**Date:** 2026-05-08
 **Status:** landed (foundation PR #634 + picker wireup PR #635 + initial close-out PR #637 + cascade close-out PRs #643 visibility wiring, #644 pinned-by footer + `PinMetadata`, #646 plan/spec/index close-out, #647 same-channel react-recency refresh, #648 DOM coverage tests)
+**Spec:** [`docs/specs/2026-04-19-ui-design/reactions-pins.md`](../specs/2026-04-19-ui-design/reactions-pins.md)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development + superpowers:test-driven-development. Every task = one commit; tick the checkbox in the same commit.
 

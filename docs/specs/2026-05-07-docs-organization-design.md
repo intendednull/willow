@@ -1,7 +1,8 @@
 # Docs organization — target structure
 
 **Date:** 2026-05-07
-**Status:** draft
+**Status:** landed (migration plan landed 2026-05-07; README + skill + CLAUDE.md pointer in place; STATUS frontmatter backfilled across all landed plans in PRs #651 / #652)
+**Implementation plan:** [`docs/plans/2026-05-07-docs-organization.md`](../plans/2026-05-07-docs-organization.md)
 
 ## Purpose
 
@@ -90,9 +91,18 @@ predating this convention are not retrofitted (see *Non-goals*).
 ```
 **Date:** YYYY-MM-DD
 **Status:** draft | active | landed | superseded
-**Spec:** docs/specs/...      (plans only — REQUIRED, points at the spec being realized)
-**Supersedes:** docs/specs/... (if applicable)
+**Spec:** docs/specs/...               (plans only — REQUIRED, points at the spec being realized)
+**Supersedes:** docs/specs/...         (if applicable)
+**Parent specs:** docs/specs/...       (optional — for specs that descend from one or more existing specs)
+**Implementation plan:** docs/plans/...(optional — back-pointer when the doc is a spec and the plan is known)
 ```
+
+The first four fields are the minimum. `**Parent specs:**` and
+`**Implementation plan:**` are optional extensions used when the doc lives in
+a richer cross-reference graph (e.g. a child spec descending from a multi-file
+parent, or a freestanding spec whose realizing plan is already known).
+Additional `**Key:**` extensions are allowed when they make navigation
+cheaper for the next reader — keep them rare and self-explanatory.
 
 Status semantics:
 
@@ -242,7 +252,12 @@ of the surfaces above:
 > **Docs entry point:** `docs/README.md` is the master index of specs and
 > plans, grouped by feature area. Read it before adding any new spec or plan,
 > or before searching for an existing one. The `organizing-willow-docs` skill
-> mirrors the conventions for on-demand loading.
+> mirrors the conventions for on-demand loading. Cemented in
+> `docs/specs/2026-05-07-docs-organization-design.md`.
+
+The trailing back-pointer to this spec gives the reader a one-hop path to the
+canonical rules when they want more than the pointer paragraph itself
+contains.
 
 Existing CLAUDE.md sections that duplicate doc-discovery information (e.g.
 the per-task "see `docs/specs/...`" pointers in *Architecture Notes*) are
@@ -261,14 +276,18 @@ left in place — they are useful inline context, not redundant with the index.
   project-management tool. Stale tags are tolerable; missing entries are not.
 - **Per-area sub-READMEs.** Single-file index until volume justifies a split.
 
-## Open questions
+## Resolved questions
 
-- A handful of filenames currently appear in both `docs/specs/` and
-  `docs/plans/` with the same date and topic (e.g.
-  `2026-04-12-state-authority-and-mutations.md`,
-  `2026-04-12-willow-channel-removal.md`). The migration plan must verify
-  whether each pair is genuinely a spec + plan (correct, keep both) or an
-  accidental misclassification (move to the right folder).
-- The exact set of nine feature areas may shift slightly during catalog
-  population if a real entry resists a clean home; the area list is
-  load-bearing for navigation and worth a final pass during the migration.
+The migration closed out two open questions; recorded here so future readers
+don't re-litigate them.
+
+- **Same-date spec/plan pairs.** Pairs like
+  `2026-04-12-state-authority-and-mutations.md` and
+  `2026-04-12-willow-channel-removal.md` were verified during the migration:
+  each is a genuine spec + plan pair (the plan's header cites the spec). No
+  misclassifications were found. Future same-date pairs are legitimate and
+  expected when a target and its migration are designed together.
+- **Nine-area catalog.** The nine areas in §3 populated cleanly with no
+  entries that resisted a home. The area list is stable. Future areas can be
+  added if a new feature cluster justifies one — the convention does not cap
+  the count.
