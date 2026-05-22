@@ -4190,6 +4190,48 @@ select:focus-visible {
     font-size: 12px;
 }
 
+/* `<details>` disclosure for the per-link max-uses + expiration inputs.
+   Collapsed by default so the common "create link with defaults" flow stays
+   a single click. */
+.invite-link-options {
+    margin-top: 10px;
+    font-size: 13px;
+}
+.invite-link-options > summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    user-select: none;
+    padding: 4px 0;
+}
+.invite-link-options > summary:hover {
+    color: var(--text-primary);
+}
+.invite-link-options__row {
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+}
+.invite-link-options__label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.invite-link-options__max-uses,
+.invite-link-options__expires {
+    padding: 4px 8px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 13px;
+}
+.invite-link-options__max-uses {
+    width: 80px;
+}
+
 /* ── Trust-verification — SAS grid + badges + add-friend dialog ──── */
 /* Phase 1d. Spec: docs/specs/2026-04-19-ui-design/trust-verification.md */
 
