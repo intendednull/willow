@@ -1,5 +1,67 @@
 # Video, Screen Sharing + Call Page Design
 
+**Date:** 2026-03-26
+**Status:** landed — call page, participant tiles, camera, screen share, speaking detection, grid/focus layout, perfect-negotiation collision avoidance, video track management all shipped via [`docs/plans/2026-03-26-video-screen-sharing-call-page.md`](../plans/2026-03-26-video-screen-sharing-call-page.md). One substantive limitation remains in §Realised state below: remote video tiles cannot distinguish camera vs screen-share at render time (no source-type signaling yet).
+**Implementation plan:** [`docs/plans/2026-03-26-video-screen-sharing-call-page.md`](../plans/2026-03-26-video-screen-sharing-call-page.md)
+
+> **Realised state (post-2026-05 audit).** The system works as designed.
+> The body below drifts from the realised implementation in several
+> places, and one substantive limitation is tracked for follow-up:
+>
+> - **Source-type signaling for remote video (deferred).** Remote tiles
+>   currently default to the `screen-share` CSS class regardless of
+>   whether the inbound track is camera or screen share. This means
+>   remote cameras get `object-fit: contain` (letterboxed) instead of
+>   `object-fit: cover` (filled), which the spec's §Visual design
+>   promises. The remote-source-type distinction requires extending
+>   signaling to carry a `VideoSource` enum (camera | screen-share)
+>   alongside the SDP. Tracked as follow-up; the file comment at
+>   `crates/web/src/components/participant_tile.rs:110-118`
+>   acknowledges this limitation in code.
+> - **File path drift.** §Modify section references
+>   `components/sidebar.rs`; the actual file is
+>   `crates/web/src/components/channel_sidebar.rs`. The plan file is
+>   already correct; the spec was not updated.
+> - **`local_video_stream` signal added beyond spec.** `VoiceState`
+>   in `crates/web/src/state.rs:314` carries
+>   `local_video_stream: ReadSignal<Option<SendWrapper<MediaStream>>>`
+>   to drive the local preview tile, because `VoiceManager` does not
+>   expose the local stream synchronously to Leptos. The spec's §6
+>   State Additions enumerates only `video_source`, `speaking_peers`,
+>   `remote_video_streams`.
+> - **Perfect negotiation simplified.** §4 implies
+>   `RtcSignalingState`-driven collision detection. The realised code
+>   relies only on the `making_offer` flag + `local_peer_id <
+>   remote_peer` comparison; `signaling_state()` is never called.
+>   `RtcSignalingState` was speculative; the realised approach is
+>   sufficient for the current use case.
+> - **`handle_offer` get-or-create.** §Camera handling at L58 says
+>   "sets remote description on the *existing* peer connection."
+>   `crates/web/src/voice.rs:611-619`'s `handle_offer` calls
+>   `get_or_create_connection`, which DOES create a new PC if none
+>   exists — necessary because remote-initiated calls may arrive before
+>   any local outbound state exists. Same applies to the analogous
+>   `create_offer` claim. The realised behaviour (reuse if exists,
+>   create otherwise) is correct in both directions.
+> - **Speaking-tile glow values tuned.** §Visual design at L174 and
+>   the keyframes at L294-297 list `0 0 8px` / `0 0 12px → 0 0 20px`.
+>   `crates/web/style.css:3671` uses
+>   `0 0 0 3px <halo>, 0 0 16px <halo>, 0 4px 24px rgba(0,0,0,0.4)`
+>   plus keyframes `0 0 16px → 0 0 24px` (halo ring 3px → 5px). Values
+>   were tuned during implementation; treat the spec numbers as
+>   indicative.
+> - **Trust badge + presence dot on participant tiles** (not mentioned
+>   in spec). `crates/web/src/components/participant_tile.rs:166-194`
+>   renders `<TrustBadge … context=TileCorner/>` in the top-left and
+>   `<StatusDot state=presence …/>` in the bottom-right. Both are
+>   legitimate cross-spec affordances introduced by Phase 1d
+>   (trust-verification) and Phase 1e (presence); the visual-design
+>   section of this spec does not document them.
+>
+> The body below is preserved as the original target. The *Realised
+> state* list above is authoritative for current implementation shape;
+> do not edit the body in place to match it.
+
 ## Problem
 
 Willow's voice chat is audio-only with minimal UI — just mute/deafen/disconnect buttons in the sidebar. There's no camera video, no screen sharing, no visual call page, no speaking indicators, and no way to see who's in the call at a glance.
