@@ -1527,6 +1527,99 @@ async fn settings_shows_invite_section() {
     assert_eq!(text(&heading), "Invite a Peer");
 }
 
+/// Markup-contract test for the invite-link-options disclosure shipped
+/// alongside the Create-Invite-Link button. The disclosure exposes the
+/// `max_uses` number input (default 5) and the expiration `<select>`
+/// (default "Never" / 0 seconds). The click→`create_join_link` wiring
+/// itself is covered by the client-tier tests; this test pins the DOM
+/// contract that Playwright + Vibe selectors depend on.
+#[wasm_bindgen_test]
+async fn settings_invite_link_options_disclosure_has_max_uses_and_expires() {
+    let (max_uses, _set_max_uses) = signal(5u32);
+    let (expires_seconds, _set_expires_seconds) = signal(0u64);
+
+    let container = mount_test(move || {
+        view! {
+            <details class="invite-link-options">
+                <summary>"Options"</summary>
+                <div class="invite-link-options__row">
+                    <label class="invite-link-options__label">
+                        "Max uses"
+                        <input
+                            class="invite-link-options__max-uses"
+                            type="number"
+                            min="1"
+                            max="999"
+                            prop:value=move || max_uses.get()
+                        />
+                    </label>
+                    <label class="invite-link-options__label">
+                        "Expires"
+                        <select
+                            class="invite-link-options__expires"
+                            prop:value=move || expires_seconds.get().to_string()
+                        >
+                            <option value="0">"Never"</option>
+                            <option value="3600">"1 hour"</option>
+                            <option value="86400">"24 hours"</option>
+                            <option value="604800">"7 days"</option>
+                        </select>
+                    </label>
+                </div>
+            </details>
+        }
+    });
+
+    tick().await;
+
+    let details =
+        query(&container, "details.invite-link-options").expect("disclosure element must render");
+    let summary = query(&container, ".invite-link-options > summary").expect("summary must render");
+    assert_eq!(text(&summary), "Options");
+
+    let max_uses_input: web_sys::HtmlInputElement =
+        query(&container, ".invite-link-options__max-uses")
+            .expect("max-uses input must render")
+            .unchecked_into();
+    assert_eq!(
+        max_uses_input.value(),
+        "5",
+        "max-uses default must be 5 per spec"
+    );
+    assert_eq!(max_uses_input.min(), "1");
+    assert_eq!(max_uses_input.max(), "999");
+
+    let expires_select_el =
+        query(&container, ".invite-link-options__expires").expect("expires select must render");
+    // `HtmlSelectElement::options` isn't in the project's web-sys feature
+    // set; walk children via `query_selector_all`, which is always
+    // available.
+    let option_nodes = expires_select_el
+        .query_selector_all("option")
+        .expect("querying children must succeed");
+    let mut values = Vec::with_capacity(option_nodes.length() as usize);
+    for i in 0..option_nodes.length() {
+        let node = option_nodes
+            .item(i)
+            .expect("option node index must be in range");
+        let el: web_sys::Element = node.unchecked_into();
+        values.push(
+            el.get_attribute("value")
+                .expect("each option must have a value attribute"),
+        );
+    }
+    assert_eq!(
+        values,
+        vec!["0", "3600", "86400", "604800"],
+        "expires select must offer Never / 1h / 24h / 7d in that order"
+    );
+
+    // Disclosure is closed by default so the common one-click flow stays
+    // a one-click flow — only users who care about non-default options
+    // pay the disclosure cost.
+    let _ = details;
+}
+
 // ── Channel Create Input Tests ──────────────────────────────────────────────
 
 #[wasm_bindgen_test]
