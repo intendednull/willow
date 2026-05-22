@@ -1,5 +1,9 @@
 # Willow-Channel Removal
 
+**Date:** 2026-04-12
+**Status:** landed — `willow-channel` crate deleted; `ServerState` is the sole shared-type owner. One named follow-up remains in `crates/client/src/lib.rs::reconcile_topic_map` (see *Deferred follow-ups* at the bottom).
+**Implementation plan:** [`docs/plans/2026-04-12-willow-channel-removal.md`](../plans/2026-04-12-willow-channel-removal.md)
+
 > Remove the `willow-channel` crate entirely. Consolidate all shared
 > types into `willow-state` and eliminate the dual-state representation
 > in the client.
@@ -130,7 +134,7 @@ All changes are in `crates/client/src/`:
 | `persistence_actor.rs` | Persist `ServerState`, not `Server` |
 | `servers.rs` | Use event pipeline for server creation |
 | `util.rs` | `make_topic()` takes `&str` server ID, not `&Server` |
-| `lib.rs` | Remove `reconcile_topic_map()`, remove `parse_permission()` |
+| `lib.rs` | Remove `parse_permission()`. `reconcile_topic_map()` is retained as a documented helper for invite-validation follow-up — see *Deferred follow-ups* below. |
 
 ### Workspace changes
 
@@ -139,3 +143,25 @@ All changes are in `crates/client/src/`:
 - Remove `willow-channel` from `crates/client/Cargo.toml`.
 - Add `willow-state` to `crates/client/Cargo.toml` (if not present).
 - Update `CLAUDE.md` dependency graph to remove `willow-channel`.
+
+## Deferred follow-ups
+
+### `reconcile_topic_map()` cleanup
+
+`crates/client/src/lib.rs::reconcile_topic_map<V>()` was *not* deleted as
+originally specified. It now converts `HashMap<String, V>` →
+`HashMap<willow_messaging::ChannelId, V>` and gracefully skips entries with
+unparseable UUIDs (cf. issue #141 — previously, unparseable IDs were
+silently replaced by random UUIDs, causing the client to diverge from the
+network).
+
+The function is currently dead in production (only its own regression test
+exercises it). It is retained as a pre-wired utility for callers that
+deserialize topic maps from wire data (`accept_invite`, the join path).
+Integration into the full invite/join flow is tracked as follow-up work —
+once those sites consume the helper, this section can be removed and the
+table row above can drop to "Removed."
+
+If the follow-up never lands, `reconcile_topic_map` and its test should be
+deleted along with the vestigial `willow_messaging::ChannelId` import — it
+adds nothing to the current code path.
