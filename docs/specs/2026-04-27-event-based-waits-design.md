@@ -1,7 +1,8 @@
 # Event-Based Waits in Playwright Suite — Design
 
 **Date:** 2026-04-27
-**Status:** draft
+**Status:** landed — `test-hooks` cargo feature + WASM API, push dispatcher, `data-state` lifecycle, `Peer` wrapper, ESLint rule, ratchet script, flake harness all shipped across PRs 1–4. Two CI gates from §CI gate (symbol-leak check + flake harness) are wired to local `just check-all` only; CI workflow wiring is a follow-up tracked in the *Realised state* note below.
+**Implementation plan:** [`docs/plans/2026-04-27-event-based-waits-pr1-test-hooks-foundation.md`](../plans/2026-04-27-event-based-waits-pr1-test-hooks-foundation.md), [`docs/plans/2026-04-28-event-based-waits-pr1-errata.md`](../plans/2026-04-28-event-based-waits-pr1-errata.md), [`docs/plans/2026-04-29-event-based-waits-pr2-peer-wrapper.md`](../plans/2026-04-29-event-based-waits-pr2-peer-wrapper.md), [`docs/plans/2026-04-30-event-based-waits-pr3-data-state-lifecycle.md`](../plans/2026-04-30-event-based-waits-pr3-data-state-lifecycle.md), [`docs/plans/2026-04-30-event-based-waits-pr4-ratchet-flake-harness.md`](../plans/2026-04-30-event-based-waits-pr4-ratchet-flake-harness.md)
 **Branch:** `claude/event-based-waits-RNFZ9`
 
 > **2026-04-28 erratum.** Investigation during PR-1 execution found that
@@ -12,6 +13,68 @@
 > therefore return `js_sys::Promise`, not synchronous values. The
 > sections below have been updated; the old shape is preserved in
 > `docs/plans/2026-04-28-event-based-waits-pr1-errata.md`.
+
+> **Realised state (post-2026-05 audit).** The four PRs landed and the
+> system works as designed for the in-scope flows, but the body below
+> drifts from the realised implementation in several places. Diffs:
+>
+> - **`tab_bar.rs` was excluded** from the `data-state` lifecycle because
+>   neither of its candidate elements has a CSS transition; recorded in
+>   commit 0f79399 ("docs(web): record tab_bar lifecycle decision"). The
+>   lifecycle now applies to four components + the action-sheet overlay,
+>   not five. §Scope, §`data-state` attribute pattern Components-
+>   receiving-the-lifecycle, and the driving-property list are stale on
+>   this point.
+> - **Driving-property table fix.** `bottom_sheet.rs` drives on
+>   `transform` (its listener accepts both `transform` and `opacity`
+>   with `opacity` as the reduced-motion fallback); `grove_drawer.rs`
+>   similarly accepts both; the action-sheet markup in `message.rs`
+>   drives on `transform`. The body's list is incomplete on these points.
+> - **`std::mem::forget` instead of `StoredValue`** for the push
+>   dispatcher in `app.rs`. `wasm32`'s process *is* the app, so leaking
+>   the dispatcher handle is the simpler correct shape. The `StoredValue`
+>   lifecycle paragraph in §Push dispatcher is superseded.
+> - **`EventReceiver::subscribe_now`** is used instead of
+>   `ClientHandle::subscribe_events()` — `subscribe_now` is the race-free
+>   path that avoids the boot-window where async-subscribe would drop
+>   boot-time events. Comment at `app.rs:167-169` documents the rationale;
+>   the spec's §Push dispatcher phrasing should defer to that.
+> - **`clock.ts` exists** as a fourth helper module at
+>   `e2e/helpers/clock.ts` (wraps `page.clock.install`/`runFor`). The
+>   §Helpers redesign directory listing omits it.
+> - **`longPress` did NOT migrate to `page.clock`** — the original
+>   `longPress` still uses `waitForTimeout`; an opt-in
+>   `longPressWithClock` exists but has no callers. §`page.clock for
+>   real durations` step 1 is stale; the migration is deferred.
+> - **`waitUntilHeadsEqual` default timeout is 90s, not 30s** (per
+>   `e2e/test-hooks.ts:193`). Justification recorded in code: iroh-gossip
+>   cold-start cost — the relay log shows ~30s of dial timeouts before
+>   the first peer-pair handshake completes. §Wait-until-heads-equal
+>   sketch and §Three-patterns-purged item 3 need this reality.
+> - **`crates/web/src/test_hooks/` is a directory**, not a file. Four
+>   submodules: `mod.rs`, `dispatcher.rs`, `snapshot.rs`, `wire.rs`. The
+>   spec's references to `crates/web/src/test_hooks.rs` should be a
+>   directory path.
+> - **Comprehensive WASM self-tests live in `crates/web/tests/test_hooks_browser.rs`**,
+>   not `crates/web/tests/browser.rs` (which only carries the
+>   `data-state` lifecycle tests + a single mount sanity test). §PR 1
+>   references the wrong file for the bulk of the test set.
+> - **`dev-quick` did not get the `FEATURES=""` parameter** that `dev`
+>   carries. Spec §`just dev` paragraph implies symmetric
+>   parameterisation; not realised. Minor follow-up.
+> - **CI gaps.** `scripts/check-no-test-hooks-in-prod.sh` exists and is
+>   called from `just check-all`, but no GitHub Actions workflow runs
+>   `check-all` or that script directly. Similarly, no path-filtered
+>   workflow runs `just test-e2e-flake N=10` on PRs that modify `e2e/`.
+>   Both gates exist as local-only today. §CI gate and the PR-4
+>   `Migrated specs must pass N=10 in CI` claim describe intent that
+>   has not been wired to CI yet. Tracked as follow-up.
+>
+> The body below is preserved as the original design (corrected only by
+> the earlier 2026-04-28 erratum). The *Realised state* list above is
+> authoritative for current implementation shape; do not edit the body
+> in place to match it — that would lose the design rationale that drove
+> the four PRs.
 
 ## Problem
 
