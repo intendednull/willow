@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Date:** 2026-05-07
-**Status:** draft
+**Status:** landed (commit `c9ab61c`, 2026-05-07) — master index populated, `organizing-willow-docs` skill mirrors the conventions, `docs/design/` folded into `docs/specs/`, `llm-agent-ux` moved to `docs/specs/2026-04-25-llm-agent-ux-spec-design.md`.
 **Spec:** docs/specs/2026-05-07-docs-organization-design.md
 
 **Goal:** Realize the docs-organization spec — populate `docs/README.md` as the master index, mirror conventions in a project-local skill, fold the `docs/design/` orphan into `docs/specs/`, and update `CLAUDE.md` to point at the new entry surfaces.
