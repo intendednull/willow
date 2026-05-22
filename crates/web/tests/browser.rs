@@ -15720,3 +15720,263 @@ mod phase_3c_recency_refresh {
     // is verified manually per `docs/plans/2026-05-08-ui-phase-3c-
     // reactions-pins.md` §Ambiguity §6 follow-up.
 }
+
+// ── Phase 3c — reactions strip + add-chip + emoji picker DOM coverage ───────
+//
+// Pre-phase-3c browser tests in this file (`reactions_render_with_count`
+// at L892, `emoji_reaction_picker_toggles` at L2104) are SYNTHETIC —
+// they mount hand-written `<div class="reactions">` / `.reaction-picker`
+// fixtures, not the actual phase-3c components. The new BEM classes
+// (`.reactions-strip`, `.reaction-pill`, `.reaction-pill--reacted`,
+// `.add-reaction-chip`, `.emoji-picker`, `.emoji-picker__cell--selected`)
+// are therefore unexercised. These tests cover AG-1, AG-2, AG-3 from
+// `docs/plans/2026-05-08-ui-phase-3c-reactions-pins.md` against the
+// real `<ReactionStrip>`, `<AddReactionChip>`, and `<EmojiPicker>`
+// components. AG-11 (composer + row use the same `<EmojiPicker>`) is a
+// compile-time tautology — both callsites import the one and only
+// `willow_web::components::EmojiPicker` — and is already covered by
+// the production wiring in `composer.rs:805` and `message.rs:1337`.
+
+mod phase_3c_reactions_pins {
+    use std::collections::HashMap;
+
+    use leptos::prelude::*;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_test::*;
+    use willow_web::components::emoji_picker::EmojiPicker;
+    use willow_web::components::reactions::{AddReactionChip, ReactionStrip};
+
+    use super::{mount_test, query, query_all, simulate_click, simulate_type, text, tick};
+
+    /// AG-1: `<ReactionStrip>` renders the BEM container + one
+    /// `.reaction-pill` per emoji entry, each pill carries the
+    /// `aria-label` from the spec and clicking fires `on_react` with
+    /// the emoji.
+    #[wasm_bindgen_test]
+    async fn reaction_strip_renders_pills_with_spec_geometry() {
+        let mut reactions: HashMap<String, Vec<String>> = HashMap::new();
+        reactions.insert("👍".to_string(), vec!["mira".into(), "ori".into()]);
+        reactions.insert("❤️".to_string(), vec!["kes".into()]);
+
+        let (clicked_emoji, set_clicked_emoji) = signal(Option::<String>::None);
+        let (open_picker_count, set_open_picker_count) = signal(0u32);
+
+        let container = mount_test(move || {
+            view! {
+                <ReactionStrip
+                    reactions=reactions.clone()
+                    on_react=Callback::new(move |e: String| set_clicked_emoji.set(Some(e)))
+                    on_open_picker=Callback::new(move |_: ()| {
+                        set_open_picker_count.update(|n| *n += 1);
+                    })
+                />
+            }
+        });
+        tick().await;
+
+        let _strip = query(&container, ".reactions-strip").expect(".reactions-strip must render");
+        // query_all takes `&HtmlElement` so query against the mount
+        // container (the strip is its only child anyway).
+        let pills = query_all(&container, ".reaction-pill");
+        assert_eq!(
+            pills.len(),
+            2,
+            "one .reaction-pill per emoji entry, got {}",
+            pills.len()
+        );
+
+        // Spec aria-label: `{emoji} reacted by {count} — toggle your reaction`.
+        // Strip sorts entries alphabetically by emoji string; ❤️
+        // (U+2764) sorts before 👍 (U+1F44D) by Unicode code point.
+        let aria_first = pills[0].get_attribute("aria-label").unwrap_or_default();
+        assert!(
+            aria_first.contains("reacted by 1") && aria_first.contains("toggle your reaction"),
+            "first pill aria-label follows the spec template, got {aria_first:?}"
+        );
+
+        let pill_2 = &pills[1];
+        let pill_2_count = pill_2
+            .query_selector(".reaction-pill__count")
+            .unwrap()
+            .expect("each pill carries a .reaction-pill__count");
+        assert_eq!(
+            text(&pill_2_count).trim(),
+            "2",
+            "second pill (👍) count reflects reactor list length"
+        );
+
+        // Clicking the pill fires on_react with the emoji.
+        let pill_2_button: web_sys::HtmlElement = pill_2.clone().dyn_into().unwrap();
+        simulate_click(&pill_2_button);
+        tick().await;
+        assert_eq!(
+            clicked_emoji.get_untracked().as_deref(),
+            Some("👍"),
+            "clicking a pill fires on_react with that emoji"
+        );
+        assert_eq!(
+            open_picker_count.get_untracked(),
+            0,
+            "clicking a pill must NOT invoke on_open_picker"
+        );
+    }
+
+    /// AG-1 (local-user variant): when the local display name appears
+    /// in the reactor list, the pill picks up the
+    /// `.reaction-pill--reacted` class so the moss-tinted "you
+    /// reacted" affordance is visible.
+    #[wasm_bindgen_test]
+    async fn reaction_strip_local_user_pill_picks_up_reacted_class() {
+        let mut reactions: HashMap<String, Vec<String>> = HashMap::new();
+        // Local user "mira" is in the reactor list for 👍.
+        reactions.insert("👍".to_string(), vec!["mira".into(), "ori".into()]);
+        // Local user is NOT in the reactor list for ❤️.
+        reactions.insert("❤️".to_string(), vec!["kes".into()]);
+
+        let container = mount_test(move || {
+            view! {
+                <ReactionStrip
+                    reactions=reactions.clone()
+                    local_display_name="mira"
+                    on_react=Callback::new(move |_: String| ())
+                    on_open_picker=Callback::new(move |_: ()| ())
+                />
+            }
+        });
+        tick().await;
+
+        let pills = query_all(&container, ".reaction-pill");
+        assert_eq!(pills.len(), 2);
+
+        // ❤️ first (U+2764 < U+1F44D) — kes only, NOT reacted by local.
+        // 👍 second — mira reacted, DOES carry the reacted class.
+        let pill_heart_class = pills[0].get_attribute("class").unwrap_or_default();
+        assert!(
+            !pill_heart_class.contains("reaction-pill--reacted"),
+            "pill for emoji local-user has NOT reacted to keeps neutral class, got {pill_heart_class:?}"
+        );
+        let pill_thumb_class = pills[1].get_attribute("class").unwrap_or_default();
+        assert!(
+            pill_thumb_class.contains("reaction-pill--reacted"),
+            "pill for emoji local-user HAS reacted to picks up --reacted, got {pill_thumb_class:?}"
+        );
+    }
+
+    /// AG-2: `<AddReactionChip>` renders at the tail of the strip
+    /// with the spec-mandated BEM class and aria-label. Click fires
+    /// `on_open_picker(())` so the row's hover toolbar + composer
+    /// share a single picker open-state. Mobile hide is enforced via
+    /// `@media (max-width: 720px)` CSS on `.add-reaction-chip` — that
+    /// can't be exercised in headless wasm-pack (no viewport-media
+    /// emulation), so the rule is left to Playwright mobile-chrome.
+    #[wasm_bindgen_test]
+    async fn add_reaction_chip_renders_and_fires_on_click() {
+        let (open_count, set_open_count) = signal(0u32);
+        let container = mount_test(move || {
+            view! {
+                <AddReactionChip
+                    on_open_picker=Callback::new(move |_: ()| {
+                        set_open_count.update(|n| *n += 1);
+                    })
+                />
+            }
+        });
+        tick().await;
+
+        let chip = query(&container, ".add-reaction-chip").expect(".add-reaction-chip must render");
+        assert_eq!(
+            chip.get_attribute("aria-label").as_deref(),
+            Some("add reaction"),
+            "spec aria-label `add reaction` on the chip"
+        );
+
+        let chip_btn: web_sys::HtmlElement = chip.dyn_into().unwrap();
+        simulate_click(&chip_btn);
+        tick().await;
+        assert_eq!(
+            open_count.get_untracked(),
+            1,
+            "click fires on_open_picker exactly once"
+        );
+    }
+
+    /// AG-3 (a): `<EmojiPicker>` renders the spec layout (search
+    /// input + grid) and the BEM container class. AG-3 (b): typing
+    /// into the search input filters the rendered grid cells via the
+    /// `search()` helper. AG-3 (c): pressing Escape on the picker
+    /// fires `on_close`.
+    #[wasm_bindgen_test]
+    async fn emoji_picker_layout_search_and_escape() {
+        let (selected, set_selected) = signal(Option::<String>::None);
+        let (closed, set_closed) = signal(false);
+        let (recent, _) = signal(Vec::<String>::new());
+
+        let container = mount_test(move || {
+            view! {
+                <EmojiPicker
+                    recent=recent.into()
+                    on_select=Callback::new(move |g: String| set_selected.set(Some(g)))
+                    on_close=Callback::new(move |_: ()| set_closed.set(true))
+                />
+            }
+        });
+        tick().await;
+
+        // (a) Layout — root + search input.
+        let picker = query(&container, ".emoji-picker").expect(".emoji-picker must render");
+        assert_eq!(
+            picker.get_attribute("role").as_deref(),
+            Some("dialog"),
+            "picker is a role=dialog per a11y spec"
+        );
+        // Query helpers take `&HtmlElement`; queries below run against
+        // `&container` (the mounted shell) since the picker is the
+        // only child anyway.
+        let search_input =
+            query(&container, ".emoji-picker__search").expect(".emoji-picker__search must render");
+        assert_eq!(
+            search_input.get_attribute("aria-label").as_deref(),
+            Some("search emoji"),
+            "search input carries the spec aria-label"
+        );
+
+        // (b) Search filter narrows the grid. Type a string that
+        // matches at most one or two emoji names — `dog` should
+        // narrow to the dog face glyph (and possibly hot dog).
+        let unfiltered_count = query_all(&container, ".emoji-picker__cell").len();
+        assert!(
+            unfiltered_count > 50,
+            "default grid is the full catalogue (>50 cells), got {unfiltered_count}"
+        );
+        let input_html: web_sys::HtmlInputElement = search_input.dyn_into().unwrap();
+        simulate_type(&input_html, "dog");
+        tick().await;
+        let filtered_count = query_all(&container, ".emoji-picker__cell").len();
+        assert!(
+            filtered_count < unfiltered_count,
+            "typing `dog` narrows the grid from {unfiltered_count} to {filtered_count}"
+        );
+
+        // Sanity: no glyph selection yet.
+        assert!(
+            selected.get_untracked().is_none(),
+            "selection is empty until Enter is pressed"
+        );
+
+        // (c) Escape closes the picker.
+        let init = web_sys::KeyboardEventInit::new();
+        init.set_key("Escape");
+        let esc =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        picker
+            .dyn_ref::<web_sys::EventTarget>()
+            .unwrap()
+            .dispatch_event(&esc)
+            .unwrap();
+        tick().await;
+        assert!(
+            closed.get_untracked(),
+            "Escape on the picker fires on_close"
+        );
+    }
+}
