@@ -15932,8 +15932,8 @@ mod phase_3c_reactions_pins {
         // Query helpers take `&HtmlElement`; queries below run against
         // `&container` (the mounted shell) since the picker is the
         // only child anyway.
-        let search_input = query(&container, ".emoji-picker__search")
-            .expect(".emoji-picker__search must render");
+        let search_input =
+            query(&container, ".emoji-picker__search").expect(".emoji-picker__search must render");
         assert_eq!(
             search_input.get_attribute("aria-label").as_deref(),
             Some("search emoji"),
