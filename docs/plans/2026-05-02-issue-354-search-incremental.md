@@ -1,5 +1,7 @@
 # Issue #354 — search index rebuilt from scratch on every message-list change
 
+**Status:** landed (PR #507, commit `e07d974`, 2026-05-02) — `bootstrap.rs` with `hydrate_index` / `index_message` / `reindex_message` shipped alongside the dropped Effect in `app.rs:436` and the new `bootstrap_tests` module in `crates/client/src/search/tests.rs:1048`.
+
 ## Problem
 
 `crates/web/src/app.rs:419` Effect reads `messages_sig.get()`

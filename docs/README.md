@@ -130,7 +130,7 @@ Every entry below carries one of:
 - [UI phase 3a — composer](plans/2026-04-26-ui-phase-3a-composer.md) — composer revamp: formatting toolbar, mention autocomplete, slash commands, drafts persistence, paste-rich behavior. `[landed]`
 - [UI phase 3b — files & inline attachments](plans/2026-05-08-ui-phase-3b-files-inline.md) — upload dialog + drag-and-drop + paste-to-upload + inline image/file/voice-note rendering. `[landed]`
 - [UI phase 3c — reactions & pins](plans/2026-05-08-ui-phase-3c-reactions-pins.md) — EmojiPicker, reactions strip polish, pinned-panel rewrite, header pin amber tint. `[landed]`
-- [Issue #354 — search index incremental rebuild](plans/2026-05-02-issue-354-search-incremental.md) — replaces per-message-list-change full index rebuild with incremental updates. `[active]`
+- [Issue #354 — search index incremental rebuild](plans/2026-05-02-issue-354-search-incremental.md) — replaces per-message-list-change full index rebuild with incremental updates. `[landed]`
 
 See also: [`plans/STATUS.md`](plans/STATUS.md) — point-in-time audit of which UI-phase plans have landed.
 
