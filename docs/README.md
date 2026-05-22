@@ -152,7 +152,7 @@ See also: [`plans/STATUS.md`](plans/STATUS.md) — point-in-time audit of which 
 - [E2E test architecture](specs/2026-04-21-e2e-test-architecture-design.md) — tier decision tree pushing tests to the lowest level covering each behavior. `[draft]`
 - [Test architecture](specs/2026-04-13-test-architecture.md) — earlier test philosophy and per-crate coverage targets. `[superseded]`
 - [Event-based waits in Playwright suite](specs/2026-04-27-event-based-waits-design.md) — replaces magic-number sleeps with `WillowTestHooks` WASM API and `data-state` lifecycle. `[active]`
-- [Multi-peer E2E browser tests](specs/2026-03-24-multi-peer-e2e-tests-design.md) — Playwright suite covering sync, permissions, and mobile flows across four browser projects. `[active]`
+- [Multi-peer E2E browser tests](specs/2026-03-24-multi-peer-e2e-tests-design.md) — Playwright suite covering sync, permissions, and mobile flows across four browser projects. `[landed]`
 
 **Plans**
 

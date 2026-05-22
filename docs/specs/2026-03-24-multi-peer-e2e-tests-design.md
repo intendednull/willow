@@ -1,5 +1,55 @@
 # Multi-Peer E2E Browser Tests Design
 
+**Date:** 2026-03-24
+**Status:** landed — three new spec files + 4-browser config + shared helpers all shipped. Test enumeration in the original design body below has been intentionally *reduced* over time as the e2e-test-architecture spec migrated logic-only assertions down to the client tier — see *Realised state* below for the up-to-date catalog.
+**Implementation plan:** [`docs/plans/2026-03-24-multi-peer-e2e-tests.md`](../plans/2026-03-24-multi-peer-e2e-tests.md)
+
+## Realised state
+
+The original 25-test enumeration in the body below was the target as of
+2026-03-24. The realised state diverges in several ways because the
+[`e2e-test-architecture`](2026-04-21-e2e-test-architecture-design.md) spec
+that landed afterwards mandates pushing every behaviour to the lowest test
+tier that can cover it. Many scenarios that were originally enumerated as
+Playwright tests now live in `crates/client/src/tests/` (state + client
+tier), where they run orders of magnitude faster and without browser
+infrastructure. The Playwright suite retains the DOM-reflection-only
+scenarios that genuinely require multi-peer browser interaction.
+
+Current per-file enumeration:
+
+| File | Count | Notes |
+|---|---|---|
+| `e2e/multi-peer-sync.spec.ts` | 6 tests | Tests 2/6/7/8/9/11/12 from the original enumeration (messages-sync, reactions, edits, deletes, refresh-persists, typing, display-names) migrated to `crates/client/src/tests/multi_peer_sync.rs` per the lowest-tier rule. The surviving Playwright tests cover DOM rendering of the joiner's view of pre-existing state. See the file's header comment for the migration log. |
+| `e2e/permissions.spec.ts` | 6 tests | Tests 1-4 (trust/untrust DOM contracts) migrated to `crates/client/src/tests/trust_flow.rs` and `crates/web/tests/browser.rs`. Test 7 (role CRUD) is deferred. Test 8 morphed to "non-owner has no action buttons". Two additional Phase 1d SAS-compare trust-verification tests (`compare match flips trust badge to verified`, `compare mismatch keeps peer unverified`) were added — cross-reference [`trust-verification.md`](2026-04-19-ui-design/trust-verification.md). |
+| `e2e/multi-peer-mobile.spec.ts` | 4 tests | Test 4 (member list on mobile) is deferred — the mobile shell does not yet expose member list; tracked in #595. |
+
+Realised helper structure (post Phase 2's "Peer wrapper" refactor):
+
+- `e2e/helpers.ts` is now an 11-line barrel re-exporting from
+  `e2e/helpers/{peers,ui,touch}.ts` (added during
+  [`event-based-waits PR 2`](../plans/2026-04-29-event-based-waits-pr2-peer-wrapper.md)).
+- Selectors named in the original body have been renamed by the UI phase
+  refactors: `.mobile-nav-toggle` → `.mobile-top-bar .top-slot-left`,
+  `.sidebar-overlay` → `.grove-drawer-backdrop`, `.server-gear-btn` →
+  `.channel-sidebar .grove-header` (replaced by the vibe-annotations pass
+  in commit 0861f26), `.mobile-members-toggle` → `.action-btn[aria-label="members"]`
+  in the main-pane header, `.channel-create-input` →
+  `.tree-kind-picker__item` + `.tree-slot__input` (kind picker now
+  precedes the name input).
+- Welcome flow copy changed: `Next/Join Server` → `continue/Join grove`,
+  with display name handled on step 1 via `advancePastNameStep` rather
+  than mid-invite.
+
+The original test counts and execution-multiplier math (25 tests, 90
+executions) are obsolete. The actual catalog is 6 + 6 + 4 = 16 tests
+with several mobile-only skips, and the cross-browser project list is
+maintained in `playwright.config.ts`.
+
+The body below is preserved as the original target for historical
+context. The realised state above is authoritative; do not edit the
+body to match it.
+
 ## Problem
 
 Multi-peer E2E tests (`two-peer.spec.ts`, `state-sync.spec.ts`) only run on desktop Chrome via hardcoded `chromium.launch()`. Permission/trust/kick scenarios have zero E2E coverage. Mobile multi-peer interactions are untested.
