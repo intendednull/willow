@@ -1,7 +1,77 @@
 # Agentic Peer API Design Spec
 
 **Date**: 2026-03-29
-**Status**: Draft
+**Status**: landed — `willow-agent` MCP binary, 36 tools, 14 resources, 31 notifications, scope-gated access, 28 E2E integration tests all shipped via [`docs/plans/2026-04-01-agentic-peer-api.md`](../plans/2026-04-01-agentic-peer-api.md). Several promised items were *not* realised and are tracked in *Realised state* below: `verify_state` tool + `state-agreement` resource + `StateHashMismatch` notification (dropped), `willow-agent-sdk` companion crate (future work).
+**Implementation plan:** [`docs/plans/2026-04-01-agentic-peer-api.md`](../plans/2026-04-01-agentic-peer-api.md)
+
+> **Realised state (post-2026-05 audit).** The MCP binary shipped and the
+> bulk of the API matches intent, but the body below drifts from the
+> realised implementation in several places. Diffs:
+>
+> - **`verify_state` MCP tool not implemented.** The tool was specified
+>   under §State for broadcasting state-hash verification, but no
+>   matching method exists on `ClientHandle` and no tool is registered
+>   in `crates/agent/src/tools.rs`. The convergence example that calls
+>   `mutations.verify_state().await` is therefore unreachable.
+> - **`willow://server/state-agreement` resource not registered.** Paired
+>   with `verify_state`, this resource is absent from
+>   `crates/agent/src/resources.rs::list_resources()` and has no read
+>   branch. Realised resource count is 14, not the 15/16 the spec
+>   implies.
+> - **Realised tool count is 36, not 37.** `crates/agent/src/tools.rs:725`
+>   pins `expected = 36` and `tool_names_are_unique` enumerates exactly
+>   36 names. The spec narrative still says 37.
+> - **`CurrentServerResource` exposes `admins`, not `owner`.**
+>   `crates/agent/src/resources.rs:309-315` — Willow's trust model is
+>   admin-set, not single-owner; the field follows that. The spec's
+>   `willow://server/current` schema is stale on this point.
+> - **`MemberKicked` notification absent.** Kicks now flow through
+>   `ProposalCreated` + `VoteCast` (the governance path documented
+>   elsewhere in the spec). No `MemberKicked` variant is forwarded;
+>   not in `EVENT_TYPE_NAMES`. The notification table is stale.
+> - **`StateHashMismatch` notification absent.** Paired with the
+>   removed `verify_state` tool — not in `ClientEvent`, not in
+>   `EVENT_TYPE_NAMES`.
+> - **Five notification variants forwarded but absent from the spec
+>   table:** `ProposalCreated`, `VoteCast`, `MuteChanged`,
+>   `QueueChanged`, `RelayStatusChanged`, `DeviceOnlineChanged`. The
+>   realised set in `crates/agent/src/notifications.rs:254-287` is 31
+>   variants; the spec's table lists ~25. Phase 2b sync-queue variants
+>   are real and shipped (`QueueChanged`, etc.).
+> - **`willow-agent-sdk` companion crate does not exist.** The spec
+>   describes it under §Crate structure, references it in the Rust
+>   client example, and lists it as a Phase 3 plan item, but
+>   `crates/agent-sdk/` is not present in the workspace and there is
+>   no `willow-agent-sdk` Cargo.toml. Future work.
+> - **Cargo dependency drift.** `crates/agent/Cargo.toml` actually
+>   uses `rmcp = "1.5"` (spec: `"1.3"`), and adds `subtle = "2"` for
+>   constant-time bearer-token comparison (spec omits), `willow-state`
+>   (spec omits), `tokio-util = "0.7"` (spec omits). `tokio` is via
+>   workspace inheritance, not a local version pin. `rand = "0.8"`
+>   (spec: `"0.9"`).
+> - **E2E test count is 28, not 24.** `crates/agent/tests/e2e.rs` has
+>   28 `#[tokio::test]` functions (24 unique + 4 scope/resource gate
+>   tests).
+> - **CLI flags drift.** `--identity <PATH>` has no clap default; the
+>   default is computed lazily by `default_identity_path()`. Three CLI
+>   flags exist that the spec omits: `--generate-identity`,
+>   `--print-peer-id`, `--scope <messaging|read|full>` (default
+>   `messaging`, not `full` as the spec's "Default token: full access"
+>   line implies — least-privilege default is the better choice).
+> - **`--relay` is optional and uses `RelayUrl`, not multiaddr.**
+>   `crates/agent/src/main.rs:19` typing is `Option<String>`, parsed
+>   as `iroh::RelayUrl` (`https://relay.example.com`), not a libp2p
+>   multiaddr like `/ip4/.../tcp/.../ws`. Network only starts if
+>   `--relay` is provided.
+> - **Resource subscription deferral.** `enable_resources()` is set on
+>   the MCP server but `subscribe` capability is not enabled. Push
+>   fan-out works only via `notifications/willow/event`. This matches
+>   the spec's noted deferral and is intentional, listed here for
+>   completeness so the follow-up doesn't get lost.
+>
+> The body below is preserved as the original target. The *Realised
+> state* list above is authoritative for current implementation shape;
+> do not edit the body in place to match it.
 
 ## Overview
 
