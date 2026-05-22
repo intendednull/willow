@@ -15743,7 +15743,8 @@ mod phase_3c_reactions_pins {
     use leptos::prelude::*;
     use wasm_bindgen::JsCast;
     use wasm_bindgen_test::*;
-    use willow_web::components::{AddReactionChip, EmojiPicker, ReactionStrip};
+    use willow_web::components::emoji_picker::EmojiPicker;
+    use willow_web::components::reactions::{AddReactionChip, ReactionStrip};
 
     use super::{mount_test, query, query_all, simulate_click, simulate_type, text, tick};
 
@@ -15773,8 +15774,10 @@ mod phase_3c_reactions_pins {
         });
         tick().await;
 
-        let strip = query(&container, ".reactions-strip").expect(".reactions-strip must render");
-        let pills = query_all(&strip, ".reaction-pill");
+        let _strip = query(&container, ".reactions-strip").expect(".reactions-strip must render");
+        // query_all takes `&HtmlElement` so query against the mount
+        // container (the strip is its only child anyway).
+        let pills = query_all(&container, ".reaction-pill");
         assert_eq!(
             pills.len(),
             2,
@@ -15880,8 +15883,7 @@ mod phase_3c_reactions_pins {
         });
         tick().await;
 
-        let chip = query(&container, ".add-reaction-chip")
-            .expect(".add-reaction-chip must render");
+        let chip = query(&container, ".add-reaction-chip").expect(".add-reaction-chip must render");
         assert_eq!(
             chip.get_attribute("aria-label").as_deref(),
             Some("add reaction"),
@@ -15927,7 +15929,10 @@ mod phase_3c_reactions_pins {
             Some("dialog"),
             "picker is a role=dialog per a11y spec"
         );
-        let search_input = query(&picker, ".emoji-picker__search")
+        // Query helpers take `&HtmlElement`; queries below run against
+        // `&container` (the mounted shell) since the picker is the
+        // only child anyway.
+        let search_input = query(&container, ".emoji-picker__search")
             .expect(".emoji-picker__search must render");
         assert_eq!(
             search_input.get_attribute("aria-label").as_deref(),
@@ -15938,7 +15943,7 @@ mod phase_3c_reactions_pins {
         // (b) Search filter narrows the grid. Type a string that
         // matches at most one or two emoji names — `dog` should
         // narrow to the dog face glyph (and possibly hot dog).
-        let unfiltered_count = query_all(&picker, ".emoji-picker__cell").len();
+        let unfiltered_count = query_all(&container, ".emoji-picker__cell").len();
         assert!(
             unfiltered_count > 50,
             "default grid is the full catalogue (>50 cells), got {unfiltered_count}"
@@ -15946,7 +15951,7 @@ mod phase_3c_reactions_pins {
         let input_html: web_sys::HtmlInputElement = search_input.dyn_into().unwrap();
         simulate_type(&input_html, "dog");
         tick().await;
-        let filtered_count = query_all(&picker, ".emoji-picker__cell").len();
+        let filtered_count = query_all(&container, ".emoji-picker__cell").len();
         assert!(
             filtered_count < unfiltered_count,
             "typing `dog` narrows the grid from {unfiltered_count} to {filtered_count}"
@@ -15961,8 +15966,8 @@ mod phase_3c_reactions_pins {
         // (c) Escape closes the picker.
         let init = web_sys::KeyboardEventInit::new();
         init.set_key("Escape");
-        let esc = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
-            .unwrap();
+        let esc =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
         picker
             .dyn_ref::<web_sys::EventTarget>()
             .unwrap()
