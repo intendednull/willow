@@ -79,7 +79,7 @@ Every entry below carries one of:
 
 **Specs**
 
-- [Willow-channel removal](specs/2026-04-12-willow-channel-removal.md) — eliminates `willow-channel` crate, making `ServerState` the client's sole source of truth. `[active]`
+- [Willow-channel removal](specs/2026-04-12-willow-channel-removal.md) — eliminates `willow-channel` crate, making `ServerState` the client's sole source of truth. `[landed]`
 
 **Plans**
 
