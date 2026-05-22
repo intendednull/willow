@@ -1,6 +1,6 @@
 # UI Phase 3c — Reactions & Pins Implementation Plan
 
-**Status:** landed (foundation PR #634 + picker wireup PR #635 + close-out PR #637)
+**Status:** landed (foundation PR #634 + picker wireup PR #635 + initial close-out PR #637 + cascade close-out PRs #643 visibility wiring, #644 pinned-by footer + `PinMetadata`, #646 plan/spec/index close-out, #647 same-channel react-recency refresh, #648 DOM coverage tests)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development + superpowers:test-driven-development. Every task = one commit; tick the checkbox in the same commit.
 
@@ -134,7 +134,7 @@ These are decisions made in the plan that the spec leaves open or under-specifie
 3. **Search ranking.** Prefix match on the emoji's primary name (e.g. `thumbs-up`, `red-heart`); ties broken by category order. No fuzzy match in v1 — keeps the picker fast and predictable.
 4. **Composer emoji IconBtn binding.** Opens the same `<EmojiPicker>` instance and inserts the picked glyph at the current caret position via the existing composer textarea ref. The shortcode autocomplete (`:thumbsup:`) is a separate composer feature owned by `composer.md` and stays parked.
 5. **Reactor tooltip on mobile.** Spec describes "tap and hold on the pill exposes the same list as a small card". v1 ships the desktop `title` attribute path immediately; the press-and-hold card lands as a follow-up to keep this PR scoped — the same `<ReactorTooltip>` component will mount in both contexts.
-6. **Recency refresh granularity.** The web layer's `<ReactionRecencyProvider>` is a `LocalResource` keyed on the active channel signal, so it refreshes when the user switches channels but NOT immediately after a same-channel `react()` call. This is a known limitation — recency picks up on the next channel-revisit. A `react_tick` signal that re-keys the `LocalResource` after every successful react is a documented follow-up; the spec's "channel-scoped recency" intent is satisfied because cross-channel isolation IS atomic at the client layer.
+6. **Recency refresh granularity.** *(Resolved in PR #647.)* The web layer's `<ReactionRecencyProvider>` is a `LocalResource` keyed on the active channel signal AND a `RecencyRefreshTick` context value. `make_react_handler` bumps the tick after every successful `react()` so the resource re-fires immediately on same-channel reacts, not just on channel-revisit. See `crates/web/src/reaction_recency.rs` (context + `bump_recency_tick`), `crates/web/src/handlers.rs:163` (bump site), and `crates/web/src/app.rs:208` (LocalResource subscribing to the tick).
 
 ## Test plan
 

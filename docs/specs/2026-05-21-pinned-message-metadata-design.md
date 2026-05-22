@@ -1,7 +1,7 @@
 # Pinned-message metadata — `pinned by {name} · {when}` footer
 
 **Date:** 2026-05-21
-**Status:** active
+**Status:** landed (PR #644 — Channel::pinned_messages → BTreeMap<EventHash, PinMetadata>; client PinnedMetadata; pinned-by footer renders)
 **Parent specs:**
 [`reactions-pins.md`](2026-04-19-ui-design/reactions-pins.md),
 [`2026-04-12-state-authority-and-mutations.md`](2026-04-12-state-authority-and-mutations.md)
