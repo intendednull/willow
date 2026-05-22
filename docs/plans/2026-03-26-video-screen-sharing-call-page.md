@@ -1,5 +1,7 @@
 # Video, Screen Sharing + Call Page Implementation Plan
 
+**Status:** landed (commit `545cd97` call page foundation + `e4e1e1f` speaking detection) — `crates/web/src/components/{call_page,participant_tile}.rs` shipped; `AudioContext` speaking detection wired; grid/focus layout, camera + screen-share controls in place.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a full call page with camera video, screen sharing, speaking detection, and grid/focus layout — turning Willow's minimal voice chat into a complete video calling experience.

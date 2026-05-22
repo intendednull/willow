@@ -1,5 +1,7 @@
 # Shareable Join Links Implementation Plan
 
+**Status:** landed (commit `eb950ee`) — `crates/web/src/components/join_page.rs` ships the JoinPage component; `JoinToken` / `JoinLink` in `crates/client/src/ops.rs`; URL routing + signal wiring complete.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add shareable URL-based join links that trigger automatic P2P key exchange when clicked, with a dedicated join page that serves as a welcoming front door to the app.

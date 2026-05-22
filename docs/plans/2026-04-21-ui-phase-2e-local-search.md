@@ -1,5 +1,7 @@
 # UI Phase 2e — Local search Implementation Plan
 
+**Status:** landed (commit `7edaa96` "docs(plan): tick plan + record PR 187") — `crates/client/src/search/` (11 files) ships the index + bootstrap + actor; `crates/web/src/components/search/` (6 files) ships the results UI + recents + scope chip. Letter-scope filter branches remain reserved with `TODO(letters-dms.md)` markers per `docs/plans/STATUS.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development + superpowers:test-driven-development + superpowers:verification-before-completion.
 
 **Goal:** Ship `docs/specs/2026-04-19-ui-design/local-search.md` — an on-device, encrypted-at-rest search index with scope ladder (`this letter` / `this channel` / `all letters` / `all groves + letters`), desktop + mobile entry points, query language (plain + prefix operators + quoted phrases), streamed results surface with grouping and highlight, `⌘K` palette bridge, privacy copy, settings-owned recents/horizon hooks, and a full a11y contract.
