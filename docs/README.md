@@ -73,7 +73,7 @@ Every entry below carries one of:
 
 **Plans**
 
-- [Shareable join links](plans/2026-03-27-shareable-join-links.md) — implements URL-based join flow with `JoinRequest`/`JoinResponse` gossip and a dedicated join page. `[active]`
+- [Shareable join links](plans/2026-03-27-shareable-join-links.md) — implements URL-based join flow with `JoinRequest`/`JoinResponse` gossip and a dedicated join page. `[landed]`
 
 ### Messaging
 
@@ -83,7 +83,7 @@ Every entry below carries one of:
 
 **Plans**
 
-- [Willow-channel removal](plans/2026-04-12-willow-channel-removal.md) — step-by-step migration removing the parallel `willow-channel::Server` representation. `[active]`
+- [Willow-channel removal](plans/2026-04-12-willow-channel-removal.md) — step-by-step migration removing the parallel `willow-channel::Server` representation. `[landed]`
 
 ### Workers & Actors
 
@@ -97,7 +97,7 @@ Every entry below carries one of:
 
 - [Actor system](plans/2026-03-30-actor-system.md) — builds `willow-actor` crate and migrates worker, client, and web to use it. `[landed]`
 - [Actor system library](plans/2026-03-31-actor-system-library.md) — adds generic state actors, pub/sub broker, and stream output to `willow-actor`. `[landed]`
-- [Actor library migration](plans/2026-03-31-actor-library-migration.md) — replaces monolithic `SharedState` with domain `StateActor`s per the reactive client spec. `[active]`
+- [Actor library migration](plans/2026-03-31-actor-library-migration.md) — replaces monolithic `SharedState` with domain `StateActor`s per the reactive client spec. `[landed]`
 - [Worker nodes](plans/2026-03-27-worker-nodes.md) — introduces `willow-replay` and `willow-storage` binaries sharing a `willow-worker` library. `[landed]`
 
 ### Web UI & UX
@@ -113,8 +113,8 @@ Every entry below carries one of:
 **Plans**
 
 - [Async client + UI refactor](plans/2026-03-24-async-client-ui-refactor.md) — replaces mpsc polling with async channels and restructures Leptos UI with context state. `[landed]`
-- [UX navigation improvements](plans/2026-03-25-ux-navigation-improvements.md) — merges settings panels, adds dialogs, server context menu, and Ctrl+K palette. `[active]`
-- [Video, screen sharing + call page](plans/2026-03-26-video-screen-sharing-call-page.md) — refactors `VoiceManager`, adds video track management, and builds participant tile UI. `[active]`
+- [UX navigation improvements](plans/2026-03-25-ux-navigation-improvements.md) — merges settings panels, adds dialogs, server context menu, and Ctrl+K palette. `[landed]`
+- [Video, screen sharing + call page](plans/2026-03-26-video-screen-sharing-call-page.md) — refactors `VoiceManager`, adds video track management, and builds participant tile UI. `[landed]`
 - [UI phase 0 — foundation](plans/2026-04-19-ui-phase-0-foundation.md) — ships new palette, typography, and motion tokens as a `foundation.css` layer. `[landed]`
 - [UI phase 1a — desktop shell](plans/2026-04-20-ui-phase-1a-desktop-shell.md) — three-pane shell, grove rail, channel sidebar, and right rail for desktop. `[landed]`
 - [UI phase 1b — mobile shell](plans/2026-04-20-ui-phase-1b-mobile-shell.md) — tab bar, top bar, grove drawer, bottom sheets, and 721 px breakpoint for mobile. `[landed]`
@@ -122,11 +122,11 @@ Every entry below carries one of:
 - [UI phase 1d — trust verification](plans/2026-04-20-ui-phase-1d-trust-verification.md) — SAS fingerprint grid, trust badges, and compare-friend flow on all peer surfaces. `[landed]`
 - [UI phase 1e — presence](plans/2026-04-20-ui-phase-1e-presence.md) — 7-state presence catalog, `StatusDot` atom, and self-presence override menu. `[landed]`
 - [UI phase 1f — notifications](plans/2026-04-20-ui-phase-1f-notifications.md) — in-app toast stack, unread badges, OS push contract, and per-surface mute overrides. `[landed]`
-- [UI phase 2a — message row](plans/2026-04-20-ui-phase-2a-message-row.md) — row anatomy, mention pills, inline code, pinned marker, and jump-to-latest pill. `[active]`
-- [UI phase 2b — sync queue](plans/2026-04-21-ui-phase-2b-sync-queue.md) — offline strip, per-peer queue pills, dedicated sync-queue screen, and reconnection toast. `[active]`
+- [UI phase 2a — message row](plans/2026-04-20-ui-phase-2a-message-row.md) — row anatomy, mention pills, inline code, pinned marker, and jump-to-latest pill. `[landed]`
+- [UI phase 2b — sync queue](plans/2026-04-21-ui-phase-2b-sync-queue.md) — offline strip, per-peer queue pills, dedicated sync-queue screen, and reconnection toast. `[landed]`
 - [UI phase 2c — profile card](plans/2026-04-21-ui-phase-2c-profile-card.md) — 17-field profile popover/sheet, crest banner, and private nickname editor. `[landed]`
 - [UI phase 2d — ephemeral channels](plans/2026-04-25-ui-phase-2d-ephemeral-channels.md) — auto-archive on inactivity, archives surface, kind chip, and revive flow. `[landed]`
-- [UI phase 2e — local search](plans/2026-04-21-ui-phase-2e-local-search.md) — on-device encrypted search index with scope ladder and streamed results surface. `[active]`
+- [UI phase 2e — local search](plans/2026-04-21-ui-phase-2e-local-search.md) — on-device encrypted search index with scope ladder and streamed results surface. `[landed]`
 - [UI phase 3a — composer](plans/2026-04-26-ui-phase-3a-composer.md) — composer revamp: formatting toolbar, mention autocomplete, slash commands, drafts persistence, paste-rich behavior. `[landed]`
 - [UI phase 3b — files & inline attachments](plans/2026-05-08-ui-phase-3b-files-inline.md) — upload dialog + drag-and-drop + paste-to-upload + inline image/file/voice-note rendering. `[landed]`
 - [UI phase 3c — reactions & pins](plans/2026-05-08-ui-phase-3c-reactions-pins.md) — EmojiPicker, reactions strip polish, pinned-panel rewrite, header pin amber tint. `[landed]`
@@ -143,7 +143,7 @@ See also: [`plans/STATUS.md`](plans/STATUS.md) — point-in-time audit of which 
 
 **Plans**
 
-- [Agentic peer API](plans/2026-04-01-agentic-peer-api.md) — builds `willow-agent` MCP binary and multi-peer E2E test harness in four phases. `[active]`
+- [Agentic peer API](plans/2026-04-01-agentic-peer-api.md) — builds `willow-agent` MCP binary and multi-peer E2E test harness in four phases. `[landed]`
 
 ### Testing
 
@@ -156,13 +156,13 @@ See also: [`plans/STATUS.md`](plans/STATUS.md) — point-in-time audit of which 
 
 **Plans**
 
-- [E2E test architecture](plans/2026-04-21-e2e-test-architecture.md) — migrates tests off Playwright to lower tiers in three phases, then documents the tier rules. `[active]`
-- [Multi-peer E2E browser tests](plans/2026-03-24-multi-peer-e2e-tests.md) — adds shared helpers and three Playwright spec files for multi-peer and mobile flows. `[active]`
+- [E2E test architecture](plans/2026-04-21-e2e-test-architecture.md) — migrates tests off Playwright to lower tiers in three phases, then documents the tier rules. `[landed]`
+- [Multi-peer E2E browser tests](plans/2026-03-24-multi-peer-e2e-tests.md) — adds shared helpers and three Playwright spec files for multi-peer and mobile flows. `[landed]`
 - [Event-based waits PR 1 — test-hooks foundation](plans/2026-04-27-event-based-waits-pr1-test-hooks-foundation.md) — lands `WillowTestHooks` WASM API, push dispatcher, and ESLint rule for `waitForTimeout`. `[landed]`
 - [Event-based waits PR 1 errata](plans/2026-04-28-event-based-waits-pr1-errata.md) — corrections to PR-1 plan based on real API investigation during implementation. `[landed]`
 - [Event-based waits PR 2 — Playwright `Peer` wrapper](plans/2026-04-29-event-based-waits-pr2-peer-wrapper.md) — typed `Peer` class, helpers split, and pilot migration of `multi-peer-sync.spec.ts`. `[landed]`
 - [Event-based waits PR 3 — `data-state` lifecycle](plans/2026-04-30-event-based-waits-pr3-data-state-lifecycle.md) — adds four-phase `data-state` attribute on animated elements and adopts `page.clock`. `[landed]`
-- [Event-based waits PR 4 — wait-timeout ratchet + flake harness](plans/2026-04-30-event-based-waits-pr4-ratchet-flake-harness.md) — CI script ratcheting `waitForTimeout` count and flake harness running suite N times. `[active]`
+- [Event-based waits PR 4 — wait-timeout ratchet + flake harness](plans/2026-04-30-event-based-waits-pr4-ratchet-flake-harness.md) — CI script ratcheting `waitForTimeout` count and flake harness running suite N times. `[landed]`
 
 **Reports**
 
@@ -177,7 +177,7 @@ See also: [`plans/STATUS.md`](plans/STATUS.md) — point-in-time audit of which 
 
 **Plans**
 
-- [Docs organization](plans/2026-05-07-docs-organization.md) — populates the master index, creates the skill mirror, and folds the design orphan into specs. `[active]`
+- [Docs organization](plans/2026-05-07-docs-organization.md) — populates the master index, creates the skill mirror, and folds the design orphan into specs. `[landed]`
 
 ## Reference designs
 
