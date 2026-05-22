@@ -1,5 +1,7 @@
 # UI Phase 2a — Message row Implementation Plan
 
+**Status:** landed (commits `74c08c5` / `2c07f64` / `0be5b23` ui(phase-2) series; `abf83b0` closed the `Pending → None` state-flip gate via phase-2b) — `crates/web/src/components/message_row/{mod,mention,code,day_separator,jump_latest}.rs` ship.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development + superpowers:test-driven-development.
 
 **Goal:** Ship `docs/specs/2026-04-19-ui-design/message-row.md` — row anatomy/grouping/day separators, mentions (parsing + pills + self-mention highlight), inline + fenced code, pinned marker, queue notes (LateArrival + Pending), whisper hand-off placeholder, empty/loading states, jump-to-latest pill, swipe-left quote-reply (swipe-right already ships), long-press action sheet compliance, hover toolbar anatomy, spec copy + ARIA contract.

@@ -1,5 +1,7 @@
 # Event-Based Waits PR-4 — Wait-Timeout Ratchet + Flake Harness
 
+**Status:** landed (commit `5b84ef5` ratchet enforcer; `1283430` wired into `check-all`; `eeed70f` follow-up fixes) — `scripts/check-wait-timeout-count.sh` enforces the baseline; `e2e/.wait-timeout-baseline` is the source of truth; `test-e2e-flake` + `check-wait-timeout` recipes in `justfile`. Plan task boxes never got ticked but all artifacts ship.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Lock in the current `waitForTimeout` count so future PRs cannot regress, ship a flake harness that runs the e2e suite N times to surface intermittent failures, and prove the ESLint rule's sunset cutoff is enforced by CI.

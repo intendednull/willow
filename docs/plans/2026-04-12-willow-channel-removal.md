@@ -1,6 +1,7 @@
 # Willow-Channel Removal — Implementation Plan
 
 **Date**: 2026-04-12
+**Status**: landed (commit `ddb2cdc`) — `crates/channel/` deleted; `ChannelKind` enum at `crates/state/src/types.rs:39`; `ServerState` is the client's sole source of truth.
 **Spec**: `docs/specs/2026-04-12-willow-channel-removal.md`
 **Depends on**: `docs/plans/2026-04-12-state-authority-and-mutations.md`
 (permission pre-check must be in place before mutations are rewritten)

@@ -1,5 +1,7 @@
 # UX Navigation Improvements Implementation Plan
 
+**Status:** landed (commit `0ffb33a` confirmation dialogs; broader Ctrl+K palette + context menu + leave-server in subsequent commits) — `crates/web/src/components/{confirm_dialog,command_palette,context_menu}.rs` shipped; `fn leave_server` at `crates/client/src/servers.rs:83`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fix 6 UX friction points: unify settings into tabs, add confirmation dialogs for destructive actions, add breadcrumb navigation, server context menu with leave-server, quick peer ID copy, and Ctrl+K command palette.
