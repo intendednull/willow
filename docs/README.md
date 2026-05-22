@@ -106,7 +106,7 @@ Every entry below carries one of:
 
 - [Willow UI — target UX bundle](specs/2026-04-19-ui-design/README.md) — 20+ child specs covering desktop and mobile target UX across layout, components, and interactions. `[active]`
 - [Pinned-message metadata](specs/2026-05-21-pinned-message-metadata-design.md) — extends Channel pinned_messages to carry pinner + pin-time. `[landed]`
-- [UX navigation improvements](specs/2026-03-25-ux-navigation-improvements-design.md) — unifies settings, adds confirmation dialogs, breadcrumbs, and command palette. `[active]`
+- [UX navigation improvements](specs/2026-03-25-ux-navigation-improvements-design.md) — unifies settings, adds confirmation dialogs, breadcrumbs, and command palette. `[landed]`
 - [Video, screen sharing + call page](specs/2026-03-26-screen-sharing-call-page-design.md) — adds camera video, screen sharing, and full call page UI to voice chat. `[active]`
 - [Async client + UI refactor](specs/2026-03-24-async-client-ui-refactor-design.md) — eliminates polling by splitting `Client` into `ClientHandle` + async event loop. `[landed]`
 
