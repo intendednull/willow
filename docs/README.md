@@ -138,7 +138,7 @@ See also: [`plans/STATUS.md`](plans/STATUS.md) — point-in-time audit of which 
 
 **Specs**
 
-- [Agentic peer API design](specs/2026-03-29-agentic-peer-api-design.md) — exposes `ClientHandle` to AI agents via an MCP server binary (`willow-agent`). `[active]`
+- [Agentic peer API design](specs/2026-03-29-agentic-peer-api-design.md) — exposes `ClientHandle` to AI agents via an MCP server binary (`willow-agent`). `[landed]`
 - [LLM agent UX spec](specs/2026-04-25-llm-agent-ux-spec-design.md) — design for first-class LLM agent peers with governance tools and agent-readable UI surfaces. `[active]`
 
 **Plans**
