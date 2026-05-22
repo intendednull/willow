@@ -173,7 +173,7 @@ See also: [`plans/STATUS.md`](plans/STATUS.md) — point-in-time audit of which 
 **Specs**
 
 - [Machine-readable wire-rejection reasons](specs/2026-04-24-error-prefixes.md) — typed `WireRejectReason` enum in `WireMessage::Reject` replacing free-form error strings. `[active]`
-- [Docs organization — target structure](specs/2026-05-07-docs-organization-design.md) — target structure for `docs/`, master index, naming conventions, and nesting rules. `[active]`
+- [Docs organization — target structure](specs/2026-05-07-docs-organization-design.md) — target structure for `docs/`, master index, naming conventions, and nesting rules. `[landed]`
 
 **Plans**
 
