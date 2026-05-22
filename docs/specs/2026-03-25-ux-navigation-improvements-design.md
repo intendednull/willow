@@ -1,5 +1,9 @@
 # UX Navigation Improvements Design
 
+**Date:** 2026-03-25
+**Status:** landed — unified settings panel, confirmation dialogs, breadcrumbs, server context menu, peer-ID copy affordance (relocated to profile card), and Ctrl+K palette all shipped via [`docs/plans/2026-03-25-ux-navigation-improvements.md`](../plans/2026-03-25-ux-navigation-improvements.md). Spec sections 1, 4, 5 below were refreshed after a 2026-05 audit to match the realised UX (extra Presence/Notifications tabs, GroveRail rename, actor-based `leave_server`, peer-ID copy via profile card).
+**Implementation plan:** [`docs/plans/2026-03-25-ux-navigation-improvements.md`](../plans/2026-03-25-ux-navigation-improvements.md)
+
 ## Problem
 
 The Willow web UI has several navigation and UX friction points:
@@ -26,6 +30,8 @@ Replace the three separate panels (`SettingsPanel`, `ServerSettingsPanel`, `Role
 - **Profile** — display name, peer ID copy (current SettingsPanel content)
 - **Server** — server name, description, invite generation (current ServerSettingsPanel content minus roles)
 - **Roles** — role CRUD, permission toggles, assignment (current RoleManager content)
+- **Presence** — self-presence override menu and 7-state catalog (added by Phase 1e)
+- **Notifications** — per-surface mute overrides and OS push contract (added by Phase 1f)
 
 **State changes:**
 - Remove `show_server_settings` signal entirely from `UiState`/`UiWriteSignals`.
@@ -39,6 +45,8 @@ pub enum SettingsTab {
     Profile,
     Server,
     Roles,
+    Presence,
+    Notifications,
 }
 ```
 
@@ -99,27 +107,42 @@ Right-click (desktop) or long-press (mobile) on a server icon shows a popup menu
 
 **Menu items:**
 - **Server Settings** — opens settings panel to "server" tab
-- **Invite** — opens settings panel to "server" tab
 - **Leave Server** — with confirmation dialog (destructive)
+
+(A standalone "Invite" item was considered and dropped — invite generation is
+reachable from the Server settings tab, so a separate menu entry would be
+redundant.)
 
 **Implementation:**
 - New `components/context_menu.rs` — reusable positioned popup rendering at cursor/touch position.
-- Context menu state is local to the `ServerList` component (not in global `UiState`), since it doesn't need to be shared. Uses local signals: `show_context_menu`, `menu_position` (x/y), `context_server_id`.
+- Context menu state is local to the `GroveRail` component (formerly `ServerList`; renamed during the Phase 1a desktop-shell refactor and now the canonical name for the leftmost server-list rail). Uses local signals: `show_context_menu`, `menu_position` (x/y), `context_server_id`.
 - Desktop: `on:contextmenu` on `.server-icon`, prevent default, show menu at mouse position.
 - Mobile: reuse the same long-press pattern from `message.rs` (500ms timer, touchstart/touchend, haptic feedback) for consistency. Extract the long-press detection into a shared utility if practical, or duplicate the pattern with a comment noting the shared approach.
 - Click outside or Escape dismisses.
 
-**`leave_server()` in client:** This is a **local-only** operation (no P2P event, no state machine change). It removes the server from `SharedState.state.servers`, removes associated data from persistence (`storage::save_server_list`, `storage::save_server_by_id`), and switches to the next available server or clears `active_server` (returning to welcome if no servers remain). The event history for the left server is retained in storage (not purged).
+**`leave_server()` in client:** This is a **local-only** operation (no P2P event, no state machine change). It mutates the `server_registry_addr` actor (via `willow_actor::state::mutate`) to remove the server from the registry, and switches to the next available server or clears `active_server` (returning to welcome if no servers remain). Persistence flows through the actor pipeline rather than direct `storage::save_*` calls — see `crates/client/src/servers.rs::leave_server`. The event history for the left server is retained in storage (not purged).
+
+> Note on migration shape: the design originally sketched direct `SharedState.state.servers` mutation + explicit `storage::save_server_list`/`save_server_by_id` calls. The client was migrated to the actor model after this spec landed, so the post-migration shape (mutate the registry actor, let persistence flow through it) replaces the original sketch. Observable behaviour is unchanged.
 
 **Files:** Modify `crates/client/src/lib.rs` to add `leave_server()` on `ClientHandle`.
 
 ### 5. Quick Peer ID Copy
 
-Add a copy icon button in the sidebar user area (next to display name) that copies the user's peer ID to clipboard with a brief "Copied!" tooltip.
+Provide a single-click affordance to copy the user's peer ID for sharing in invite flows, without making the user navigate to settings.
 
-Both sides of the invite flow need to share peer IDs. Having it one click away in the always-visible sidebar eliminates navigating to settings just to copy your ID.
+**Realised shape (post-migration):** The me-strip in the channel sidebar
+(`crates/web/src/components/channel_sidebar.rs`) is a single profile-open
+button. Clicking it opens the profile card popover
+(`crates/web/src/components/profile_card.rs`), which surfaces the peer-ID
+fingerprint plus copy affordance. This is one extra click compared to the
+original "icon button directly in the sidebar" sketch, but it intentionally
+keeps the always-visible sidebar uncluttered and consolidates all self-
+profile actions in a single popover. The peer-ID copy lives next to the
+trust fingerprint, the display-name editor, and other profile-card content.
 
-**Implementation:** Small copy icon button in the sidebar user area. `on:click` copies `handle.peer_id()` to clipboard via `navigator.clipboard.writeText()`. Shows "Copied!" tooltip briefly (CSS animation, auto-hides after 1.5s). The `peer_id` is available via `ClientHandle` from context — no new props needed on `Sidebar`.
+(The original design sketched a copy icon button next to the display name
+in the sidebar with a `"Copied!"` tooltip. That UX was superseded by the
+profile-card consolidation during Phase 2c.)
 
 ### 6. Command Palette (Ctrl+K)
 
