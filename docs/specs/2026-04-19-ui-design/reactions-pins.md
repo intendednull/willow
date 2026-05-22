@@ -1,7 +1,7 @@
 # Reactions and pins — emoji reactions, picker, pinned panel
 
 **Parent:** [README.md](README.md)
-**Status:** landed (phase 3c PR #634 foundation + 3c.2 PR #635 picker wireup + 3c.3 close-out)
+**Status:** landed (phase 3c PR #634 foundation + 3c.2 PR #635 picker wireup + 3c.3 PR #637 initial close-out + cascade close-out PRs #643 visibility wiring, #644 pinned-by footer + `PinMetadata`, #646 plan/spec/index close-out, #647 same-channel react-recency refresh, #648 DOM coverage tests)
 **Dependencies:** [`foundation.md`](foundation.md),
 [`layout-primitives.md`](layout-primitives.md),
 [`message-row.md`](message-row.md)
