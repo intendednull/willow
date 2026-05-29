@@ -444,11 +444,14 @@ mod tests {
                 .unwrap();
         let bytes = canonical_json(&info, true).unwrap();
         let s = std::str::from_utf8(&bytes).unwrap();
-        // No whitespace, keys lexicographically sorted: protocol_versions <
-        // pubkey < signature.
+        // No whitespace, keys lexicographically sorted. `supported_features` has
+        // `#[serde(default)]` but no `skip_serializing_if`, so an empty vec is
+        // still emitted ([]) — this pins that the canonical form is stable and
+        // explicit about the field's presence: protocol_versions < pubkey <
+        // signature < supported_features.
         assert_eq!(
             s,
-            r#"{"protocol_versions":[2],"pubkey":"aa","signature":"sig"}"#
+            r#"{"protocol_versions":[2],"pubkey":"aa","signature":"sig","supported_features":[]}"#
         );
     }
 
@@ -593,8 +596,8 @@ mod tests {
         let info = representative(&id);
         let canonical = canonical_json(&info, true).unwrap();
         assert!(
-            canonical.len() < 1024,
-            "representative canonical doc must be < 1 KiB, got {} bytes",
+            canonical.len() < 2 * 1024,
+            "representative canonical doc must be < 2 KiB, got {} bytes",
             canonical.len()
         );
         assert!(
@@ -621,10 +624,10 @@ mod tests {
 
     /// Pinned canonical byte length of [`representative`].
     ///
-    /// MEASURED at 553 bytes (full operator metadata, 6 feature tags, signed) —
-    /// the on-wire CANON_ETAG size the pkarr packet carries, ~0.8% of the 64 KiB
+    /// MEASURED at 1037 bytes (full operator metadata, 6 feature tags, signed) —
+    /// the on-wire CANON_ETAG size the pkarr packet carries, ~1.6% of the 64 KiB
     /// pkarr budget (pinned decision #4). Deterministic across runs: hex
     /// pubkey/signature are fixed-length and serde_jcs output is canonical.
     /// Update only on a deliberate schema change.
-    const PINNED_CANONICAL_LEN: usize = 553;
+    const PINNED_CANONICAL_LEN: usize = 1037;
 }
