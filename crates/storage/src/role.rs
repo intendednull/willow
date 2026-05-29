@@ -78,7 +78,10 @@ impl WorkerRole for StorageRole {
             WorkerRequest::Sync {
                 server_id, heads, ..
             } => match self.store.sync_since(&server_id, &heads) {
-                Ok(events) => WorkerResponse::SyncBatch { events },
+                Ok(events) => WorkerResponse::SyncBatch {
+                    events,
+                    more: false,
+                },
                 Err(e) => WorkerResponse::Denied {
                     reason: format!("sync query failed: {e}"),
                 },
@@ -172,7 +175,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 3),
+            WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 3),
             _ => panic!("expected SyncBatch, got {:?}", resp),
         }
     }
@@ -208,7 +211,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 2),
+            WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 2),
             _ => panic!("expected SyncBatch"),
         }
     }

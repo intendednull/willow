@@ -109,7 +109,16 @@ pub enum WorkerRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkerResponse {
     /// Batch of events for sync catch-up.
-    SyncBatch { events: Vec<Event> },
+    ///
+    /// `more` mirrors the gossip-path [`crate::WireMessage::SyncBatchV2`]
+    /// terminator semantics: `true` when the responder byte-budgeted the
+    /// delta and further events remain past this envelope (the requester
+    /// should re-issue [`WorkerRequest::Sync`] with advanced heads), and
+    /// `false` on the final batch — the end-of-stream marker. The outer
+    /// [`WorkerWireMessage::Response`] already carries `request_id`, so it
+    /// is not duplicated inside the payload (see
+    /// `docs/specs/2026-04-24-negentropy-sync.md` § Wire protocol).
+    SyncBatch { events: Vec<Event>, more: bool },
 
     /// Full DAG snapshot for far-behind peers.
     Snapshot {
@@ -362,12 +371,37 @@ mod tests {
 
     #[test]
     fn worker_response_sync_batch_round_trip() {
-        let resp = WorkerResponse::SyncBatch { events: vec![] };
+        let resp = WorkerResponse::SyncBatch {
+            events: vec![],
+            more: false,
+        };
         let bytes = bincode::serialize(&resp).unwrap();
         let decoded: WorkerResponse = bincode::deserialize(&bytes).unwrap();
         match decoded {
-            WorkerResponse::SyncBatch { events } => assert!(events.is_empty()),
+            WorkerResponse::SyncBatch { events, more } => {
+                assert!(events.is_empty());
+                assert!(!more);
+            }
             _ => panic!("expected SyncBatch"),
+        }
+    }
+
+    /// The new `more` flag must survive a bincode round-trip in both
+    /// states so a streamed multi-envelope sync can mark intermediate
+    /// batches (`more: true`) distinctly from the terminator (`more: false`).
+    #[test]
+    fn worker_response_sync_batch_more_flag_round_trips() {
+        for more in [true, false] {
+            let resp = WorkerResponse::SyncBatch {
+                events: vec![],
+                more,
+            };
+            let bytes = bincode::serialize(&resp).unwrap();
+            let decoded: WorkerResponse = bincode::deserialize(&bytes).unwrap();
+            match decoded {
+                WorkerResponse::SyncBatch { more: m, .. } => assert_eq!(m, more),
+                _ => panic!("expected SyncBatch"),
+            }
         }
     }
 

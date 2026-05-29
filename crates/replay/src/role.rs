@@ -333,10 +333,16 @@ impl WorkerRole for ReplayRole {
                         }
                     } else {
                         // Fully synced.
-                        WorkerResponse::SyncBatch { events: vec![] }
+                        WorkerResponse::SyncBatch {
+                            events: vec![],
+                            more: false,
+                        }
                     }
                 } else {
-                    WorkerResponse::SyncBatch { events: delta }
+                    WorkerResponse::SyncBatch {
+                        events: delta,
+                        more: false,
+                    }
                 }
             }
             WorkerRequest::History { .. } => WorkerResponse::Denied {
@@ -453,7 +459,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 4),
+            WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 4),
             _ => panic!("expected SyncBatch"),
         }
     }
@@ -503,7 +509,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 2),
+            WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 2),
             _ => panic!("expected SyncBatch"),
         }
     }
@@ -717,7 +723,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => assert!(
+            WorkerResponse::SyncBatch { events, .. } => assert!(
                 events.is_empty(),
                 "peer at same seq should be considered fully synced"
             ),
@@ -749,7 +755,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => assert_eq!(
+            WorkerResponse::SyncBatch { events, .. } => assert_eq!(
                 events.len(),
                 5,
                 "new peer should receive all events as a delta batch"
@@ -843,7 +849,7 @@ mod tests {
         // Pre-compaction: member's events are still in memory so we get a
         // SyncBatch with them rather than a Snapshot.
         match resp {
-            WorkerResponse::SyncBatch { events } => {
+            WorkerResponse::SyncBatch { events, .. } => {
                 assert_eq!(
                     events.len(),
                     2,
@@ -933,7 +939,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 2),
+            WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 2),
             _ => panic!("expected SyncBatch"),
         }
     }
@@ -970,7 +976,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => {
+            WorkerResponse::SyncBatch { events, .. } => {
                 // Should get all 3 events (genesis + 2 messages).
                 assert_eq!(events.len(), 3);
             }
