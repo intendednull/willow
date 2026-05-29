@@ -4,9 +4,14 @@
 //! `willow-worker`, including `WireMessage` (the gossipsub wire format)
 //! and worker node types. WASM-compatible.
 
+pub mod relay_info;
 pub mod wire;
 pub mod worker_types;
 
+pub use relay_info::{
+    canonical_json, capability_etag, sign_capability_doc, verify_capability_doc, CapabilityError,
+    Limitation, Retention, WillowRelayInfo,
+};
 pub use wire::*;
 pub use worker_types::*;
 
