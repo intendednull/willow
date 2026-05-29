@@ -139,9 +139,17 @@ async fn read_full_response(stream: &mut TcpStream) -> String {
 }
 
 /// Split an HTTP response into (status+headers, body).
+///
+/// The headers slice keeps the trailing `\r\n` of the final header line
+/// (it ends just before the blank-line separator), so every header —
+/// including the last one — is terminated by `\r\n` and the
+/// `contains("...\r\n")` assertions below are unambiguous. The body is
+/// everything after the `\r\n\r\n` separator.
 fn split_headers_body(response: &str) -> (&str, &str) {
     match response.find("\r\n\r\n") {
-        Some(pos) => (&response[..pos], &response[pos + 4..]),
+        // Include the first CRLF (terminating the last header) in headers;
+        // skip the full four-byte separator to start the body.
+        Some(pos) => (&response[..pos + 2], &response[pos + 4..]),
         None => (response, ""),
     }
 }
@@ -154,9 +162,7 @@ async fn capability_get_returns_signed_doc_with_cors_and_etag() {
 
     let mut stream = TcpStream::connect(addr).await.expect("connect");
     stream
-        .write_all(
-            format!("GET {CAPABILITY_PATH} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes(),
-        )
+        .write_all(format!("GET {CAPABILITY_PATH} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
         .await
         .expect("write request");
 
@@ -198,7 +204,10 @@ async fn capability_get_returns_signed_doc_with_cors_and_etag() {
 
     // Body parses as a WillowRelayInfo and its signature verifies.
     let info: WillowRelayInfo = serde_json::from_str(body).expect("body parses as WillowRelayInfo");
-    assert_eq!(info.protocol_versions, vec![willow_transport::PROTOCOL_VERSION]);
+    assert_eq!(
+        info.protocol_versions,
+        vec![willow_transport::PROTOCOL_VERSION]
+    );
     assert!(
         verify_capability_doc(&info).expect("verify"),
         "served document signature must verify"
@@ -328,9 +337,7 @@ async fn capability_post_falls_through_to_upstream() {
 
     let mut stream = TcpStream::connect(addr).await.expect("connect");
     stream
-        .write_all(
-            format!("POST {CAPABILITY_PATH} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes(),
-        )
+        .write_all(format!("POST {CAPABILITY_PATH} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
         .await
         .expect("write request");
 
