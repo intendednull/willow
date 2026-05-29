@@ -352,6 +352,58 @@ pub fn unpack_wire(data: &[u8]) -> Option<(WireMessage, willow_identity::Endpoin
     Some((msg, signer))
 }
 
+/// Greedily pack `events` into a sequence of `(batch, more)` pairs, each batch
+/// sized so its framed [`WireMessage::SyncBatchV2`] envelope stays within
+/// `budget` bytes (use [`SYNC_ENVELOPE_BUDGET`]).
+///
+/// The packer uses an **incremental** size accumulator — it adds each event's
+/// own serialized length to a running total and starts a new batch before the
+/// total would exceed `budget`. This is O(n) over the events, never the
+/// O(n²) of re-serializing the whole candidate batch per event.
+///
+/// `more` is `true` on every batch but the last and `false` on the final
+/// batch, so the last pair is the canonical end-of-stream marker. An **empty**
+/// `events` input yields exactly one `(vec![], false)` pair: a fully
+/// caught-up requester still receives a single zero-event terminator (the
+/// responder always confirms completion).
+///
+/// An individual event larger than `budget` is placed alone in its own batch
+/// rather than dropped — correctness (the requester needs every event) beats
+/// the soft byte budget, and the gossip layer, not this helper, is the hard
+/// gate. Such an event is pathological in practice given the per-`EventKind`
+/// body limits.
+pub fn pack_sync_batches(
+    events: Vec<willow_state::Event>,
+    budget: usize,
+) -> Vec<(Vec<willow_state::Event>, bool)> {
+    let mut batches: Vec<Vec<willow_state::Event>> = Vec::new();
+    let mut current: Vec<willow_state::Event> = Vec::new();
+    let mut acc: usize = 0;
+
+    for event in events {
+        let size = bincode::serialized_size(&event).unwrap_or(0) as usize;
+        // Start a new batch when adding this event would overflow the budget,
+        // unless the current batch is empty (a single oversized event still
+        // ships, alone, rather than being dropped).
+        if !current.is_empty() && acc + size > budget {
+            batches.push(std::mem::take(&mut current));
+            acc = 0;
+        }
+        acc += size;
+        current.push(event);
+    }
+    // The final (possibly empty) batch is always pushed so a caught-up
+    // requester receives a single zero-event terminator.
+    batches.push(current);
+
+    let last = batches.len() - 1;
+    batches
+        .into_iter()
+        .enumerate()
+        .map(|(i, b)| (b, i != last))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,6 +665,92 @@ mod tests {
             framed <= 64 * 1024,
             "framed batch {framed} B must fit the 64 KiB gossip cap"
         );
+    }
+
+    // ── pack_sync_batches greedy byte-budgeted packer ───────────────────────
+
+    #[test]
+    fn pack_sync_batches_empty_yields_single_terminator() {
+        let batches = pack_sync_batches(vec![], SYNC_ENVELOPE_BUDGET);
+        assert_eq!(batches.len(), 1, "empty input still yields one terminator");
+        assert!(batches[0].0.is_empty(), "the terminator carries no events");
+        assert!(!batches[0].1, "the terminator clears `more`");
+    }
+
+    #[test]
+    fn pack_sync_batches_small_input_is_one_batch() {
+        let id = Identity::generate();
+        let events = vec![make_event(
+            &id,
+            EventKind::Message {
+                channel_id: "c".into(),
+                body: "hi".into(),
+                reply_to: None,
+            },
+        )];
+        let batches = pack_sync_batches(events, SYNC_ENVELOPE_BUDGET);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].0.len(), 1);
+        assert!(!batches[0].1, "single batch is the terminator");
+    }
+
+    #[test]
+    fn pack_sync_batches_splits_on_budget_and_marks_more() {
+        let id = Identity::generate();
+        let one = make_event(
+            &id,
+            EventKind::Message {
+                channel_id: "general".into(),
+                body: "a".repeat(500),
+                reply_to: None,
+            },
+        );
+        let per = bincode::serialized_size(&one).unwrap() as usize;
+        // A tiny budget that fits ~3 events per batch, forcing a split.
+        let budget = per * 3 + per / 2;
+        let total = 10;
+        let events: Vec<_> = (0..total).map(|_| one.clone()).collect();
+
+        let batches = pack_sync_batches(events, budget);
+        assert!(batches.len() > 1, "must split into multiple batches");
+
+        // Every batch but the last sets `more`; the last clears it.
+        let last = batches.len() - 1;
+        for (i, (_b, more)) in batches.iter().enumerate() {
+            assert_eq!(*more, i != last, "more flag set on all but the last batch");
+        }
+        // No events lost or duplicated.
+        let count: usize = batches.iter().map(|(b, _)| b.len()).sum();
+        assert_eq!(count, total, "all events accounted for across batches");
+        // Each non-final batch respects the budget (incremental accumulator).
+        for (b, _) in &batches {
+            let acc: usize = b
+                .iter()
+                .map(|e| bincode::serialized_size(e).unwrap() as usize)
+                .sum();
+            // A batch may exceed budget only when it holds a single event.
+            assert!(acc <= budget || b.len() == 1, "batch within budget");
+        }
+    }
+
+    #[test]
+    fn pack_sync_batches_oversized_single_event_ships_alone() {
+        let id = Identity::generate();
+        let big = make_event(
+            &id,
+            EventKind::Message {
+                channel_id: "general".into(),
+                body: "z".repeat(2000),
+                reply_to: None,
+            },
+        );
+        let per = bincode::serialized_size(&big).unwrap() as usize;
+        // Budget smaller than a single event — it must still ship, alone.
+        let batches = pack_sync_batches(vec![big], per / 2);
+        // One data batch + (it is the terminator since there is nothing after).
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].0.len(), 1);
+        assert!(!batches[0].1);
     }
 
     #[test]

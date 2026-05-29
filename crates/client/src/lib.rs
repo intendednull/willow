@@ -92,6 +92,10 @@ mod tests_search;
 #[path = "tests/sync_reply_cache.rs"]
 mod tests_sync_reply_cache;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "tests/heads_sync.rs"]
+mod tests_heads_sync;
+
 /// How long a typing indicator remains visible after the last typing event, in milliseconds.
 pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
 
@@ -401,6 +405,42 @@ impl<N: willow_network::Network> ClientHandle<N> {
     /// Access the typed mutation interface.
     pub fn mutations(&self) -> &mutations::ClientMutations<N> {
         &self.mutation_handle
+    }
+
+    /// Emit a heads-based delta-sync request ([`WireMessage::SyncRequestV2`])
+    /// on the server-ops topic.
+    ///
+    /// Reads the local per-author [`willow_state::HeadsSummary`] + `server_id`
+    /// from the DAG, then broadcasts a single `SyncRequestV2` so any peer that
+    /// holds `SyncProvider` for this server streams back the per-author tail
+    /// this client is missing (negentropy-sync spec, plan PR 4). This is the
+    /// heads-based successor to the legacy 500-event
+    /// [`request_sync_via_network`](Self::request_sync_via_network) dump; the
+    /// legacy `SyncRequest` responder is retained for the migration window.
+    pub async fn request_heads_sync(&self) -> Result<(), crate::ClientError> {
+        let heads =
+            willow_actor::state::select(&self.dag_addr, |ds| ds.managed.dag().heads_summary())
+                .await;
+        let server_id = willow_actor::state::select(&self.dag_addr, |ds| {
+            ds.managed.dag().server_id().unwrap_or_default()
+        })
+        .await;
+        let msg = ops::WireMessage::SyncRequestV2 {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            heads,
+            filter: willow_common::SyncFilter {
+                server_id,
+                channels: None,
+                authors: None,
+                event_kinds: None,
+                since_ms: None,
+            },
+        };
+        if let Some(data) = ops::pack_wire(&msg, &self.identity) {
+            self.mutation_handle
+                .broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
+        }
+        Ok(())
     }
 
     /// Inject a local [`TrustStoreHandle`]. The UI does this at boot

@@ -154,6 +154,22 @@ impl ServerState {
         if self.admins.contains(peer_id) {
             return true;
         }
+        self.has_explicit_permission(peer_id, perm)
+    }
+
+    /// Check if a peer holds an **explicit** [`GrantPermission`] for `perm`,
+    /// ignoring the implicit "admins have every permission" rule that
+    /// [`has_permission`](Self::has_permission) applies.
+    ///
+    /// This is the predicate the heads-based sync **serving gate** uses (plan
+    /// PR 4, pinned decision 4): a peer serves a `SyncRequestV2` delta only if
+    /// it was *deliberately* designated a `SyncProvider`, not merely because it
+    /// happens to be an admin/owner. The relay/worker trust model grants
+    /// `SyncProvider` explicitly (`docs/specs` Trust Model; `crates/client/src/
+    /// servers.rs`), so an owner that wants to serve its own server grants
+    /// itself the role — auto-serving from admin status would make the gate
+    /// (and its audit trail) meaningless.
+    pub fn has_explicit_permission(&self, peer_id: &EndpointId, perm: &Permission) -> bool {
         self.peer_permissions
             .get(peer_id)
             .map(|perms| perms.contains(perm))

@@ -305,7 +305,7 @@ async fn try_insert_event(ctx: &ListenerCtx, event: willow_state::Event) {
 
 // ───── Message processing ───────────────────────────────────────────────────
 
-async fn process_received_message<T: TopicHandle>(
+pub(crate) async fn process_received_message<T: TopicHandle>(
     data: &[u8],
     _sender: EndpointId,
     ctx: &ListenerCtx,
@@ -429,32 +429,136 @@ async fn process_received_message<T: TopicHandle>(
                 }
             }
         }
-        // Heads-based delta-sync variants (negentropy-sync spec). The wire
-        // types + state/storage queries land in PR 3; the gossip
-        // responder/receiver cutover and the SyncProvider serving gate are
-        // PR 4. Until then a peer that already speaks V2 is logged and ignored
-        // here — the additive variants must not break the existing gossip path,
-        // and the legacy SyncRequest/SyncBatch arms above keep serving sync
-        // through the migration window.
-        crate::ops::WireMessage::SyncRequestV2 { request_id, .. } => {
-            tracing::debug!(
-                %request_id,
-                %signer,
-                "received SyncRequestV2 (heads-based sync); responder lands in PR 4 — ignoring"
-            );
+        // Heads-based delta-sync responder (negentropy-sync spec, plan PR 4).
+        //
+        // We compute the per-author tail the requester is missing via the PR 3
+        // `events_since_filtered` query over the requester's `heads` + the
+        // request `filter`, then greedily pack the delta into byte-budgeted
+        // `SyncBatchV2` envelopes (incremental accumulator, not O(n²)) and
+        // stream them back reusing the request's `request_id`. The terminal
+        // batch clears `more`; a fully caught-up requester receives a single
+        // empty `more: false` batch.
+        //
+        // Serving is gated on the local peer holding `SyncProvider` for this
+        // server (pinned decision 4): a peer without the grant serves nothing.
+        // Requesters are never gated, and the legacy `SyncRequest` responder
+        // above stays ungated through the migration window.
+        crate::ops::WireMessage::SyncRequestV2 {
+            request_id,
+            heads,
+            filter,
+        } => {
+            // SyncProvider serving gate: only serve a delta if *we* hold an
+            // explicit `SyncProvider` grant for this server (pinned decision
+            // 4). We check the explicit grant, not `has_permission`, so an
+            // admin/owner does not auto-serve — serving is a deliberately
+            // designated role, matching the relay/worker trust model.
+            let local_id = ctx.identity.endpoint_id();
+            let may_serve = willow_actor::state::select(&ctx.event_state, move |es| {
+                es.has_explicit_permission(&local_id, &willow_state::Permission::SyncProvider)
+            })
+            .await;
+            if !may_serve {
+                tracing::debug!(
+                    %request_id, %signer,
+                    "refusing SyncRequestV2: local peer lacks SyncProvider for this server"
+                );
+                return;
+            }
+
+            // Build the per-author seq cursor the DAG query expects, plus an
+            // `EventFilter` from the wire filter's scoping facets (`server_id`
+            // selects *which* DAG, not which events within it).
+            let their_seqs: std::collections::BTreeMap<EndpointId, u64> = heads
+                .heads
+                .iter()
+                .map(|(author, head)| (*author, head.seq))
+                .collect();
+            let event_filter = willow_state::EventFilter {
+                channels: filter.channels,
+                authors: filter.authors,
+                event_kinds: filter.event_kinds,
+                since_ms: filter.since_ms,
+            };
+            let delta: Vec<willow_state::Event> =
+                willow_actor::state::select(&ctx.dag, move |ds| {
+                    ds.managed
+                        .dag()
+                        .events_since_filtered(&their_seqs, Some(&event_filter), None)
+                        .into_iter()
+                        .cloned()
+                        .collect()
+                })
+                .await;
+
+            let batches =
+                willow_common::pack_sync_batches(delta, willow_common::SYNC_ENVELOPE_BUDGET);
+            for (events, more) in batches {
+                let msg = crate::ops::WireMessage::SyncBatchV2 {
+                    request_id: request_id.clone(),
+                    events,
+                    more,
+                };
+                if let Some(data) = crate::ops::pack_wire(&msg, &ctx.identity) {
+                    warn_if_err(
+                        topic.broadcast(bytes::Bytes::from(data)).await,
+                        "topic.broadcast SyncBatchV2 (SyncRequestV2 reply)",
+                    );
+                }
+            }
         }
+        // Heads-based delta-sync receiver (negentropy-sync spec, plan PR 4).
+        //
+        // Apply each streamed event via the shared `try_insert_event` path
+        // (dedup + per-author chain ordering + pending-buffer drain). The
+        // `request_id` correlates the stream and `more: false` terminates it.
+        // We keep the receiver-side count cap as documented defense-in-depth
+        // against an oversized/malicious batch (mirrors the legacy `SyncBatch`
+        // arm and the producer-side `SYNC_BATCH_LIMIT`).
         crate::ops::WireMessage::SyncBatchV2 {
             request_id,
             events,
             more,
         } => {
-            tracing::debug!(
-                %request_id,
-                more,
-                count = events.len(),
-                %signer,
-                "received SyncBatchV2 (heads-based sync); receiver lands in PR 4 — ignoring"
-            );
+            if events.len() > SYNC_BATCH_LIMIT {
+                tracing::warn!(
+                    %request_id,
+                    size = events.len(),
+                    "rejecting oversized SyncBatchV2 (max {})",
+                    SYNC_BATCH_LIMIT
+                );
+                return;
+            }
+            // Track the responder as a peer.
+            let signer2 = signer;
+            willow_actor::state::mutate(&ctx.chat_meta, move |c| {
+                if !c.peers.contains(&signer2) {
+                    c.peers.push(signer2);
+                }
+            })
+            .await;
+            let count = events.len();
+            for event in events {
+                try_insert_event(ctx, event).await;
+            }
+            if count > 0 {
+                // ManagedDag marks synced automatically when genesis arrives.
+                // Surface session-wide per-batch progress like the legacy path
+                // (pinned decision 5 keeps `SyncCompleted`'s meaning).
+                warn_if_err(
+                    ctx.event_broker
+                        .do_send(willow_actor::Publish(ClientEvent::SyncCompleted {
+                            ops_applied: count,
+                        })),
+                    "event_broker.do_send Publish(SyncCompleted from SyncBatchV2)",
+                );
+            }
+            if !more {
+                tracing::debug!(
+                    %request_id, %signer,
+                    "SyncBatchV2 stream complete (more: false)"
+                );
+            }
         }
         crate::ops::WireMessage::TypingIndicator { channel } => {
             // Bound attacker-supplied input. See `MAX_TYPING_CHANNEL_LEN`

@@ -60,6 +60,7 @@ impl WorkerRole for TestReplayRole {
                 if heads.heads.is_empty() {
                     WorkerResponse::SyncBatch {
                         events: self.events.clone(),
+                        more: false,
                     }
                 } else {
                     let snapshot = Snapshot::new(self.state.clone(), self.dag.heads_summary());
@@ -138,7 +139,7 @@ async fn state_actor_with_replay_role_full_flow() {
         .await
         .unwrap();
     match resp {
-        WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 5),
+        WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 5),
         _ => panic!("expected SyncBatch"),
     }
 
@@ -288,7 +289,7 @@ async fn events_applied_then_queried_via_request() {
         .await
         .unwrap();
     match resp {
-        WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 5),
+        WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 5),
         _ => panic!("expected SyncBatch"),
     }
 
@@ -974,7 +975,7 @@ async fn sync_request_response_returns_known_events() {
         .unwrap();
 
     match resp {
-        willow_common::WorkerResponse::SyncBatch { events } => {
+        willow_common::WorkerResponse::SyncBatch { events, .. } => {
             assert_eq!(
                 events.len(),
                 3,
@@ -1103,7 +1104,7 @@ async fn two_workers_sync_state_via_gossip() {
             {
                 if rid == request_id && target_peer == requester_b_id {
                     match *payload {
-                        willow_common::WorkerResponse::SyncBatch { events } => {
+                        willow_common::WorkerResponse::SyncBatch { events, .. } => {
                             assert_eq!(events.len(), 2, "Worker A should send genesis + msg1");
                             let hashes: std::collections::HashSet<_> =
                                 events.iter().map(|e| e.hash).collect();
