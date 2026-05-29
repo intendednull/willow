@@ -115,11 +115,15 @@ impl<Src: DeriveSource, T: PartialEq + Send + Sync + 'static> DerivedActor<Src, 
 
 impl<Src: DeriveSource, T: PartialEq + Send + Sync + 'static> Actor for DerivedActor<Src, T> {
     fn started(&mut self, ctx: &mut Context<Self>) -> impl Future<Output = ()> + Send {
-        // Subscribe to all sources
+        // Subscribe to all sources so we receive future changes.
         let recipient: Recipient<Notify> = ctx.address().into();
         self.sources.subscribe_all(recipient);
 
-        // Initial computation
+        // Compute the initial derived value via a spawned task.
+        // The task sends UpdateCache back to this actor; UpdateCache dedups
+        // against self.cached and sets dirty=true only when the value changes.
+        // This allows started() to return promptly so the mailbox processes
+        // incoming messages (e.g. Subscribe) without delay.
         let sources = self.sources.clone();
         let selector = Arc::clone(&self.selector);
         let addr = ctx.address();
@@ -282,6 +286,25 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
+    // Poll `condition` every 10 ms until it returns true or `timeout_ms`
+    // elapses. Panics with `msg` on timeout.
+    //
+    // Use this for POSITIVE "X eventually happens" assertions in tests that
+    // depend on async actor message delivery, which can be slower than fixed
+    // sleeps under parallel suite load.
+    async fn wait_for(condition: impl Fn() -> bool, timeout_ms: u64, msg: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        loop {
+            if condition() {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("wait_for timeout after {timeout_ms}ms: {msg}");
+            }
+            runtime::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     // Helper: actor that counts Notify messages
     struct NotifyCounter {
         count: Arc<AtomicU32>,
@@ -306,7 +329,7 @@ mod tests {
         let state = system.spawn(StateActor::new(10u32));
         let state_ref = StateRef::from(&state);
         let d = derived(&system.handle(), state_ref, |snap: &Arc<u32>| **snap * 2);
-        runtime::sleep(Duration::from_millis(50)).await;
+        // get() computes fresh through the mailbox if cache is not yet warm.
         let val = d.get().await;
         assert_eq!(*val, 20);
         system.shutdown().await;
@@ -314,22 +337,63 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn derived_caches_unchanged() {
+        // Verifies that DerivedActor does NOT notify subscribers when the
+        // computed derived value is unchanged.
+        //
+        // Race-free design:
+        //
+        // DerivedActor::started() spawns a task for the initial computation.
+        // If we subscribe a counter BEFORE that warm-up UpdateCache is
+        // processed, the cache transitions None→Some(2) AFTER our subscriber
+        // is registered, triggering a spurious notification.
+        //
+        // To eliminate this race we poll two consecutive `d.get().await`
+        // calls and wait until they return `Arc::ptr_eq` — which only happens
+        // when BOTH are served from the cached value (not fresh computes).
+        // At that point self.cached is definitely Some(2), so any subsequent
+        // UpdateCache(2) — including any late-arriving warm-up — will be
+        // deduplicated and produce no notification.
+        //
+        // State: 5u32 -> derived (/ 2) = 2
+        // Warm cache then subscribe.
+        // Set to 4: derived = 4/2 = 2 (SAME — must NOT notify).
+        // Wait 200ms, assert count == 0.
         let system = System::new();
         let state = system.spawn(StateActor::new(5u32));
         let state_ref = StateRef::from(&state);
         let count = Arc::new(AtomicU32::new(0));
         let d = derived(&system.handle(), state_ref, |snap: &Arc<u32>| **snap / 2); // 5/2=2
-        runtime::sleep(Duration::from_millis(50)).await;
 
+        // Wait until the actor's cache is warm: two consecutive get() calls
+        // that return Arc::ptr_eq guarantee both were served from self.cached
+        // (not fresh computes). After this, any UpdateCache(2) is a no-op.
+        let deadline = std::time::Instant::now() + Duration::from_millis(2000);
+        loop {
+            let a = d.get().await;
+            let b = d.get().await;
+            if Arc::ptr_eq(&a, &b) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("derived_caches_unchanged: timed out waiting for cache to warm");
+            }
+            runtime::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Now subscribe — cache is warm, any warm-up UpdateCache(2) will dedup.
         let counter = system.spawn(NotifyCounter {
             count: count.clone(),
         });
         d.subscribe(counter.into());
 
-        // Set to 4 — derived is still 2 (4/2=2), should not notify
+        // Set to 4 — derived is still 2 (4/2=2). DerivedActor must NOT notify.
         state.ask(crate::state::Set(4u32)).await.unwrap();
-        runtime::sleep(Duration::from_millis(100)).await;
-        assert_eq!(count.load(Ordering::SeqCst), 0);
+        runtime::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "derived value unchanged (5/2 == 4/2 == 2) — subscriber must not be notified"
+        );
         system.shutdown().await;
     }
 
@@ -345,7 +409,7 @@ mod tests {
             (r1, r2),
             |(a, b): &(Arc<u32>, Arc<u32>)| **a + **b,
         );
-        runtime::sleep(Duration::from_millis(50)).await;
+        // get() computes fresh through the mailbox if cache is not yet warm.
         assert_eq!(*d.get().await, 10);
         system.shutdown().await;
     }
@@ -364,7 +428,6 @@ mod tests {
             (r1, r2, r3),
             |(a, b, c): &(Arc<u32>, Arc<u32>, Arc<u32>)| **a + **b + **c,
         );
-        runtime::sleep(Duration::from_millis(50)).await;
         assert_eq!(*d.get().await, 6);
         system.shutdown().await;
     }
@@ -386,7 +449,6 @@ mod tests {
             ),
             |(a, b, c, d): &(Arc<u32>, Arc<u32>, Arc<u32>, Arc<u32>)| **a + **b + **c + **d,
         );
-        runtime::sleep(Duration::from_millis(50)).await;
         assert_eq!(*d.get().await, 10);
         system.shutdown().await;
     }
@@ -398,16 +460,23 @@ mod tests {
         let state_ref = StateRef::from(&state);
         let count = Arc::new(AtomicU32::new(0));
         let d = derived(&system.handle(), state_ref, |snap: &Arc<u32>| **snap * 2);
-        runtime::sleep(Duration::from_millis(50)).await;
 
         let counter = system.spawn(NotifyCounter {
             count: count.clone(),
         });
         d.subscribe(counter.into());
 
-        // Change value so derived changes: 5*2=10 -> 10*2=20
+        // Change value so derived changes: 5*2=10 -> 10*2=20.
         state.ask(crate::state::Set(10u32)).await.unwrap();
-        runtime::sleep(Duration::from_millis(100)).await;
+
+        // Wait for the subscriber to be notified via condition polling.
+        wait_for(
+            || count.load(Ordering::SeqCst) >= 1,
+            2000,
+            "subscriber should be notified when derived value changes (5->10)",
+        )
+        .await;
+
         assert!(
             count.load(Ordering::SeqCst) >= 1,
             "subscriber should be notified when derived value changes"
@@ -422,6 +491,8 @@ mod tests {
         let r = StateRef::from(&state);
         let d1 = derived(&system.handle(), r, |s: &Arc<u32>| **s * 2); // 10
         let d2 = derived(&system.handle(), d1, |s: &Arc<u32>| **s + 1); // 11
+                                                                        // Allow time for the chain to propagate initial values through two
+                                                                        // actor hops (d1 warm-up → d1 notifies d2 → d2 warm-up).
         runtime::sleep(Duration::from_millis(200)).await;
         assert_eq!(*d2.get().await, 11);
         system.shutdown().await;
@@ -434,6 +505,7 @@ mod tests {
         let r = StateRef::from(&state);
         let d1 = derived(&system.handle(), r, |s: &Arc<u32>| **s * 2); // 10
         let d2 = derived(&system.handle(), d1, |s: &Arc<u32>| **s + 1); // 11
+                                                                        // Allow chain to settle so both actors have populated their caches.
         runtime::sleep(Duration::from_millis(200)).await;
         let a = d2.get().await;
         let b = d2.get().await;
@@ -447,7 +519,7 @@ mod tests {
         let state = system.spawn(StateActor::new(42u32));
         let r = StateRef::from(&state);
         let d = derived(&system.handle(), r, |s: &Arc<u32>| **s);
-        runtime::sleep(Duration::from_millis(50)).await;
+        // get() computes fresh through the mailbox if cache is not yet warm.
         assert_eq!(*d.get().await, 42);
         system.shutdown().await;
     }
@@ -458,11 +530,26 @@ mod tests {
         let state = system.spawn(StateActor::new(1u32));
         let r = StateRef::from(&state);
         let d = derived(&system.handle(), r, |s: &Arc<u32>| **s * 10);
-        runtime::sleep(Duration::from_millis(50)).await;
         assert_eq!(*d.get().await, 10);
 
         state.ask(crate::state::Set(2u32)).await.unwrap();
-        runtime::sleep(Duration::from_millis(100)).await;
+
+        // Wait for the derived actor to process the source change and update
+        // its cache. Retry get() until it reflects the new value.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+        loop {
+            let result = d.get().await;
+            if *result == 20 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!(
+                    "derived_update_cache_self_message: timed out waiting for value 20, got {}",
+                    *result
+                );
+            }
+            runtime::sleep(std::time::Duration::from_millis(10)).await;
+        }
         assert_eq!(*d.get().await, 20);
         system.shutdown().await;
     }
@@ -473,8 +560,7 @@ mod tests {
         let state = system.spawn(StateActor::new(7u32));
         let r = StateRef::from(&state);
         let d = derived(&system.handle(), r, |s: &Arc<u32>| **s + 3);
-        runtime::sleep(Duration::from_millis(50)).await;
-        // d is already a StateRef, verify it works
+        // get() computes fresh through the mailbox if cache is not yet warm.
         let val = d.get().await;
         assert_eq!(*val, 10);
         system.shutdown().await;
