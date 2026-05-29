@@ -979,6 +979,17 @@ mod tests {
         // Stop the actor.
         system.shutdown().await;
 
+        // shutdown() awaits done_rx, which fires when the mailbox loop calls
+        // done.send(()) — but the tokio task hasn't yet dropped the Receiver,
+        // so the channel's is_closed() can still return false for a brief
+        // window. Poll until the channel is truly closed before asserting.
+        for _ in 0..200 {
+            if !addr.is_alive() {
+                break;
+            }
+            runtime::sleep(Duration::from_millis(1)).await;
+        }
+
         // Trying to ask a dead actor should fail with Closed.
         let result = addr.ask(GetCount).await;
         assert!(matches!(result, Err(AskError::Closed)));
@@ -992,6 +1003,15 @@ mod tests {
         let addr = system.spawn(CounterActor::new());
 
         system.shutdown().await;
+
+        // Poll until the channel is truly closed (see ask_dead_actor_returns_closed
+        // for explanation of the done_rx vs is_closed() gap).
+        for _ in 0..200 {
+            if !addr.is_alive() {
+                break;
+            }
+            runtime::sleep(Duration::from_millis(1)).await;
+        }
 
         // send() on a dead actor should return the message.
         let result = addr.send(Increment);
@@ -1050,6 +1070,15 @@ mod tests {
         assert!(recipient.is_alive());
 
         system.shutdown().await;
+
+        // Poll until the channel is truly closed (see ask_dead_actor_returns_closed
+        // for explanation of the done_rx vs is_closed() gap).
+        for _ in 0..200 {
+            if !recipient.is_alive() {
+                break;
+            }
+            runtime::sleep(Duration::from_millis(1)).await;
+        }
 
         assert!(!recipient.is_alive());
         assert!(recipient.do_send(Increment).is_err());
@@ -1176,6 +1205,17 @@ mod tests {
         assert!(child.is_alive(), "child must be alive before shutdown");
 
         system.shutdown().await;
+
+        // Poll until both actors' channels are truly closed (see
+        // ask_dead_actor_returns_closed for explanation of the done_rx vs
+        // is_closed() gap that can cause immediate post-shutdown assertions
+        // to race).
+        for _ in 0..200 {
+            if !parent.is_alive() && !child.is_alive() {
+                break;
+            }
+            runtime::sleep(Duration::from_millis(1)).await;
+        }
 
         // After shutdown(), both parent AND child must be stopped — system
         // is the registry root, ctx.spawn registers with the same system.

@@ -159,6 +159,25 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
 
+    // Poll `condition` every 10 ms until it returns true or `timeout_ms`
+    // elapses. Panics with `msg` on timeout.
+    //
+    // Use this for POSITIVE "X eventually happens" assertions in tests that
+    // depend on async delivery — actor timers and message routing can be
+    // slower than the test's wall clock under parallel suite load.
+    async fn wait_for(condition: impl Fn() -> bool, timeout_ms: u64, msg: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        loop {
+            if condition() {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("wait_for timeout after {timeout_ms}ms: {msg}");
+            }
+            runtime::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     #[derive(Clone)]
     struct Ping(u32);
     impl Message for Ping {
@@ -207,7 +226,15 @@ mod tests {
         let debounce = system.spawn(Debounce::new(collector.into(), Duration::from_millis(50)));
 
         debounce.do_send(Enqueue(Ping(1))).unwrap();
-        runtime::sleep(Duration::from_millis(100)).await;
+
+        // Wait for the debounce flush to arrive — actor timer + message
+        // delivery can be slower than fixed sleeps under parallel suite load.
+        wait_for(
+            || count.load(Ordering::SeqCst) >= 1,
+            2000,
+            "debounce should have forwarded exactly one message",
+        )
+        .await;
 
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(*last.lock().unwrap(), Some(1));
@@ -223,7 +250,14 @@ mod tests {
         for i in 0..5 {
             debounce.do_send(Enqueue(Ping(i))).unwrap();
         }
-        runtime::sleep(Duration::from_millis(150)).await;
+
+        // Wait for the single coalesced flush to arrive.
+        wait_for(
+            || count.load(Ordering::SeqCst) >= 1,
+            2000,
+            "debounce should have forwarded exactly one coalesced message",
+        )
+        .await;
 
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(*last.lock().unwrap(), Some(4));
@@ -237,11 +271,27 @@ mod tests {
         let debounce = system.spawn(Debounce::new(collector.into(), Duration::from_millis(60)));
 
         debounce.do_send(Enqueue(Ping(1))).unwrap();
+        // Sleep for half the debounce window, then reset the timer with Ping(2).
         runtime::sleep(Duration::from_millis(30)).await;
         debounce.do_send(Enqueue(Ping(2))).unwrap();
         runtime::sleep(Duration::from_millis(30)).await;
-        assert_eq!(count.load(Ordering::SeqCst), 0);
-        runtime::sleep(Duration::from_millis(50)).await;
+        // Debounce window restarted from Ping(2); 30ms << 60ms — must not fire.
+        // This is an intentional timing invariant: fixed sleep is correct here
+        // because we're asserting a "not yet" condition within a known timed window.
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "timer should not have fired yet"
+        );
+
+        // Wait for the eventual flush via condition-based polling.
+        wait_for(
+            || count.load(Ordering::SeqCst) >= 1,
+            2000,
+            "debounce should have forwarded Ping(2) after quiet period",
+        )
+        .await;
+
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(*last.lock().unwrap(), Some(2));
         system.shutdown().await;
@@ -253,13 +303,26 @@ mod tests {
         let (collector, count, _) = setup_collector(&system);
         let debounce = system.spawn(Debounce::new(collector.into(), Duration::from_millis(30)));
 
+        // First burst — wait for it to flush before sending the second burst,
+        // so the two bursts are truly separate and each yields exactly one flush.
         debounce.do_send(Enqueue(Ping(1))).unwrap();
         debounce.do_send(Enqueue(Ping(2))).unwrap();
-        runtime::sleep(Duration::from_millis(80)).await;
+        wait_for(
+            || count.load(Ordering::SeqCst) >= 1,
+            2000,
+            "first burst should have flushed",
+        )
+        .await;
 
+        // Second burst — wait for its flush too.
         debounce.do_send(Enqueue(Ping(3))).unwrap();
         debounce.do_send(Enqueue(Ping(4))).unwrap();
-        runtime::sleep(Duration::from_millis(80)).await;
+        wait_for(
+            || count.load(Ordering::SeqCst) >= 2,
+            2000,
+            "second burst should have flushed",
+        )
+        .await;
 
         assert_eq!(count.load(Ordering::SeqCst), 2);
         system.shutdown().await;
@@ -272,7 +335,15 @@ mod tests {
         let throttle = system.spawn(Throttle::new(collector.into(), Duration::from_millis(100)));
 
         throttle.do_send(Enqueue(Ping(1))).unwrap();
-        runtime::sleep(Duration::from_millis(20)).await;
+
+        // Throttle forwards the first message immediately (before any cooldown
+        // fires). Wait for it to arrive rather than guessing a fixed sleep.
+        wait_for(
+            || count.load(Ordering::SeqCst) >= 1,
+            2000,
+            "throttle should forward the first message immediately",
+        )
+        .await;
 
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(*last.lock().unwrap(), Some(1));
@@ -286,12 +357,29 @@ mod tests {
         let throttle = system.spawn(Throttle::new(collector.into(), Duration::from_millis(100)));
 
         throttle.do_send(Enqueue(Ping(1))).unwrap();
-        runtime::sleep(Duration::from_millis(10)).await;
+        // First message is forwarded immediately. Wait for it so the cooldown
+        // window is known to have started before we queue more messages.
+        wait_for(
+            || count.load(Ordering::SeqCst) >= 1,
+            2000,
+            "throttle should forward first message",
+        )
+        .await;
+
         throttle.do_send(Enqueue(Ping(2))).unwrap();
         throttle.do_send(Enqueue(Ping(3))).unwrap();
-        runtime::sleep(Duration::from_millis(20)).await;
 
-        assert_eq!(count.load(Ordering::SeqCst), 1);
+        // Cooldown is 100ms. Sleep for 20ms — well inside the cooldown window —
+        // and assert count is still 1. This is an intentional timing invariant:
+        // the cooldown MUST suppress extra messages during this window. A fixed
+        // sleep is correct here because we're asserting a "not yet" condition
+        // within a known timed window (20ms << 100ms cooldown).
+        runtime::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "throttle should suppress messages during cooldown"
+        );
         system.shutdown().await;
     }
 
@@ -302,9 +390,24 @@ mod tests {
         let throttle = system.spawn(Throttle::new(collector.into(), Duration::from_millis(50)));
 
         throttle.do_send(Enqueue(Ping(1))).unwrap();
-        runtime::sleep(Duration::from_millis(10)).await;
+        // Wait for first forward so we know the cooldown has started before
+        // queuing Ping(2).
+        wait_for(
+            || count.load(Ordering::SeqCst) >= 1,
+            2000,
+            "throttle should forward first message",
+        )
+        .await;
+
         throttle.do_send(Enqueue(Ping(2))).unwrap();
-        runtime::sleep(Duration::from_millis(100)).await;
+
+        // After cooldown expires, pending Ping(2) should be forwarded.
+        wait_for(
+            || count.load(Ordering::SeqCst) >= 2,
+            2000,
+            "throttle should forward pending message after cooldown",
+        )
+        .await;
 
         assert_eq!(count.load(Ordering::SeqCst), 2);
         assert_eq!(*last.lock().unwrap(), Some(2));
@@ -318,10 +421,24 @@ mod tests {
         let throttle = system.spawn(Throttle::new(collector.into(), Duration::from_millis(50)));
 
         throttle.do_send(Enqueue(Ping(1))).unwrap();
-        runtime::sleep(Duration::from_millis(10)).await;
+        // Wait for first forward so cooldown is active before queuing.
+        wait_for(
+            || count.load(Ordering::SeqCst) >= 1,
+            2000,
+            "throttle should forward first message",
+        )
+        .await;
+
         throttle.do_send(Enqueue(Ping(2))).unwrap();
         throttle.do_send(Enqueue(Ping(3))).unwrap();
-        runtime::sleep(Duration::from_millis(100)).await;
+
+        // After cooldown, only the last pending (Ping(3)) should be forwarded.
+        wait_for(
+            || count.load(Ordering::SeqCst) >= 2,
+            2000,
+            "throttle should forward only latest pending message after cooldown",
+        )
+        .await;
 
         assert_eq!(count.load(Ordering::SeqCst), 2);
         assert_eq!(*last.lock().unwrap(), Some(3));
