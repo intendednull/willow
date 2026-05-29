@@ -57,6 +57,32 @@ pub enum ClientEvent {
     SyncCompleted {
         ops_applied: usize,
     },
+    /// Backfill from at least one trusted `SyncProvider` has finished for this
+    /// topic (history-sync-eose spec, plan PR 5). Emitted when the client
+    /// receives a [`WireMessage::HistorySyncComplete`](crate::ops::WireMessage)
+    /// marker signed by a peer holding an explicit `SyncProvider` grant for the
+    /// active server.
+    ///
+    /// This is the topic-scoped boundary marker — it answers "has history
+    /// finished loading for this topic?". The session-wide per-batch progress
+    /// event [`SyncCompleted`](ClientEvent::SyncCompleted) is kept unchanged
+    /// (pinned decision 5): the two answer different questions.
+    ///
+    /// `topic` is the lowercase-hex of the marker's `topic_id` (blake3 of the
+    /// canonical topic string) — the only stable topic identifier the marker
+    /// carries on the wire. The UI matches it against the hex of the active
+    /// channel's `TopicId` to hide the history-loading spinner.
+    HistorySynced {
+        /// Lowercase-hex of the marker's 32-byte `topic_id`.
+        topic: String,
+        /// The trusted provider that finished streaming, recovered from the
+        /// verified envelope signer (never carried in the marker payload).
+        provider: EndpointId,
+        /// Number of additional connected trusted `SyncProvider` peers that
+        /// have **not** yet sent a completion marker for this topic. `0` means
+        /// no trusted providers are still streaming.
+        still_pending: usize,
+    },
     RoleCreated {
         name: String,
         role_id: String,

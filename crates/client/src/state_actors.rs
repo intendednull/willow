@@ -246,6 +246,21 @@ pub struct NetworkMeta {
     pub(crate) typing_recency: VecDeque<EndpointId>,
     /// Last time we sent a typing indicator (for debouncing).
     pub last_typing_sent_ms: u64,
+    /// Dedup set for `HistorySyncComplete` markers, keyed by
+    /// `(provider, stream_generation)` (history-sync-eose spec, plan PR 5).
+    ///
+    /// A provider that restarts and re-streams picks a fresh random
+    /// `stream_generation`, so a marker on a new generation re-emits while a
+    /// repeat of an already-seen `(provider, generation)` is ignored — this is
+    /// the equality-based dedup pinned decision 6 relies on. Read-only for
+    /// callers; mutate via [`NetworkMeta::record_history_marker`].
+    pub(crate) history_markers_seen: HashSet<(EndpointId, u64)>,
+    /// Per-topic set of trusted providers that have sent a completion marker
+    /// (history-sync-eose spec, plan PR 5). Keyed by the lowercase-hex of the
+    /// marker's `topic_id`. Drives `still_pending` (connected trusted providers
+    /// minus the ones that have completed). Read-only for callers; mutate via
+    /// [`NetworkMeta::record_history_marker`].
+    pub(crate) history_completed_by_topic: HashMap<String, HashSet<EndpointId>>,
 }
 
 impl NetworkMeta {
@@ -276,6 +291,53 @@ impl NetworkMeta {
             .retain(|_, (_, ts)| now_ms.saturating_sub(*ts) < ttl_ms);
         self.typing_recency
             .retain(|p| self.typing_peers.contains_key(p));
+    }
+
+    /// Record a `HistorySyncComplete` marker from a trusted provider, returning
+    /// `true` if this is the first time we have seen this
+    /// `(provider, stream_generation)` pair (history-sync-eose spec, plan PR 5).
+    ///
+    /// On a fresh pair we also note `provider` against `topic` so
+    /// [`pending_history_providers`](Self::pending_history_providers) can
+    /// exclude it from the still-streaming count. A repeated pair returns
+    /// `false` and leaves both tables untouched, so the caller suppresses the
+    /// duplicate `HistorySynced` emission. The caller is responsible for the
+    /// trust gate — only markers from explicit `SyncProvider` peers reach here.
+    pub(crate) fn record_history_marker(
+        &mut self,
+        provider: EndpointId,
+        stream_generation: u64,
+        topic: &str,
+    ) -> bool {
+        let fresh = self
+            .history_markers_seen
+            .insert((provider, stream_generation));
+        if fresh {
+            self.history_completed_by_topic
+                .entry(topic.to_string())
+                .or_default()
+                .insert(provider);
+        }
+        fresh
+    }
+
+    /// Count how many of `connected_trusted` providers have **not** yet sent a
+    /// completion marker for `topic` — the `still_pending` value for
+    /// [`ClientEvent::HistorySynced`](crate::events::ClientEvent::HistorySynced).
+    ///
+    /// `connected_trusted` is the caller-supplied set of currently-connected
+    /// peers holding an explicit `SyncProvider` grant; this method subtracts the
+    /// providers already recorded complete for `topic`.
+    pub(crate) fn pending_history_providers(
+        &self,
+        topic: &str,
+        connected_trusted: &[EndpointId],
+    ) -> usize {
+        let completed = self.history_completed_by_topic.get(topic);
+        connected_trusted
+            .iter()
+            .filter(|p| completed.map(|c| !c.contains(*p)).unwrap_or(true))
+            .count()
     }
 }
 

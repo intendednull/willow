@@ -1046,10 +1046,130 @@ pub(crate) async fn process_received_message<T: TopicHandle>(
                 "event_broker.do_send Publish(ProfileUpdated from ProfileAnnounce)",
             );
         }
+        // End-of-stored-events marker (history-sync-eose spec, plan PR 5).
+        //
+        // A trusted `SyncProvider` has finished streaming its history for this
+        // topic; everything it sends afterwards is live, not backfill. We:
+        //
+        //   1. Trust-gate on the **signer** — the marker is honored only if the
+        //      verified envelope signer holds an explicit `SyncProvider` grant
+        //      for this server (markers from untrusted peers are ignored, so a
+        //      random peer cannot flip the UI loading flag off). We check the
+        //      explicit grant, not `has_permission`, mirroring the responder
+        //      gate (pinned decision 4 / the SyncRequestV2 path above).
+        //   2. Detect truncation via `last_event_hash`: if the provider claims a
+        //      last event we do **not** hold, the stream did not reach us
+        //      intact — log a warning and emit **no** completion (no false
+        //      positive). `None` is the empty-store case and never truncates.
+        //   3. Dedup by `(provider, stream_generation)`: a repeat marker is
+        //      dropped, but a new random `stream_generation` (provider restarted
+        //      and re-streamed) re-emits (decision 6).
+        //   4. Compute `still_pending` from the connected trusted providers that
+        //      have not yet completed this topic (first-trusted-wins default).
+        crate::ops::WireMessage::HistorySyncComplete {
+            topic_id,
+            last_event_hash,
+            stream_generation,
+        } => {
+            let provider = signer;
+
+            // (1) Trust gate: ignore markers from peers without an explicit
+            // SyncProvider grant for this server.
+            let trusted = willow_actor::state::select(&ctx.event_state, move |es| {
+                es.has_explicit_permission(&provider, &willow_state::Permission::SyncProvider)
+            })
+            .await;
+            if !trusted {
+                tracing::debug!(
+                    %provider,
+                    "ignoring HistorySyncComplete: signer lacks explicit SyncProvider grant"
+                );
+                return;
+            }
+
+            // (2) Truncation check: a non-None `last_event_hash` we do not hold
+            // means the stream did not reach us intact. Warn and do NOT emit a
+            // completion (the spec forbids a false positive here).
+            if let Some(expected) = last_event_hash {
+                let have = willow_actor::state::select(&ctx.dag, move |ds| {
+                    ds.managed.dag().get(&expected).is_some()
+                })
+                .await;
+                if !have {
+                    tracing::warn!(
+                        %provider, %expected,
+                        "HistorySyncComplete last_event_hash not in local DAG — \
+                         treating sync as incomplete, suppressing HistorySynced"
+                    );
+                    return;
+                }
+            }
+
+            // (3) Dedup + record. `record_history_marker` returns false for a
+            // repeat `(provider, stream_generation)`; a new generation is fresh.
+            let topic = topic_id_to_hex(&topic_id);
+            let topic_for_record = topic.clone();
+            let fresh = willow_actor::state::mutate(&ctx.network, move |n| {
+                n.record_history_marker(provider, stream_generation, &topic_for_record)
+            })
+            .await;
+            if !fresh {
+                tracing::debug!(
+                    %provider, stream_generation,
+                    "ignoring duplicate HistorySyncComplete (already seen this generation)"
+                );
+                return;
+            }
+
+            // (4) still_pending = connected trusted providers that have not yet
+            // completed this topic. "Connected" = ChatMeta.peers; "trusted" =
+            // explicit SyncProvider grant. The provider that just completed is
+            // already recorded, so it is excluded.
+            let connected = willow_actor::state::select(&ctx.chat_meta, |c| c.peers.clone()).await;
+            let connected_trusted = willow_actor::state::select(&ctx.event_state, move |es| {
+                connected
+                    .into_iter()
+                    .filter(|p| {
+                        es.has_explicit_permission(p, &willow_state::Permission::SyncProvider)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await;
+            let topic_for_count = topic.clone();
+            let still_pending = willow_actor::state::select(&ctx.network, move |n| {
+                n.pending_history_providers(&topic_for_count, &connected_trusted)
+            })
+            .await;
+
+            warn_if_err(
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::HistorySynced {
+                        topic,
+                        provider,
+                        still_pending,
+                    })),
+                "event_broker.do_send Publish(HistorySynced)",
+            );
+        }
         // Worker messages travel on the _willow_workers topic and are never
         // delivered to the client's server-ops listener.
         crate::ops::WireMessage::Worker(_) => {}
     }
+}
+
+/// Lowercase-hex of a 32-byte gossip `topic_id`. Used to key the
+/// [`ClientEvent::HistorySynced`](crate::events::ClientEvent::HistorySynced)
+/// `topic` field and the per-topic completion table — the marker carries only
+/// the blake3 `topic_id`, not the original topic string, so its hex is the
+/// stable identifier the UI matches against the active channel's `TopicId`.
+/// Mirrors `blob_hash_to_hex` rather than pulling in the `hex` crate as a
+/// direct dependency.
+fn topic_id_to_hex(topic_id: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for byte in topic_id {
+        s.push_str(&format!("{byte:02x}"));
+    }
+    s
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

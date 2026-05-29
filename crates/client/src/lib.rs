@@ -96,6 +96,10 @@ mod tests_sync_reply_cache;
 #[path = "tests/heads_sync.rs"]
 mod tests_heads_sync;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "tests/history_eose.rs"]
+mod tests_history_eose;
+
 /// How long a typing indicator remains visible after the last typing event, in milliseconds.
 pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
 
