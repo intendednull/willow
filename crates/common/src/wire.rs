@@ -75,6 +75,38 @@ pub enum WireMessage {
         /// final batch (end-of-stream).
         more: bool,
     },
+    /// End-of-stored-events marker: a sync provider has finished streaming the
+    /// historical portion of its store for a topic (additive — rides the same
+    /// signed `MessageType::Channel` envelope as every other variant; no
+    /// `PROTOCOL_VERSION` bump, no new `MessageType` slot). Subsequent events on
+    /// the same topic from this provider are live, not backfill.
+    ///
+    /// The provider's identity is **not** in the payload: like every other
+    /// `WireMessage`, the marker is signed by [`pack_wire`] and the receiver
+    /// recovers the provider's [`EndpointId`] from the verified envelope signer
+    /// at [`unpack_wire`] time. Carrying it explicitly would invite a relay-
+    /// rewrite / MITM attack re-attributing the marker to a different trusted
+    /// provider, and wastes the bytes besides.
+    ///
+    /// See `docs/specs/2026-04-24-history-sync-eose.md`.
+    HistorySyncComplete {
+        /// The `TopicId` (blake3 of the canonical topic string) this marker
+        /// applies to. Carried explicitly (rather than left implicit in the
+        /// gossip topic) so the marker survives relay-bridge forwarding and a
+        /// single audit log can correlate markers across topics.
+        topic_id: [u8; 32],
+        /// Hash of the last event the provider streamed before emitting the
+        /// marker, or `None` if the provider had zero stored events for this
+        /// topic. The receiver uses it to detect truncation; `None` cleanly
+        /// distinguishes "empty store" from "done streaming N events".
+        last_event_hash: Option<willow_state::EventHash>,
+        /// Per-`(topic_id, provider)` stream cursor. A random `u64` per stream
+        /// (equality-based dedup needs no ordering); receivers ignore a marker
+        /// whose `(provider, stream_generation)` they have already observed, so
+        /// a provider that restarts and re-streams cannot confuse a client
+        /// holding a stale marker.
+        stream_generation: u64,
+    },
     /// Ephemeral typing indicator — not stored or persisted.
     TypingIndicator {
         /// The channel name the peer is typing in.
@@ -261,7 +293,11 @@ impl WireMessage {
             // Profile announce: display_name is unbounded today; allow 64 KB.
             WireMessage::ProfileAnnounce { .. } => DEFAULT_CAP,
             // Signaling / control plane: tiny payloads only.
+            // `HistorySyncComplete` carries only a 32-byte topic id, an optional
+            // 32-byte event hash, and a u64 generation (~80 bytes on the wire) —
+            // it belongs with the small control-plane variants.
             WireMessage::SyncRequest { .. }
+            | WireMessage::HistorySyncComplete { .. }
             | WireMessage::TypingIndicator { .. }
             | WireMessage::VoiceJoin { .. }
             | WireMessage::VoiceLeave { .. }
@@ -282,6 +318,7 @@ impl WireMessage {
             WireMessage::SyncBatch { .. } => "SyncBatch",
             WireMessage::SyncRequestV2 { .. } => "SyncRequestV2",
             WireMessage::SyncBatchV2 { .. } => "SyncBatchV2",
+            WireMessage::HistorySyncComplete { .. } => "HistorySyncComplete",
             WireMessage::TypingIndicator { .. } => "TypingIndicator",
             WireMessage::VoiceJoin { .. } => "VoiceJoin",
             WireMessage::VoiceLeave { .. } => "VoiceLeave",
@@ -751,6 +788,83 @@ mod tests {
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].0.len(), 1);
         assert!(!batches[0].1);
+    }
+
+    // ── History-sync EOSE marker (history-sync-eose spec) ────────────────────
+
+    #[test]
+    fn pack_unpack_history_sync_complete_round_trip() {
+        let id = Identity::generate();
+        let topic_id = [7u8; 32];
+        let last = EventHash::from_bytes(b"last-streamed-event");
+        let msg = WireMessage::HistorySyncComplete {
+            topic_id,
+            last_event_hash: Some(last),
+            stream_generation: 0xDEAD_BEEF_CAFE_F00D,
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, signer) = unpack_wire(&data).unwrap();
+
+        // The provider identity is the verified envelope signer, not a payload
+        // field — derive it here exactly as a real receiver would.
+        assert_eq!(signer, id.endpoint_id());
+        match decoded {
+            WireMessage::HistorySyncComplete {
+                topic_id: t,
+                last_event_hash,
+                stream_generation,
+            } => {
+                assert_eq!(t, topic_id);
+                assert_eq!(last_event_hash, Some(last));
+                assert_eq!(stream_generation, 0xDEAD_BEEF_CAFE_F00D);
+            }
+            _ => panic!("expected HistorySyncComplete"),
+        }
+    }
+
+    #[test]
+    fn history_sync_complete_empty_store_has_no_last_hash() {
+        // `last_event_hash: None` encodes "the provider had zero stored events
+        // for this topic" — distinct from "done streaming N events" (decision 7).
+        let id = Identity::generate();
+        let msg = WireMessage::HistorySyncComplete {
+            topic_id: [0u8; 32],
+            last_event_hash: None,
+            stream_generation: 1,
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+        match decoded {
+            WireMessage::HistorySyncComplete {
+                last_event_hash, ..
+            } => assert!(last_event_hash.is_none(), "empty store => None"),
+            _ => panic!("expected HistorySyncComplete"),
+        }
+    }
+
+    #[test]
+    fn history_sync_complete_serialized_size_is_tiny() {
+        // The marker is ~80 bytes on the wire and imposes no new size class —
+        // it serialises well under the 256 KB MAX_DESER_SIZE ceiling and even
+        // under the smallest (4 KB) per-variant signaling cap.
+        let id = Identity::generate();
+        let msg = WireMessage::HistorySyncComplete {
+            topic_id: [0xAB; 32],
+            last_event_hash: Some(EventHash::from_bytes(b"h")),
+            stream_generation: u64::MAX,
+        };
+        let framed = pack_wire(&msg, &id).unwrap().len();
+        assert!(
+            framed < 256 * 1024,
+            "framed marker {framed} B must stay well under the 256 KB MAX_DESER_SIZE cap"
+        );
+        // Sanity floor on how small it actually is: signature (64) + pubkey (32)
+        // + envelope/tag overhead + the fixed-size payload is comfortably under
+        // 1 KB — pin a loose ceiling so a future field bloat is caught.
+        assert!(
+            framed < 1024,
+            "framed marker {framed} B is expected to be ~a couple hundred bytes"
+        );
     }
 
     #[test]
