@@ -74,10 +74,15 @@ use iroh_base::RelayUrl;
 use iroh_relay::server::{AccessConfig, RelayConfig, Server, ServerConfig};
 use tokio::sync::Semaphore;
 use tracing::info;
+use willow_common::relay_info::{
+    canonical_json, capability_etag, features, sign_capability_doc, Limitation, Retention,
+    WillowRelayInfo,
+};
 use willow_identity::Identity;
 use willow_network::Network;
 use willow_relay::{
-    run_proxy_listener, topic_announce_listener, MAX_CONCURRENT_PROXY_CONNECTIONS,
+    run_proxy_listener, topic_announce_listener, CAPABILITY_PATH,
+    MAX_CONCURRENT_PROXY_CONNECTIONS, MAX_TOPICS, MAX_TOPIC_LEN,
 };
 
 #[derive(Parser)]
@@ -94,6 +99,96 @@ struct Args {
     /// Print the bootstrap node's EndpointId and exit.
     #[arg(long)]
     print_id: bool,
+
+    // ── Capability-document operator metadata (all optional) ─────────
+    // Advertised at GET /.well-known/willow. Each falls back to its
+    // env var, then to None (omitted from the document). See the spec:
+    // docs/specs/2026-04-24-relay-capability-doc.md.
+    /// Operator-chosen display name (≤ 60 UTF-8 bytes by convention).
+    #[arg(long, env = "WILLOW_RELAY_NAME")]
+    relay_name: Option<String>,
+
+    /// Plain-text relay description (no markup).
+    #[arg(long, env = "WILLOW_RELAY_DESCRIPTION")]
+    relay_description: Option<String>,
+
+    /// Operator contact (e.g. mailto: / https: / matrix:).
+    #[arg(long, env = "WILLOW_RELAY_CONTACT")]
+    relay_contact: Option<String>,
+
+    /// Terms-of-service URL.
+    #[arg(long, env = "WILLOW_RELAY_TOS")]
+    relay_tos: Option<String>,
+
+    /// Privacy-policy URL.
+    #[arg(long, env = "WILLOW_RELAY_PRIVACY")]
+    relay_privacy: Option<String>,
+
+    /// Square icon URL (≥ 64×64).
+    #[arg(long, env = "WILLOW_RELAY_ICON")]
+    relay_icon: Option<String>,
+}
+
+/// Construct, sign, and pre-render the relay's capability document.
+///
+/// Returns `(info_json, etag)`: the serialized JSON body served at
+/// `GET /.well-known/willow` and the strong ETag (lowercase-hex SHA-256
+/// over the canonical bytes *with* the signature). Built once at startup
+/// so the request path performs no crypto.
+///
+/// `protocol_versions` is sourced from the live
+/// [`willow_transport::PROTOCOL_VERSION`] (highest-first, no duplicates),
+/// not a literal. Advertised `supported_features` are limited to the
+/// capabilities that exist today (gossip, history, blobs); sibling-spec
+/// tags (`seq-vector-sync`, `history-eose`) are added only once their
+/// implementing PRs land. Operator metadata comes from optional CLI args
+/// / env vars, defaulting to `None` (the field is then omitted).
+fn build_capability_doc(args: &Args, identity: &Identity) -> Result<(String, String)> {
+    let mut info = WillowRelayInfo {
+        name: args.relay_name.clone(),
+        description: args.relay_description.clone(),
+        contact: args.relay_contact.clone(),
+        admin_pubkey: None,
+        pubkey: hex::encode(identity.public_key().as_bytes()),
+        software: Some("willow-relay".into()),
+        version: None,
+        terms_of_service: args.relay_tos.clone(),
+        privacy_policy: args.relay_privacy.clone(),
+        icon: args.relay_icon.clone(),
+        protocol_versions: vec![willow_transport::PROTOCOL_VERSION],
+        supported_features: vec![
+            features::GOSSIP.into(),
+            features::HISTORY.into(),
+            features::BLOBS.into(),
+        ],
+        signature: String::new(),
+        limitation: Some(Limitation {
+            max_message_bytes: Some(willow_transport::MAX_DESER_SIZE as u32),
+            max_topic_len: Some(MAX_TOPIC_LEN as u16),
+            max_topics: Some(MAX_TOPICS as u32),
+            max_connections: Some(MAX_CONCURRENT_PROXY_CONNECTIONS as u32),
+            max_blob_bytes: Some(0),
+            invite_required: false,
+            payment_required: false,
+            hlc_lower_limit: None,
+            min_client_version: None,
+        }),
+        retention: None,
+        payments_url: None,
+        invites_url: None,
+        // Static "ok" in v1; dynamic degraded/read_only health is deferred
+        // (so the two-tier Cache-Control is effectively single-tier).
+        status: Some("ok".into()),
+        status_detail: None,
+    };
+
+    sign_capability_doc(&mut info, identity)
+        .context("failed to sign capability document")?;
+    let json = serde_json::to_string(&info).context("failed to serialize capability document")?;
+    let etag = capability_etag(
+        &canonical_json(&info, true).context("failed to canonicalize capability document")?,
+    );
+    Ok((json, etag))
 }
 
 #[tokio::main]
@@ -119,6 +214,18 @@ async fn main() -> Result<()> {
         .init();
 
     info!(id = %identity.endpoint_id().fmt_short(), "bootstrap node identity");
+
+    // ── Build + sign the capability document once, at startup ────────────
+    // Served at GET /.well-known/willow. Pre-render JSON + ETag so the
+    // hot path does zero crypto per request. `protocol_versions` is
+    // sourced from the live transport constant (never a literal), and
+    // limits mirror the live relay constants.
+    let (capability_json, capability_etag) = build_capability_doc(&args, &identity)?;
+    info!(
+        path = CAPABILITY_PATH,
+        etag = %capability_etag,
+        "capability document built + signed"
+    );
 
     // ── Public listener (HTTP dispatch: /bootstrap-id + proxy) ───────────
     // Bind the public-facing TCP port FIRST so `relay_port = 0` can pick
@@ -199,15 +306,19 @@ async fn main() -> Result<()> {
     // descriptors. See `willow_relay::run_proxy_listener`.
     let bootstrap_id = Arc::new(identity.endpoint_id().to_string());
     let proxy_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_PROXY_CONNECTIONS));
+    let capability_json: Arc<str> = Arc::from(capability_json);
+    let capability_etag: Arc<str> = Arc::from(capability_etag);
     tokio::spawn(run_proxy_listener(
         public_listener,
         upstream_relay_addr,
         Arc::clone(&bootstrap_id),
         proxy_semaphore,
+        capability_json,
+        capability_etag,
     ));
     info!(
         port = public_port,
-        "serving /bootstrap-id + iroh-relay proxy"
+        "serving /bootstrap-id + /.well-known/willow + iroh-relay proxy"
     );
 
     // Spawn a task that listens for TopicAnnounce messages on _willow_server_ops
