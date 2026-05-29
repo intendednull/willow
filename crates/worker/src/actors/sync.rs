@@ -1,4 +1,17 @@
 //! Sync actor — periodically broadcasts SyncRequests for state convergence.
+//!
+//! This actor is the **requester** half of the heads-based sync protocol: it
+//! broadcasts [`WorkerRequest::Sync`] carrying a per-server `HeadsSummary`.
+//! The request itself needs no per-envelope byte-budgeting — a `HeadsSummary`
+//! is bounded to [`willow_common::MAX_AUTHORS_PER_SYNC`] entries
+//! (≈ 256 × 72 B, far under the gossip ceiling). The **responder** side
+//! (`willow-replay` / `willow-storage` role `Sync` arms) byte-budgets the
+//! reply against [`willow_common::SYNC_ENVELOPE_BUDGET`] and sets the
+//! [`WorkerResponse::SyncBatch`](willow_common::WorkerResponse) `more` flag so
+//! a single response envelope stays within the 64 KiB gossip limit; the
+//! requester re-issues `Sync` with advanced heads to drain `more: true`
+//! streams. See plan PR 4 Task 4.4 and
+//! `docs/specs/2026-04-24-negentropy-sync.md` § Wire protocol.
 
 use std::time::Duration;
 

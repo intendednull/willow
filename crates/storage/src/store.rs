@@ -309,9 +309,14 @@ impl StorageEventStore {
     /// For each author in our store: if the requester has a lower seq (or
     /// doesn't know the author at all), return events with seq > their_seq.
     /// If heads is empty, returns all events for the server.
-    /// Maximum events returned in a single sync batch to prevent OOM.
-    /// Defined once in `willow_common::SYNC_BATCH_LIMIT` so storage
-    /// production and client validation cannot drift apart.
+    ///
+    /// The SQL `LIMIT willow_common::SYNC_BATCH_LIMIT` is an **OOM guard** on
+    /// the materialized row set, not the wire bound: the caller
+    /// ([`StorageRole::handle_request`](crate::role)) byte-budgets this delta
+    /// with `pack_sync_batches` / `SYNC_ENVELOPE_BUDGET` and serves only the
+    /// first budget-fitting batch, so the authoritative per-envelope bound is
+    /// the 64 KiB gossip ceiling (see
+    /// `docs/specs/2026-04-24-negentropy-sync.md` § Wire protocol).
     pub fn sync_since(&self, server_id: &str, heads: &HeadsSummary) -> anyhow::Result<Vec<Event>> {
         // Reject peer-supplied summaries that would balloon SQL construction
         // (see `MAX_AUTHORS_PER_SYNC`). Done before any allocation or SQL

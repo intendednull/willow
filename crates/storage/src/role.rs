@@ -78,10 +78,28 @@ impl WorkerRole for StorageRole {
             WorkerRequest::Sync {
                 server_id, heads, ..
             } => match self.store.sync_since(&server_id, &heads) {
-                Ok(events) => WorkerResponse::SyncBatch {
-                    events,
-                    more: false,
-                },
+                // Byte-budget the delta so a single response envelope stays
+                // within the gossip layer's 64 KiB ceiling. The worker path is
+                // request/response (one `WorkerResponse` per `Sync`), so we
+                // serve only the first budget-fitting batch and set
+                // `more: true` when further events remain — the requester
+                // re-issues `Sync` with advanced heads to drain the rest.
+                // `sync_since`'s SQL `LIMIT SYNC_BATCH_LIMIT` is now only an
+                // OOM guard on the materialized row set, not the wire bound
+                // (see `docs/specs/2026-04-24-negentropy-sync.md`
+                // § Wire protocol).
+                Ok(delta) => {
+                    let (events, more) = willow_common::pack_sync_batches(
+                        delta,
+                        willow_common::SYNC_ENVELOPE_BUDGET,
+                    )
+                    .into_iter()
+                    .next()
+                    // `pack_sync_batches` always yields at least one
+                    // (possibly empty) terminator batch.
+                    .expect("pack_sync_batches always returns ≥1 batch");
+                    WorkerResponse::SyncBatch { events, more }
+                }
                 Err(e) => WorkerResponse::Denied {
                     reason: format!("sync query failed: {e}"),
                 },
@@ -106,6 +124,24 @@ mod tests {
             EventKind::Message {
                 channel_id: channel.to_string(),
                 body: format!("msg seq={seq}"),
+                reply_to: None,
+            },
+            seq * 1000,
+        )
+    }
+
+    /// A message whose body is `body_bytes` long, so a known number of them
+    /// overflows the per-envelope `SYNC_ENVELOPE_BUDGET`. Used to drive the
+    /// byte-budgeted streaming + `more`-flag behaviour.
+    fn make_big_message(id: &Identity, seq: u64, prev: EventHash, body_bytes: usize) -> Event {
+        Event::new(
+            id,
+            seq,
+            prev,
+            vec![],
+            EventKind::Message {
+                channel_id: "general".to_string(),
+                body: "x".repeat(body_bytes),
                 reply_to: None,
             },
             seq * 1000,
@@ -423,6 +459,151 @@ mod tests {
                 assert!(!has_more);
             }
             _ => panic!("expected empty HistoryPage"),
+        }
+    }
+
+    // ── Byte-budgeted sync streaming + `more` flag (plan PR 4 Task 4.4) ──────
+    //
+    // The storage `Sync` arm must byte-budget the delta it serves so a single
+    // `WorkerResponse::SyncBatch` envelope stays within the gossip layer's
+    // 64 KiB ceiling (`willow_common::SYNC_ENVELOPE_BUDGET`), and set `more`:
+    //   - `more: true`  when further events remain past this envelope (the
+    //     requester re-issues `Sync` with advanced heads),
+    //   - `more: false` on the final / only batch (end-of-stream marker).
+    // The legacy `SYNC_BATCH_LIMIT` stays solely as an OOM guard on the SQL.
+
+    use willow_common::SYNC_ENVELOPE_BUDGET;
+
+    /// A small delta (well under one envelope) is served in a single batch
+    /// with `more: false` — the terminator.
+    #[test]
+    fn sync_small_delta_is_single_batch_more_false() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let mut role = StorageRole::new(store);
+        role.set_default_server("srv-1".to_string());
+
+        let id = Identity::generate();
+        let mut prev = EventHash::ZERO;
+        for seq in 1..=3 {
+            let e = make_message(&id, seq, prev, "general");
+            prev = e.hash;
+            role.on_event(&e);
+        }
+
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary::default(),
+        });
+
+        match resp {
+            WorkerResponse::SyncBatch { events, more } => {
+                assert_eq!(events.len(), 3);
+                assert!(!more, "a small delta must terminate with more: false");
+            }
+            other => panic!("expected SyncBatch, got {other:?}"),
+        }
+    }
+
+    /// When the delta exceeds one envelope's byte budget, the storage role
+    /// returns only the budget-fitting first batch with `more: true`, so the
+    /// framed envelope cannot exceed `SYNC_ENVELOPE_BUDGET` and the requester
+    /// knows to re-issue `Sync` with advanced heads.
+    #[test]
+    fn sync_large_delta_byte_budgets_first_batch_more_true() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let mut role = StorageRole::new(store);
+        role.set_default_server("srv-1".to_string());
+
+        // ~8 KiB body each → 9 events ≈ 72 KiB > 64 KiB, forcing a split.
+        let id = Identity::generate();
+        // Genesis first so the chain is well-formed.
+        let genesis = Event::new(
+            &id,
+            1,
+            EventHash::ZERO,
+            vec![],
+            EventKind::CreateServer {
+                name: "test".to_string(),
+            },
+            0,
+        );
+        role.on_event(&genesis);
+        let mut prev = genesis.hash;
+        for seq in 2..=10 {
+            let e = make_big_message(&id, seq, prev, 8 * 1024);
+            prev = e.hash;
+            role.on_event(&e);
+        }
+
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary::default(),
+        });
+
+        match resp {
+            WorkerResponse::SyncBatch { events, more } => {
+                assert!(
+                    more,
+                    "an over-budget delta must set more: true on the first batch"
+                );
+                assert!(
+                    !events.is_empty(),
+                    "the first batch must carry at least one event"
+                );
+                // The packed batch must fit the budget.
+                let batch_bytes = bincode::serialized_size(&events).unwrap() as usize;
+                assert!(
+                    batch_bytes <= SYNC_ENVELOPE_BUDGET,
+                    "first batch ({batch_bytes} B) must fit SYNC_ENVELOPE_BUDGET ({SYNC_ENVELOPE_BUDGET} B)"
+                );
+                // It must NOT contain the whole 10-event delta — that would
+                // overflow the envelope.
+                assert!(
+                    events.len() < 10,
+                    "byte-budgeted first batch must not contain all 10 over-budget events"
+                );
+            }
+            other => panic!("expected SyncBatch, got {other:?}"),
+        }
+    }
+
+    /// A fully caught-up requester still receives exactly one zero-event
+    /// terminator (`more: false`) rather than nothing.
+    #[test]
+    fn sync_caught_up_requester_gets_empty_terminator() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let mut role = StorageRole::new(store);
+        role.set_default_server("srv-1".to_string());
+
+        let id = Identity::generate();
+        let mut last_hash = EventHash::ZERO;
+        for seq in 1..=3 {
+            let e = make_message(&id, seq, last_hash, "general");
+            last_hash = e.hash;
+            role.on_event(&e);
+        }
+
+        // Requester already knows everything (seq 3).
+        let mut their_heads = std::collections::BTreeMap::new();
+        their_heads.insert(
+            id.endpoint_id(),
+            willow_state::AuthorHead {
+                seq: 3,
+                hash: last_hash,
+            },
+        );
+
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary { heads: their_heads },
+        });
+
+        match resp {
+            WorkerResponse::SyncBatch { events, more } => {
+                assert!(events.is_empty(), "caught-up requester gets no events");
+                assert!(!more, "the empty terminator must set more: false");
+            }
+            other => panic!("expected empty SyncBatch terminator, got {other:?}"),
         }
     }
 }
