@@ -95,6 +95,69 @@ impl std::fmt::Display for InsertError {
 
 impl std::error::Error for InsertError {}
 
+/// Server-local filter for a heads-based delta sync, applied by
+/// [`EventDag::events_since_filtered`].
+///
+/// This mirrors the wire-level `SyncFilter` in `willow-common` minus its
+/// `server_id` field (a single [`EventDag`] already *is* one server). It lives
+/// in `willow-state` rather than reusing the wire type because `willow-state`
+/// is the lower layer — `willow-common` depends on it, not the reverse — so the
+/// caller (the gossip responder, in a later PR) maps `SyncFilter` onto this.
+///
+/// Every axis is `Option`; `None` means "no restriction on that axis".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EventFilter {
+    /// Restrict **chat-shaped** events (those whose
+    /// [`EventKind::chat_channel_id`] is `Some` — `Message`, `FileMessage`,
+    /// `PinMessage`, `UnpinMessage`) to these channel ids. Structural events,
+    /// including channel-lifecycle and key-rotation kinds (`CreateChannel`,
+    /// `RotateChannelKey`, …), are never excluded by this axis, so server
+    /// structure and key epochs always reconcile fully (spec § Filter
+    /// semantics).
+    pub channels: Option<Vec<String>>,
+    /// Restrict to events authored by these endpoints.
+    pub authors: Option<Vec<EndpointId>>,
+    /// Restrict to events whose [`EventKind::discriminant`] is in this list.
+    pub event_kinds: Option<Vec<u8>>,
+    /// Advisory soft floor on the display-only `timestamp_hint_ms`: events with
+    /// a lower hint are dropped. The authoritative cursor remains the per-author
+    /// `seq` in `their_heads`; this only narrows scan width.
+    pub since_ms: Option<u64>,
+}
+
+impl EventFilter {
+    /// Whether `event` passes every set axis of this filter.
+    fn matches(&self, event: &Event) -> bool {
+        if let Some(authors) = &self.authors {
+            if !authors.contains(&event.author) {
+                return false;
+            }
+        }
+        if let Some(kinds) = &self.event_kinds {
+            if !kinds.contains(&event.kind.discriminant()) {
+                return false;
+            }
+        }
+        if let Some(since) = self.since_ms {
+            if event.timestamp_hint_ms < since {
+                return false;
+            }
+        }
+        // `channels` only narrows chat-shaped events; structural events
+        // (including channel lifecycle + key rotation, whose
+        // chat_channel_id() is None) always pass so structure and key epochs
+        // reconcile fully (spec § Filter semantics).
+        if let Some(channels) = &self.channels {
+            if let Some(cid) = event.kind.chat_channel_id() {
+                if !channels.iter().any(|c| c == cid) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
 /// The Merkle-DAG of all known events across all authors.
 ///
 /// This is the source of truth from which all state is derived via
@@ -330,6 +393,27 @@ impl EventDag {
         their_heads: &std::collections::BTreeMap<EndpointId, u64>,
         limit: Option<usize>,
     ) -> Vec<&Event> {
+        self.events_since_filtered(their_heads, None, limit)
+    }
+
+    /// Like [`EventDag::events_since`], but additionally drops any event that
+    /// does not pass `filter` (when `Some`).
+    ///
+    /// Filtering is applied **after** the per-author `seq` cursor and **before**
+    /// the `limit` cap, so `limit` bounds the number of *returned* (post-filter)
+    /// events. Passing `None` is identical to [`EventDag::events_since`].
+    ///
+    /// Per-author monotonicity is preserved: within each author we still walk
+    /// `seq` ascending from `their_seq`, so the surviving events for any author
+    /// remain a contiguous-by-seq, gap-free, duplicate-free ascending run
+    /// (subject to the filter removing some). Authors the requester listed but
+    /// we don't know are silently skipped — we cannot serve what we don't have.
+    pub fn events_since_filtered(
+        &self,
+        their_heads: &std::collections::BTreeMap<EndpointId, u64>,
+        filter: Option<&EventFilter>,
+        limit: Option<usize>,
+    ) -> Vec<&Event> {
         let mut result = Vec::new();
         for (author, chain) in &self.chains {
             let their_seq = their_heads.get(author).copied().unwrap_or(0);
@@ -340,11 +424,21 @@ impl EventDag {
                     }
                 }
                 if let Some(event) = self.events.get(hash) {
-                    result.push(event);
+                    if filter.is_none_or(|f| f.matches(event)) {
+                        result.push(event);
+                    }
                 }
             }
         }
         result
+    }
+
+    /// Every author with at least one event in the DAG, in arbitrary order.
+    ///
+    /// Used by a sync responder to pick up authors the requester never
+    /// mentioned in its `HeadsSummary` (those default to `known_max = 0`).
+    pub fn known_authors(&self) -> Vec<EndpointId> {
+        self.chains.keys().copied().collect()
     }
 
     // ── Topological sort ────────────────────────────────────────────

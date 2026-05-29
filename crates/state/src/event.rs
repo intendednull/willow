@@ -467,6 +467,74 @@ pub enum EventKind {
     MuteGrove { muted: bool },
 }
 
+impl EventKind {
+    /// The channel id this event carries, if any.
+    ///
+    /// Returns `Some` for every channel-bearing kind — chat *and* channel
+    /// lifecycle / key rotation / per-channel mute. This is the general
+    /// accessor; the heads-based sync filter uses the narrower
+    /// [`EventKind::chat_channel_id`] instead, because the spec requires
+    /// structural channel events (`CreateChannel`, `RotateChannelKey`, …) to
+    /// reconcile regardless of a channel filter.
+    pub fn channel_id(&self) -> Option<&str> {
+        match self {
+            EventKind::Message { channel_id, .. }
+            | EventKind::FileMessage { channel_id, .. }
+            | EventKind::CreateChannel { channel_id, .. }
+            | EventKind::DeleteChannel { channel_id, .. }
+            | EventKind::RenameChannel { channel_id, .. }
+            | EventKind::ChannelRevive { channel_id, .. }
+            | EventKind::RotateChannelKey { channel_id, .. }
+            | EventKind::PinMessage { channel_id, .. }
+            | EventKind::UnpinMessage { channel_id, .. }
+            | EventKind::MuteChannel { channel_id, .. } => Some(channel_id),
+            _ => None,
+        }
+    }
+
+    /// The channel id of a **chat-shaped** event, if this is one.
+    ///
+    /// Returns `Some` only for kinds that represent conversation content within
+    /// a channel — `Message`, `FileMessage`, `PinMessage`, `UnpinMessage` — and
+    /// `None` for everything else, *including* channel-structural kinds
+    /// (`CreateChannel`, `DeleteChannel`, `RenameChannel`, `ChannelRevive`,
+    /// `RotateChannelKey`) and the per-identity `MuteChannel`.
+    ///
+    /// This is the predicate the heads-based sync `channels` filter keys off:
+    /// per `docs/specs/2026-04-24-negentropy-sync.md` § Filter semantics, the
+    /// channel filter narrows chat-shaped kinds only, while structural events
+    /// always reconcile so server structure (and key epochs) stay complete.
+    pub fn chat_channel_id(&self) -> Option<&str> {
+        match self {
+            EventKind::Message { channel_id, .. }
+            | EventKind::FileMessage { channel_id, .. }
+            | EventKind::PinMessage { channel_id, .. }
+            | EventKind::UnpinMessage { channel_id, .. } => Some(channel_id),
+            _ => None,
+        }
+    }
+
+    /// Stable single-byte discriminant for this variant, used by the
+    /// heads-based sync filter's `event_kinds` whitelist.
+    ///
+    /// bincode is **not** self-describing: it encodes an enum's variant index
+    /// as a fixed-width little-endian `u32` prefix, independent of any serde
+    /// attribute (which only affects self-describing formats such as JSON).
+    /// This returns that index's low byte. The value is stable across releases
+    /// because `EventKind` variants are **append-only** (see "Adding a new
+    /// EventKind" in `CLAUDE.md`), so an existing variant's index never
+    /// changes. The encoding is pinned by
+    /// `discriminant_matches_bincode_variant_index_low_byte` in the sync tests.
+    pub fn discriminant(&self) -> u8 {
+        // The first byte of the bincode encoding is the low byte of the
+        // variant index. Serialization of a bare variant cannot fail.
+        bincode::serialize(self)
+            .ok()
+            .and_then(|b| b.first().copied())
+            .unwrap_or(0)
+    }
+}
+
 // ───── Event ───────────────────────────────────────────────────────────────
 
 /// A single state mutation, content-addressed and author-signed.
