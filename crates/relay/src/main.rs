@@ -77,7 +77,7 @@ use tracing::info;
 use willow_identity::Identity;
 use willow_network::Network;
 use willow_relay::{
-    run_proxy_listener, topic_announce_listener, MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS,
+    run_proxy_listener, topic_announce_listener, MAX_CONCURRENT_PROXY_CONNECTIONS,
 };
 
 #[derive(Parser)]
@@ -198,7 +198,7 @@ async fn main() -> Result<()> {
     // by a semaphore so a connection-flood DoS cannot exhaust file
     // descriptors. See `willow_relay::run_proxy_listener`.
     let bootstrap_id = Arc::new(identity.endpoint_id().to_string());
-    let proxy_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS));
+    let proxy_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_PROXY_CONNECTIONS));
     tokio::spawn(run_proxy_listener(
         public_listener,
         upstream_relay_addr,

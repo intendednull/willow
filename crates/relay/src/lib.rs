@@ -54,10 +54,16 @@ use willow_identity::EndpointId;
 use willow_network::traits::{GossipEvent, TopicEvents};
 use willow_network::Network;
 
-/// Maximum concurrent client connections accepted by the bootstrap-id
-/// HTTP endpoint. Excess accepts are dropped immediately to prevent
-/// FD/memory exhaustion under a connection-flood DoS.
-pub const MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS: usize = 1024;
+/// Maximum concurrent client connections accepted by the public relay
+/// proxy listener. Every connection accepted by [`run_proxy_listener`]
+/// — `/bootstrap-id`, the `/.well-known/willow` capability endpoint, and
+/// the iroh-relay proxy fallthrough alike — is gated by this cap. Excess
+/// accepts are dropped immediately to prevent FD/memory exhaustion under
+/// a connection-flood DoS.
+///
+/// (Formerly `MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS`; renamed because it
+/// gates the whole proxy listener, not just bootstrap-id traffic.)
+pub const MAX_CONCURRENT_PROXY_CONNECTIONS: usize = 1024;
 
 /// HTTP path served by [`handle_bootstrap_connection`] to expose the
 /// bootstrap node's endpoint ID. The public proxy routes requests to
