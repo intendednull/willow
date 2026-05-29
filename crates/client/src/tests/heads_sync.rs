@@ -338,6 +338,106 @@ async fn responder_without_sync_provider_serves_nothing() {
         .await;
 }
 
+// ───── 3b. legacy SyncRequest responder stays UNGATED ─────────────────────
+//
+// Pinned decision 4 gates *only* the new `SyncRequestV2` responder. The
+// legacy 500-event `SyncRequest`/`SyncBatch` path is retained ungated for the
+// migration window (it is removed later with the legacy variants). This pins
+// that asymmetry: the *same* peer that refuses a `SyncRequestV2` without
+// `SyncProvider` (test 3) still answers an inbound legacy `SyncRequest`.
+
+/// Pump a single legacy `SyncRequest` into `responder` and collect every
+/// legacy `SyncBatch` it broadcasts back, in order. Mirrors
+/// [`request_and_collect`] but for the un-versioned wire variants.
+async fn request_legacy_and_collect(
+    responder_ctx: &ListenerCtx,
+    responder_topic: &impl willow_network::traits::TopicHandle,
+    reader: &mut impl willow_network::traits::TopicEvents,
+    requester_identity: &willow_identity::Identity,
+    request: crate::ops::WireMessage,
+) -> Vec<Vec<Event>> {
+    use willow_network::traits::GossipEvent;
+
+    let req_bytes = crate::ops::pack_wire(&request, requester_identity).expect("pack request");
+    let requester_id = requester_identity.endpoint_id();
+
+    process_received_message(&req_bytes, requester_id, responder_ctx, responder_topic).await;
+
+    // The legacy responder emits at most one `SyncBatch` (no terminator), so
+    // drain for a short bounded window and collect whatever arrives.
+    let mut batches = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_millis(500), async {
+        while let Some(Ok(ev)) = reader.next().await {
+            let GossipEvent::Received(msg) = ev else {
+                continue;
+            };
+            if let Some((crate::ops::WireMessage::SyncBatch { events }, _signer)) =
+                crate::ops::unpack_wire(&msg.content)
+            {
+                batches.push(events);
+            }
+        }
+    })
+    .await;
+    batches
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_sync_request_responder_stays_ungated() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let hub = Arc::new(MemHub::new());
+            // Alice does NOT grant herself SyncProvider — exactly the setup
+            // under which she refuses a SyncRequestV2 (test 3).
+            let (alice, _b) = test_client();
+            for i in 0..5 {
+                alice
+                    .send_message("general", &format!("legacy {i}"))
+                    .await
+                    .expect("send");
+            }
+            let alice_total = dag_len(&alice).await;
+
+            let alice_ctx = make_ctx(&alice);
+            let topic_id = willow_network::topic_id("heads-sync-test-3b");
+            let alice_net = MemNetwork::new(&hub);
+            let (alice_topic, _e) = alice_net.subscribe(topic_id, vec![]).await.expect("sub");
+            let reader_net = MemNetwork::new(&hub);
+            let (_rt, mut reader_events) = reader_net
+                .subscribe(topic_id, vec![])
+                .await
+                .expect("sub reader");
+
+            let bob = willow_identity::Identity::generate();
+            // Legacy request: `state_hash` is ignored by the responder.
+            let request = crate::ops::WireMessage::SyncRequest {
+                state_hash: EventHash::ZERO,
+                topic: None,
+            };
+            let batches = request_legacy_and_collect(
+                &alice_ctx,
+                &alice_topic,
+                &mut reader_events,
+                &bob,
+                request,
+            )
+            .await;
+
+            assert_eq!(
+                batches.len(),
+                1,
+                "legacy SyncRequest responder must still answer without SyncProvider"
+            );
+            let served: usize = batches.iter().map(|e| e.len()).sum();
+            assert_eq!(
+                served, alice_total,
+                "legacy responder ships the full (≤500) topological prefix ungated"
+            );
+        })
+        .await;
+}
+
 // ───── 4. end-to-end convergence over real gossip ─────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
