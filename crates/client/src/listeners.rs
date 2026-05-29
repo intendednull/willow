@@ -429,6 +429,33 @@ async fn process_received_message<T: TopicHandle>(
                 }
             }
         }
+        // Heads-based delta-sync variants (negentropy-sync spec). The wire
+        // types + state/storage queries land in PR 3; the gossip
+        // responder/receiver cutover and the SyncProvider serving gate are
+        // PR 4. Until then a peer that already speaks V2 is logged and ignored
+        // here — the additive variants must not break the existing gossip path,
+        // and the legacy SyncRequest/SyncBatch arms above keep serving sync
+        // through the migration window.
+        crate::ops::WireMessage::SyncRequestV2 { request_id, .. } => {
+            tracing::debug!(
+                %request_id,
+                %signer,
+                "received SyncRequestV2 (heads-based sync); responder lands in PR 4 — ignoring"
+            );
+        }
+        crate::ops::WireMessage::SyncBatchV2 {
+            request_id,
+            events,
+            more,
+        } => {
+            tracing::debug!(
+                %request_id,
+                more,
+                count = events.len(),
+                %signer,
+                "received SyncBatchV2 (heads-based sync); receiver lands in PR 4 — ignoring"
+            );
+        }
         crate::ops::WireMessage::TypingIndicator { channel } => {
             // Bound attacker-supplied input. See `MAX_TYPING_CHANNEL_LEN`
             // and issue #234 ([SEC-V-05]).
