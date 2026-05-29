@@ -35,6 +35,46 @@ pub enum WireMessage {
         /// The events the responder is sending.
         events: Vec<willow_state::Event>,
     },
+    /// Heads-based delta-sync request (additive successor to
+    /// [`WireMessage::SyncRequest`]).
+    ///
+    /// The requester sends its current [`willow_state::HeadsSummary`] plus a
+    /// [`SyncFilter`]; the responder streams the per-author tail the requester
+    /// is missing as one or more [`WireMessage::SyncBatchV2`] envelopes. The
+    /// legacy `SyncRequest`/`SyncBatch` variants stay defined and decodable for
+    /// one release cycle so old and new peers interoperate (no
+    /// `PROTOCOL_VERSION` bump). `request_id` is a `String` to match the worker
+    /// path's correlation type (`WorkerWireMessage::Request { request_id:
+    /// String, .. }`), so a single demux table can cover both paths.
+    ///
+    /// See `docs/specs/2026-04-24-negentropy-sync.md`.
+    SyncRequestV2 {
+        /// Correlates this request with its [`WireMessage::SyncBatchV2`]
+        /// replies. UUID v4 by convention.
+        request_id: String,
+        /// The requester's current per-author DAG heads — the responder serves
+        /// only events past these.
+        heads: willow_state::HeadsSummary,
+        /// Scopes the delta by server / channels / authors / kinds / time.
+        filter: SyncFilter,
+    },
+    /// One envelope of a streamed heads-based delta response (additive
+    /// successor to [`WireMessage::SyncBatch`]).
+    ///
+    /// `more = true` on every batch but the last; the final batch carries
+    /// `more = false` and is the canonical end-of-stream marker. Each envelope
+    /// is sized to stay within the gossip layer's 64 KiB `max_message_size`
+    /// (see [`SYNC_ENVELOPE_BUDGET`]). `request_id` echoes the originating
+    /// [`WireMessage::SyncRequestV2`].
+    SyncBatchV2 {
+        /// Echoes the originating [`WireMessage::SyncRequestV2::request_id`].
+        request_id: String,
+        /// The events in this batch, in `(author, seq)` ascending order.
+        events: Vec<willow_state::Event>,
+        /// `true` if more batches follow for this `request_id`; `false` on the
+        /// final batch (end-of-stream).
+        more: bool,
+    },
     /// Ephemeral typing indicator — not stored or persisted.
     TypingIndicator {
         /// The channel name the peer is typing in.
@@ -110,6 +150,51 @@ pub enum WireMessage {
     Worker(crate::WorkerWireMessage),
 }
 
+/// Scopes a heads-based delta sync to a subset of a server's events.
+///
+/// Empty `Option`s mean "no restriction on that axis". `server_id` is always
+/// required and identifies the DAG (its genesis hash, hex). See
+/// `docs/specs/2026-04-24-negentropy-sync.md` § Filter semantics.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncFilter {
+    /// Required. Event-DAG genesis hash hex — matches the `String` server-id
+    /// convention used elsewhere (e.g. `EventDag::server_id()`). Not a newtype.
+    pub server_id: String,
+    /// If set, narrows **chat-shaped** kinds (e.g. `Message`, `PinMessage`,
+    /// `RotateChannelKey`) to these channel ids. Structural events
+    /// (`GrantPermission`, `CreateChannel`, …) ignore this axis so server
+    /// structure always reconciles fully.
+    pub channels: Option<Vec<String>>,
+    /// If set, restrict the delta to events authored by these endpoints.
+    pub authors: Option<Vec<willow_identity::EndpointId>>,
+    /// If set, restrict to events whose stable `EventKind` discriminant byte
+    /// is in this whitelist.
+    pub event_kinds: Option<Vec<u8>>,
+    /// Advisory pre-filter only: a soft floor on the display-only
+    /// `timestamp_hint_ms`. The authoritative cursor is the per-author `seq`
+    /// in `heads`; `since_ms` only narrows the responder's scan width.
+    pub since_ms: Option<u64>,
+}
+
+/// Per-envelope byte budget for streamed heads-based sync batches.
+///
+/// The binding cap on a `SyncBatchV2` envelope is the **gossip layer's** 64 KiB
+/// `max_message_size` (`crates/network/src/iroh.rs`), not transport's 256 KB
+/// [`willow_transport::MAX_DESER_SIZE`] anti-DoS cap — frames over 64 KiB are
+/// dropped at the gossip layer before transport ever sees them. A responder
+/// must therefore pack each batch so the *fully framed* envelope
+/// (`SignedMessage` + `Envelope` + `WireMessage` tag + payload) stays ≤ 64 KiB.
+///
+/// The reserved slack (`64 KiB − SYNC_ENVELOPE_BUDGET`) covers that framing
+/// overhead. Its size is measured empirically — not estimated — by
+/// `sync_batch_v2_framing_overhead_is_small` in this module's tests, which packs
+/// a real single-event `SyncBatchV2` through [`pack_wire`] and asserts the
+/// overhead is comfortably under the reserved 256 bytes. Greedy packers add
+/// each event's own serialized size to a running total and start a new batch
+/// before the total would exceed this budget (an O(n) accumulator, never an
+/// O(n²) whole-batch re-serialization per candidate).
+pub const SYNC_ENVELOPE_BUDGET: usize = 64 * 1024 - 256;
+
 /// Per-variant size cap for small signaling messages: 4 KB.
 ///
 /// Used by tiny control-plane messages whose payload is just an EndpointId,
@@ -158,8 +243,19 @@ impl WireMessage {
             // User-generated bodies, batched payloads, and topic announces:
             // full envelope budget. (TopicAnnounce's own per-topic limits live
             // in the relay's `topic_announce_listener`, not here.)
+            //
+            // The heads-based sync variants sit here too: `SyncBatchV2` carries
+            // a batched event payload (the responder self-limits each envelope
+            // to `SYNC_ENVELOPE_BUDGET` ≈ 64 KiB), and `SyncRequestV2` carries a
+            // `HeadsSummary` bounded by `MAX_AUTHORS_PER_SYNC` (~256 authors ×
+            // ~72 B ≈ 18 KiB) plus a small filter — both can legitimately exceed
+            // the 4 KiB signaling cap, so the per-variant cap stays at the full
+            // envelope budget as defense-in-depth and the real bound is the
+            // gossip layer's 64 KiB ceiling.
             WireMessage::Event(_)
             | WireMessage::SyncBatch { .. }
+            | WireMessage::SyncRequestV2 { .. }
+            | WireMessage::SyncBatchV2 { .. }
             | WireMessage::Worker(_)
             | WireMessage::TopicAnnounce { .. } => willow_transport::MAX_DESER_SIZE as usize,
             // Profile announce: display_name is unbounded today; allow 64 KB.
@@ -184,6 +280,8 @@ impl WireMessage {
             WireMessage::Event(_) => "Event",
             WireMessage::SyncRequest { .. } => "SyncRequest",
             WireMessage::SyncBatch { .. } => "SyncBatch",
+            WireMessage::SyncRequestV2 { .. } => "SyncRequestV2",
+            WireMessage::SyncBatchV2 { .. } => "SyncBatchV2",
             WireMessage::TypingIndicator { .. } => "TypingIndicator",
             WireMessage::VoiceJoin { .. } => "VoiceJoin",
             WireMessage::VoiceLeave { .. } => "VoiceLeave",
@@ -329,6 +427,192 @@ mod tests {
             }
             _ => panic!("expected SyncRequest"),
         }
+    }
+
+    // ── Additive heads-based sync variants (negentropy-sync spec) ────────────
+
+    fn sample_heads(id: &Identity) -> willow_state::HeadsSummary {
+        use std::collections::BTreeMap;
+        use willow_state::AuthorHead;
+        let mut heads = BTreeMap::new();
+        heads.insert(
+            id.endpoint_id(),
+            AuthorHead {
+                seq: 7,
+                hash: EventHash::from_bytes(b"head"),
+            },
+        );
+        willow_state::HeadsSummary { heads }
+    }
+
+    fn sample_filter(id: &Identity) -> SyncFilter {
+        SyncFilter {
+            server_id: "srv-genesis-hash".to_string(),
+            channels: Some(vec!["general".to_string(), "random".to_string()]),
+            authors: Some(vec![id.endpoint_id()]),
+            event_kinds: Some(vec![0u8, 3u8]),
+            since_ms: Some(1_700_000_000_000),
+        }
+    }
+
+    #[test]
+    fn pack_unpack_sync_request_v2_round_trip() {
+        let id = Identity::generate();
+        let heads = sample_heads(&id);
+        let filter = sample_filter(&id);
+        let msg = WireMessage::SyncRequestV2 {
+            request_id: "req-uuid-1".to_string(),
+            heads: heads.clone(),
+            filter: filter.clone(),
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, signer) = unpack_wire(&data).unwrap();
+        assert_eq!(signer, id.endpoint_id());
+        match decoded {
+            WireMessage::SyncRequestV2 {
+                request_id,
+                heads: h,
+                filter: f,
+            } => {
+                assert_eq!(request_id, "req-uuid-1");
+                assert_eq!(h, heads);
+                assert_eq!(f, filter);
+            }
+            _ => panic!("expected SyncRequestV2"),
+        }
+    }
+
+    #[test]
+    fn pack_unpack_sync_batch_v2_round_trip() {
+        let id = Identity::generate();
+        let events = vec![make_event(
+            &id,
+            EventKind::Message {
+                channel_id: "general".to_string(),
+                body: "hello v2".to_string(),
+                reply_to: None,
+            },
+        )];
+        let msg = WireMessage::SyncBatchV2 {
+            request_id: "req-uuid-1".to_string(),
+            events,
+            more: true,
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+        match decoded {
+            WireMessage::SyncBatchV2 {
+                request_id,
+                events,
+                more,
+            } => {
+                assert_eq!(request_id, "req-uuid-1");
+                assert_eq!(events.len(), 1);
+                assert!(more);
+            }
+            _ => panic!("expected SyncBatchV2"),
+        }
+    }
+
+    #[test]
+    fn sync_batch_v2_final_batch_signals_end_of_stream() {
+        let id = Identity::generate();
+        let msg = WireMessage::SyncBatchV2 {
+            request_id: "done".to_string(),
+            events: vec![],
+            more: false,
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let (decoded, _) = unpack_wire(&data).unwrap();
+        match decoded {
+            WireMessage::SyncBatchV2 { events, more, .. } => {
+                assert!(events.is_empty(), "zero-event terminator allowed");
+                assert!(!more, "final batch must clear `more`");
+            }
+            _ => panic!("expected SyncBatchV2"),
+        }
+    }
+
+    /// Pin the empirical per-envelope framing overhead so `SYNC_ENVELOPE_BUDGET`
+    /// is measured, not estimated. We pack a real single-event `SyncBatchV2`
+    /// through the production `pack_wire` path (SignedMessage + Envelope +
+    /// WireMessage tag + payload), subtract the inner serialized event size, and
+    /// assert the overhead is comfortably inside the 256-byte slack we reserve.
+    #[test]
+    fn sync_batch_v2_framing_overhead_is_small() {
+        let id = Identity::generate();
+        let event = make_event(
+            &id,
+            EventKind::Message {
+                channel_id: "c".to_string(),
+                body: "x".to_string(),
+                reply_to: None,
+            },
+        );
+        let event_size = bincode::serialized_size(&event).unwrap() as usize;
+
+        let msg = WireMessage::SyncBatchV2 {
+            request_id: "r".to_string(),
+            events: vec![event],
+            more: false,
+        };
+        let framed = pack_wire(&msg, &id).unwrap().len();
+
+        // Everything in the framed envelope that is NOT the inner event:
+        // signature (64) + pubkey (32) + their length prefixes, the Envelope
+        // (version u16 + MessageType u8 + payload length prefix), the
+        // WireMessage enum tag, and the SyncBatchV2 header (request_id + events
+        // Vec length prefix + `more`).
+        let overhead = framed - event_size;
+        assert!(
+            overhead < 256,
+            "SyncBatchV2 framing overhead {overhead} B must stay within the \
+             reserved 256-byte slack (64 KiB - SYNC_ENVELOPE_BUDGET); measured \
+             event_size={event_size}, framed={framed}"
+        );
+        // The reserved slack must leave the budget strictly under the gossip
+        // cap. These are compile-time constants, so assert them in a const
+        // block (statically checked, and clippy-clean re: assertions_on_constants).
+        const { assert!(SYNC_ENVELOPE_BUDGET < 64 * 1024) };
+        const { assert!(SYNC_ENVELOPE_BUDGET == 64 * 1024 - 256) };
+    }
+
+    /// A greedily-packed `SyncBatchV2` whose accumulated event sizes stay under
+    /// `SYNC_ENVELOPE_BUDGET` must produce a framed envelope under the 64 KiB
+    /// gossip ceiling once the measured framing overhead is added.
+    #[test]
+    fn greedy_batch_within_budget_fits_under_gossip_cap() {
+        let id = Identity::generate();
+        let one = make_event(
+            &id,
+            EventKind::Message {
+                channel_id: "general".to_string(),
+                body: "a".repeat(200),
+                reply_to: None,
+            },
+        );
+        let per = bincode::serialized_size(&one).unwrap() as usize;
+
+        // Greedily accumulate by each event's own serialized size (the O(n)
+        // accumulator the responder uses), stopping before the budget.
+        let mut events = Vec::new();
+        let mut acc = 0usize;
+        while acc + per <= SYNC_ENVELOPE_BUDGET {
+            events.push(one.clone());
+            acc += per;
+        }
+        assert!(!events.is_empty(), "at least one event should fit");
+
+        let msg = WireMessage::SyncBatchV2 {
+            request_id: "batch".to_string(),
+            events,
+            more: true,
+        };
+        let framed = pack_wire(&msg, &id).unwrap().len();
+        assert!(
+            framed <= 64 * 1024,
+            "framed batch {framed} B must fit the 64 KiB gossip cap"
+        );
     }
 
     #[test]
