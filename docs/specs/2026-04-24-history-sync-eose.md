@@ -383,6 +383,20 @@ live events.
 
 ## Open questions
 
+> **Resolved 2026-05-28** (plan `2026-05-28-relay-upgrade-bundle.md`):
+> - **Q1 (`last_event_hash` mandatory?)** → keep **optional**; `None`
+>   cleanly encodes the empty-store case without a sentinel hash.
+> - **Q5 (`stream_generation` counter vs random?)** → **random `u64`**
+>   (from the existing `rand`/`ChaCha20Rng` dep); equality-based dedup
+>   needs no ordering, and randomness avoids the "did I bump it?" bug
+>   class and counter persistence across restarts.
+> - **`SyncCompleted` vs `HistorySynced` reconciliation** → **Option B
+>   (additive)**: introduce `ClientEvent::HistorySynced`, keep
+>   `SyncCompleted` as session-wide progress.
+> - **Peer-to-peer provider class** → **deferred** to a follow-up after
+>   the heads-sync responder/receiver lands (plan PR 4). The replay +
+>   storage worker provider classes ship first (plan PR 5).
+
 1. Should `last_event_hash` be mandatory rather than optional? Making
    it required forces providers to decide "am I empty?" vs "am I done
    streaming?" explicitly, at the cost of one more type-level state

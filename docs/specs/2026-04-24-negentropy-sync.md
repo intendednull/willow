@@ -153,6 +153,13 @@ Two design choices to call out explicitly:
    dedicated `MessageType::Sync` slot is a future option once the
    worker and client paths are demonstrably interchangeable.
 
+   > **Resolved 2026-05-28** (plan `2026-05-28-relay-upgrade-bundle.md`):
+   > **no new `MessageType` slot is allocated in this bundle.** A code
+   > comment in `crates/transport/src/lib.rs` reserves slot 7 =
+   > `HistorySyncComplete`/EOSE (see `2026-04-24-history-sync-eose.md`)
+   > and slot 8 = `Sync` for a *future* promotion, so the two specs
+   > cannot collide on a number. Neither is allocated now.
+
 2. **Reuse `HeadsSummary` directly, do not invent a new
    `HashMap<EndpointId, u64>` shape.** `HeadsSummary` already carries
    `AuthorHead { seq, hash }`. The hash field powers
@@ -507,6 +514,14 @@ possible reconciliations, to be picked when #214 lands:
 
 This spec deliberately does not redefine `HistorySyncComplete`; it
 only triggers it. Pick A or B in the EOSE spec PR.
+
+> **Resolved 2026-05-28** (plan `2026-05-28-relay-upgrade-bundle.md`):
+> **Option B (additive).** A new `ClientEvent::HistorySynced { topic,
+> provider, still_pending }` is introduced (EOSE PR); `SyncCompleted`
+> is kept unchanged as session-wide per-batch progress. The two
+> answer different questions, and additive avoids a silent behavior
+> change to existing `SyncCompleted` consumers. See
+> `2026-04-24-history-sync-eose.md`.
 
 [client-events]: ../../crates/client/src/events.rs
 

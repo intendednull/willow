@@ -61,6 +61,7 @@ Every entry below carries one of:
 **Plans**
 
 - [Iroh migration](plans/2026-03-29-iroh-migration.md) — migrates networking layer from libp2p to iroh with `IrohNetwork` and `MemNetwork`. `[landed]`
+- [Relay upgrade bundle](plans/2026-05-28-relay-upgrade-bundle.md) — six sequential PRs realizing the capability-doc, heads-based sync, history-sync EOSE, and pkarr-discovery specs. `[active]`
 
 ### Identity, Crypto & Trust
 

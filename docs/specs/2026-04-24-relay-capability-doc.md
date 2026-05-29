@@ -193,6 +193,12 @@ Empty intersection → refuse to connect, surface a "version mismatch"
 error. The list MUST be sorted highest-first and MUST NOT contain
 duplicates so the negotiation rule is unambiguous.
 
+> **Resolved 2026-05-28** (plan `2026-05-28-relay-upgrade-bundle.md`):
+> the relay advertises the live `willow_transport::PROTOCOL_VERSION`
+> (currently `2`), sourced from the constant — **not** the literal
+> `[1]` used in this document's examples, which are illustrative
+> placeholders predating the bump to version 2.
+
 **WebSocket clients SHOULD also send `Sec-WebSocket-Protocol`** (e.g.
 `willow.v2, willow.v1`) in the WS opening handshake. The JSON
 document is *advisory* — useful for pre-connect filtering and
@@ -336,7 +342,7 @@ strings are pinned here:
 | #216 (machine-readable rejections) | `rejection-codes-v1` | Bumped tag if/when codes evolve. May also bump `protocol_versions`. |
 | #217 (bech32 pubkey HRP) | bech32-pubkey-format (no tag yet) | Coordinate `pubkey` / `admin_pubkey` encoding with #217; v1 here keeps hex but #217 may extend the schema. |
 | #218 (gift-wrap DM) | `gift-wrap-dm` | Informational only — relays cannot tell whether traffic is gift-wrapped, so the tag advertises operator intent rather than a checked capability. |
-| #219 (sync algorithm) | `negentropy` or `seq-vector-sync` | One tag per algorithm the relay implements; client picks. |
+| #219 (sync algorithm) | `seq-vector-sync` | Canonical tag. Negentropy/RBSR was abandoned for per-author seq cursors (see `2026-04-24-negentropy-sync.md`), so `negentropy` is **not** advertised. Advertised only once the heads-sync responder lands (plan `2026-05-28-relay-upgrade-bundle.md`, PR 4). |
 | #220 (epoch key rotation) | (none) | No relay impact — omit. |
 | #221 (outbox / no `EventKind::RelayList`) | (none) | No relay impact in this doc; `suggested_relays` (future) overlaps and should be resolved jointly with #221. |
 
