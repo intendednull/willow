@@ -318,9 +318,7 @@ pub async fn dispatch_connection(
                     )
                     .await
                 }
-                CapabilityMethod::Options => {
-                    handle_capability_options(client, &buffered).await
-                }
+                CapabilityMethod::Options => handle_capability_options(client, &buffered).await,
             };
         }
         if request_line_matches_bootstrap_id(line) {

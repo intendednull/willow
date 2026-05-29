@@ -75,14 +75,13 @@ use iroh_relay::server::{AccessConfig, RelayConfig, Server, ServerConfig};
 use tokio::sync::Semaphore;
 use tracing::info;
 use willow_common::relay_info::{
-    canonical_json, capability_etag, features, sign_capability_doc, Limitation, Retention,
-    WillowRelayInfo,
+    canonical_json, capability_etag, features, sign_capability_doc, Limitation, WillowRelayInfo,
 };
 use willow_identity::Identity;
 use willow_network::Network;
 use willow_relay::{
-    run_proxy_listener, topic_announce_listener, CAPABILITY_PATH,
-    MAX_CONCURRENT_PROXY_CONNECTIONS, MAX_TOPICS, MAX_TOPIC_LEN,
+    run_proxy_listener, topic_announce_listener, CAPABILITY_PATH, MAX_CONCURRENT_PROXY_CONNECTIONS,
+    MAX_TOPICS, MAX_TOPIC_LEN,
 };
 
 #[derive(Parser)]
@@ -182,8 +181,7 @@ fn build_capability_doc(args: &Args, identity: &Identity) -> Result<(String, Str
         status_detail: None,
     };
 
-    sign_capability_doc(&mut info, identity)
-        .context("failed to sign capability document")?;
+    sign_capability_doc(&mut info, identity).context("failed to sign capability document")?;
     let json = serde_json::to_string(&info).context("failed to serialize capability document")?;
     let etag = capability_etag(
         &canonical_json(&info, true).context("failed to canonicalize capability document")?,

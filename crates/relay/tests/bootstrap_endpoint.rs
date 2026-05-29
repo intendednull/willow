@@ -216,13 +216,24 @@ async fn spawn_dummy_upstream() -> (std::net::SocketAddr, tokio::sync::mpsc::Rec
 }
 
 /// Spawn the public proxy listener backed by `upstream_addr` and
-/// return its bound address.
+/// return its bound address. These bootstrap-id / upstream-proxy tests
+/// never touch the capability path, so a placeholder doc + ETag are
+/// passed for the two capability arguments.
 async fn spawn_proxy(upstream_addr: std::net::SocketAddr) -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     let semaphore = Arc::new(Semaphore::new(16));
     let id = Arc::new(TEST_ID.to_string());
-    tokio::spawn(run_proxy_listener(listener, upstream_addr, id, semaphore));
+    let capability_json: std::sync::Arc<str> = std::sync::Arc::from("{}");
+    let capability_etag: std::sync::Arc<str> = std::sync::Arc::from("");
+    tokio::spawn(run_proxy_listener(
+        listener,
+        upstream_addr,
+        id,
+        semaphore,
+        capability_json,
+        capability_etag,
+    ));
     addr
 }
 
