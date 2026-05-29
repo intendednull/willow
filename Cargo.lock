@@ -6274,16 +6274,19 @@ dependencies = [
  "anyhow",
  "bytes",
  "clap",
+ "hex",
  "iroh",
  "iroh-base",
  "iroh-gossip",
  "iroh-relay",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "willow-common",
  "willow-identity",
  "willow-network",
+ "willow-transport",
 ]
 
 [[package]]
