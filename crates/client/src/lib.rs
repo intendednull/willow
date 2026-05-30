@@ -1401,11 +1401,20 @@ pub async fn test_client_on_hub(
 mod tests {
     use super::*;
 
-    /// Poll a derived view until `predicate` returns `true`, yielding
-    /// between attempts. Used in place of fixed `sleep(50ms)` waits after
-    /// mutations on a *source* actor whose change must propagate through
-    /// a `DerivedActor` recompute (Notify → spawn → UpdateCache hop).
+    /// Poll a derived view until `predicate` returns `true`, parking the
+    /// poller briefly between attempts. Used in place of fixed `sleep(50ms)`
+    /// waits after mutations on a *source* actor whose change must propagate
+    /// through a `DerivedActor` recompute (Notify → spawn → UpdateCache hop).
     /// Panics on a 5-second deadline so a real regression surfaces fast.
+    ///
+    /// The inter-probe wait is a short `sleep`, **not** `yield_now()`: under
+    /// the CPU oversubscription of `cargo test --workspace` (every
+    /// `multi_thread` test spins up its own 2-thread runtime, dozens running
+    /// at once on a busy box), a bare `yield_now()` loop hot-spins the worker
+    /// thread and can starve the very recompute task it is waiting on, making
+    /// the poll time out spuriously. Parking the task hands the worker back to
+    /// the runtime so the recompute can run. See superpowers:condition-based-
+    /// waiting ("polling too fast wastes CPU — poll every ~10ms").
     async fn await_view<F, Fut>(mut probe: F)
     where
         F: FnMut() -> Fut,
@@ -1414,7 +1423,7 @@ mod tests {
         let deadline = std::time::Duration::from_secs(5);
         let ok = tokio::time::timeout(deadline, async {
             while !probe().await {
-                tokio::task::yield_now().await;
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
         .await;
