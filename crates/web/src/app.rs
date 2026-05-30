@@ -112,6 +112,56 @@ async fn fetch_bootstrap_id(relay_url: &str) -> Option<willow_identity::Endpoint
     text.trim().parse::<willow_identity::EndpointId>().ok()
 }
 
+/// Resolve the bootstrap `EndpointId`s the join flow should seed into the iroh
+/// `Config::bootstrap_peers`, following the outbox-relay-discovery spec's
+/// joining flow: the share link's `bootstrap_endpoint_ids` (Layer 1, pkarr) come
+/// **first** (preferred), and the configured relay's `/bootstrap-id` node is
+/// **always appended as a fallback candidate** so the client connects to the
+/// first responsive endpoint and never ends up with *only* an undiallable peer
+/// (spec steps 2-3; pinned decision Q2: the relay stays the fallback, surface an
+/// error only if both pkarr and the relay fail).
+///
+/// On wasm the client cannot query the BitTorrent mainline DHT itself (the
+/// `mainline` crate is native-only — see `crates/network/src/iroh.rs`), so
+/// "resolve via pkarr" means seeding these IDs so the wasm client reaches them
+/// through the relay's `MemoryLookup` while the native peers (relay + workers)
+/// publish/resolve the same IDs over the DHT.
+///
+/// Ordering matters: an unreachable preferred bootstrap (e.g. a stale or
+/// tampered `bootstrap_endpoint_id`) is simply skipped by iroh's dialing while
+/// the appended relay node still carries the mesh — that is exactly the
+/// "first bootstrap unreachable → fall through" path the e2e test exercises.
+/// The relay node is de-duplicated so a token that already names it does not
+/// seed it twice.
+///
+/// The relay fallback is injected as `relay_fetch` so the preference ordering —
+/// the load-bearing part — is unit-testable without a browser, mirroring the
+/// transport injection in `willow_client::fetch_relay_info`.
+async fn resolve_bootstrap_peers<F, Fut>(
+    token_bootstrap_ids: &[willow_identity::EndpointId],
+    relay_fetch: F,
+) -> Vec<willow_identity::EndpointId>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Option<willow_identity::EndpointId>>,
+{
+    // Layer 1 preference: the inviter's `SyncProvider` bootstrap IDs lead. iroh
+    // resolves each via pkarr on the native side; on wasm they are reached
+    // relay-mediated through the seeded `MemoryLookup`.
+    let mut peers: Vec<willow_identity::EndpointId> = token_bootstrap_ids.to_vec();
+
+    // Always append the configured relay's bootstrap node as a fallback
+    // candidate (de-duplicated) so there is a known-good path even when every
+    // preferred bootstrap is unreachable.
+    if let Some(relay_node) = relay_fetch().await {
+        if !peers.contains(&relay_node) {
+            peers.push(relay_node);
+        }
+    }
+
+    peers
+}
+
 fn new_client() -> WebClientHandle {
     let relay_url = resolve_relay_url();
     let config = ClientConfig {
@@ -521,6 +571,7 @@ pub fn App() -> impl IntoView {
                     inviter_peer_id: token.inviter_peer_id,
                     server_name: token.server_name,
                     inviter_name: token.inviter_name,
+                    bootstrap_endpoint_ids: token.bootstrap_endpoint_ids,
                 }));
                 write.ui.set_join_status.set(String::new());
             }
@@ -548,6 +599,7 @@ pub fn App() -> impl IntoView {
                                 inviter_peer_id: token.inviter_peer_id,
                                 server_name: token.server_name,
                                 inviter_name: token.inviter_name,
+                                bootstrap_endpoint_ids: token.bootstrap_endpoint_ids,
                             }));
                         write_for_hash.ui.set_join_status.set(String::new());
                     }
@@ -580,17 +632,46 @@ pub fn App() -> impl IntoView {
                 tracing::warn!(url = %relay_url, "failed to parse relay URL");
             }
 
-            // Fetch the bootstrap node's endpoint ID from the relay.
-            let bootstrap_peers = match fetch_bootstrap_id(&relay_url).await {
-                Some(id) => {
-                    tracing::info!(%id, "fetched bootstrap peer from relay");
-                    vec![id]
-                }
-                None => {
-                    tracing::warn!("could not fetch bootstrap peer ID from relay");
-                    vec![]
-                }
-            };
+            // Resolve bootstrap addressing per the outbox-relay-discovery spec:
+            // the share link's `bootstrap_endpoint_ids` (Layer 1, pkarr) lead and
+            // the configured relay's `/bootstrap-id` node is always appended as a
+            // fallback candidate (see `resolve_bootstrap_peers`). DHT resolution
+            // latency is seconds, so while a link's bootstrap IDs are being
+            // resolved we surface a `"resolving"` join status (rendered as
+            // "Finding the server…" by `JoinPage`) before the existing
+            // `"connecting"` handshake state.
+            let token_bootstrap_ids = state_for_events
+                .ui
+                .join_token
+                .get_untracked()
+                .map(|t| t.bootstrap_endpoint_ids)
+                .unwrap_or_default();
+            let resolving = !token_bootstrap_ids.is_empty();
+            if resolving {
+                write_for_events
+                    .ui
+                    .set_join_status
+                    .set("resolving".to_string());
+            }
+
+            let relay_url_for_fetch = relay_url.clone();
+            let bootstrap_peers = resolve_bootstrap_peers(&token_bootstrap_ids, || async move {
+                fetch_bootstrap_id(&relay_url_for_fetch).await
+            })
+            .await;
+            tracing::info!(
+                count = bootstrap_peers.len(),
+                from_link = resolving,
+                "resolved bootstrap peers"
+            );
+
+            // Resolution attempt complete — clear the transient resolving state
+            // back to idle so the user can press Join (the post-`PeerConnected`
+            // path below advances it to `"connecting"`). Leave a non-join boot
+            // path untouched.
+            if resolving {
+                write_for_events.ui.set_join_status.set(String::new());
+            }
 
             // Set bootstrap peers on the client handle so topic subscriptions use them.
             handle_for_connect.bootstrap_peers = bootstrap_peers.clone();
@@ -1489,7 +1570,87 @@ pub async fn handle_voice_answer(vm: VoiceManagerHandle, from: String, sdp: Stri
 
 #[cfg(test)]
 mod tests {
-    use super::bootstrap_id_url;
+    use super::{bootstrap_id_url, resolve_bootstrap_peers};
+
+    fn an_endpoint_id() -> willow_identity::EndpointId {
+        willow_identity::Identity::generate().endpoint_id()
+    }
+
+    /// The link's bootstrap IDs lead (Layer-1 preference) and the configured
+    /// relay's bootstrap node is appended as a fallback candidate, so a session
+    /// always retains a known-good relay path.
+    #[test]
+    fn bootstrap_preference_token_ids_lead_then_relay_appended() {
+        let boot1 = an_endpoint_id();
+        let boot2 = an_endpoint_id();
+        let relay_node = an_endpoint_id();
+        let token_ids = vec![boot1, boot2];
+
+        let resolved =
+            futures::executor::block_on(resolve_bootstrap_peers(&token_ids, || async move {
+                Some(relay_node)
+            }));
+
+        // Preferred bootstraps first, relay fallback last.
+        assert_eq!(resolved, vec![boot1, boot2, relay_node]);
+    }
+
+    /// An unreachable preferred bootstrap is still seeded (iroh skips it when
+    /// dialing) but the relay node is appended so the mesh can still form
+    /// through the relay — the "first bootstrap unreachable → fall through"
+    /// path the e2e test exercises.
+    #[test]
+    fn bootstrap_unreachable_first_bootstrap_still_keeps_relay_fallback() {
+        let unreachable = an_endpoint_id();
+        let relay_node = an_endpoint_id();
+
+        let resolved =
+            futures::executor::block_on(resolve_bootstrap_peers(&[unreachable], || async move {
+                Some(relay_node)
+            }));
+
+        assert_eq!(resolved, vec![unreachable, relay_node]);
+        assert!(
+            resolved.contains(&relay_node),
+            "relay fallback must survive even when the only token bootstrap is unreachable"
+        );
+    }
+
+    /// With no bootstrap IDs in the link, the flow falls back to the configured
+    /// relay's `/bootstrap-id` node alone.
+    #[test]
+    fn bootstrap_preference_falls_back_to_relay_when_token_empty() {
+        let relay_node = an_endpoint_id();
+
+        let resolved = futures::executor::block_on(resolve_bootstrap_peers(&[], || async move {
+            Some(relay_node)
+        }));
+
+        assert_eq!(resolved, vec![relay_node]);
+    }
+
+    /// The relay node is de-duplicated: a token that already names the relay
+    /// bootstrap node does not seed it twice.
+    #[test]
+    fn bootstrap_relay_node_is_deduplicated() {
+        let relay_node = an_endpoint_id();
+
+        let resolved =
+            futures::executor::block_on(resolve_bootstrap_peers(&[relay_node], || async move {
+                Some(relay_node)
+            }));
+
+        assert_eq!(resolved, vec![relay_node]);
+    }
+
+    /// Both pkarr (no token IDs) and the relay fetch failing yields an empty set —
+    /// the network is constructed bootstrap-less and surfaces the connection
+    /// error itself (pinned decision Q2).
+    #[test]
+    fn bootstrap_preference_empty_when_token_empty_and_relay_unreachable() {
+        let resolved = futures::executor::block_on(resolve_bootstrap_peers(&[], || async { None }));
+        assert!(resolved.is_empty());
+    }
 
     #[test]
     fn bootstrap_id_url_http_is_passthrough() {

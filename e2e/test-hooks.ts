@@ -64,6 +64,13 @@ interface WillowTestHooksJS {
   heads(): Promise<Record<string, AuthorHead>>;
   event_count(): Promise<number>;
   last_event(): Promise<string | null>;
+  /**
+   * Test-only: rewrite a `#join=` token so its bootstrap_endpoint_ids lead
+   * with a freshly-generated (unreachable) EndpointId. Drives the
+   * outbox-relay-discovery fallback path in multi-peer-sync.spec.ts. Mirror of
+   * crates/web/src/test_hooks/mod.rs::WillowTestHooks::prepend_unreachable_bootstrap.
+   */
+  prepend_unreachable_bootstrap(token: string): string;
 }
 
 /**

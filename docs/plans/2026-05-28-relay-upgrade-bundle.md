@@ -633,8 +633,8 @@ HistorySynced { topic: String, provider: willow_identity::EndpointId, still_pend
 - [ ] **Step 3: Run** → PASS. **Commit**.
 
 ### Task 6.4: Web join flow + e2e
-- [ ] **Step 1:** `crates/web/src/app.rs` — join flow resolves `bootstrap_endpoint_ids` via pkarr first, falls back to `DEFAULT_RELAY_URL`. Show progress during DHT resolution (latency is seconds).
-- [ ] **Step 2: e2e** (`e2e/multi-peer-sync.spec.ts`): share-link join with `bootstrap_endpoint_ids`, with fallback when the first bootstrap is unreachable; owner migrates relay provider mid-session and existing clients re-resolve via pkarr without restart.
+- [x] **Step 1:** `crates/web/src/app.rs` — join flow resolves `bootstrap_endpoint_ids` via pkarr first, falls back to `DEFAULT_RELAY_URL`. Show progress during DHT resolution (latency is seconds). Landed via `resolve_bootstrap_peers` (token IDs lead, relay node always appended as fallback) + a `"resolving"` `join_status` rendered by `JoinPage`. The inviter side (`create_join_link`) was completed here too — it now populates `bootstrap_endpoint_ids` from live `SyncProvider` grants (deferred from Task 6.3, which only added the `sync_providers()` accessor). `ParsedJoinToken` threads the IDs through. See `docs/specs/2026-05-29-web-pkarr-join-flow-design.md`.
+- [x] **Step 2: e2e** (`e2e/multi-peer-sync.spec.ts`): share-link join with `bootstrap_endpoint_ids`, fallback when the first bootstrap is unreachable (via the `prepend_unreachable_bootstrap` test-hook); + authority/provider change mid-session with continued convergence and **no** page reload. Write-only — these run in CI (real iroh/relay), not locally.
 - [ ] **Step 3: Full check** — `just check-all` (PR gate, includes Playwright). **Commit**.
 
 ### PR 6 self-review
