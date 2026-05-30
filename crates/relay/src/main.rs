@@ -137,11 +137,12 @@ struct Args {
 ///
 /// `protocol_versions` is sourced from the live
 /// [`willow_transport::PROTOCOL_VERSION`] (highest-first, no duplicates),
-/// not a literal. Advertised `supported_features` are limited to the
-/// capabilities that exist today (gossip, history, blobs); sibling-spec
-/// tags (`seq-vector-sync`, `history-eose`) are added only once their
-/// implementing PRs land. Operator metadata comes from optional CLI args
-/// / env vars, defaulting to `None` (the field is then omitted).
+/// not a literal. Advertised `supported_features` cover the capabilities that
+/// exist today (gossip, history, blobs) plus `history-eose` now that PR 5's
+/// `HistorySyncComplete` marker has landed and the relay forwards it unchanged;
+/// the remaining sibling-spec tag (`seq-vector-sync`) is added only once its
+/// implementing PR lands. Operator metadata comes from optional CLI args / env
+/// vars, defaulting to `None` (the field is then omitted).
 fn build_capability_doc(args: &Args, identity: &Identity) -> Result<(String, String)> {
     let mut info = WillowRelayInfo {
         name: args.relay_name.clone(),
@@ -159,6 +160,11 @@ fn build_capability_doc(args: &Args, identity: &Identity) -> Result<(String, Str
             features::GOSSIP.into(),
             features::HISTORY.into(),
             features::BLOBS.into(),
+            // EOSE: the relay forwards the `HistorySyncComplete` end-of-stored-
+            // events marker unchanged (content-agnostic gossip passthrough,
+            // pinned by `tests/history_sync_passthrough.rs`). Advertised here
+            // now that PR 5's marker has landed.
+            features::HISTORY_EOSE.into(),
         ],
         signature: String::new(),
         limitation: Some(Limitation {

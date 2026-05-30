@@ -16,6 +16,13 @@ export { expect };
 
 export type ClientEvent =
   | { kind: 'SyncCompleted'; opsApplied: number }
+  // History-sync EOSE marker (history-sync-eose spec, plan PR 5). Fired once a
+  // trusted SyncProvider finishes streaming a topic's stored history. `topic`
+  // is the lowercase-hex of the marker's 32-byte topic_id; `provider` is the
+  // verified envelope signer; `stillPending` counts trusted providers that have
+  // not yet completed for the same topic. Mirror of
+  // crates/web/src/test_hooks/wire.rs::WireEvent::HistorySynced.
+  | { kind: 'HistorySynced'; topic: string; provider: string; stillPending: number }
   | { kind: 'MessageReceived'; channel: string; messageId: string; isLocal: boolean }
   | { kind: 'PeerConnected'; peerId: string }
   | { kind: 'PeerDisconnected'; peerId: string }

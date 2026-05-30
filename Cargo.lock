@@ -6286,6 +6286,7 @@ dependencies = [
  "willow-common",
  "willow-identity",
  "willow-network",
+ "willow-state",
  "willow-transport",
 ]
 

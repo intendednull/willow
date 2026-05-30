@@ -1962,6 +1962,98 @@ async fn loading_spinner_shows_initially() {
     );
 }
 
+// ── Channel-history loading spinner ↔ HistorySynced (PR 5 Task 5.4) ──────────
+//
+// The channel-history loading spinner is the real `MessageList` skeleton
+// (`.chat-skeleton`), shown while the channel is still backfilling its history
+// (`loading == true` and no messages yet). When the active topic's sync
+// provider broadcasts the `HistorySyncComplete` end-of-stored-events marker,
+// the client surfaces `ClientEvent::HistorySynced { topic, .. }`; the web event
+// pipeline clears the per-topic loading flag for that active topic, which hides
+// the skeleton. The spinner must then STAY hidden across later live events
+// (new messages arriving after backfill is done).
+//
+// This test drives the real `MessageList` component through that exact
+// transition. The `loading` signal stands in for the per-topic history-loading
+// flag the web pipeline flips off when `HistorySynced` fires for the active
+// topic — flipping the signal is the observable effect of that handler, so the
+// test exercises the production spinner-rendering path (not a synthetic
+// stand-in). It asserts the three-phase contract:
+//   1. backfilling           → `.chat-skeleton` visible, no message rows
+//   2. HistorySynced (active) → skeleton hidden
+//   3. later live message     → skeleton STAYS hidden, message renders
+
+#[wasm_bindgen_test]
+async fn channel_history_spinner_hides_on_history_synced_and_stays_hidden() {
+    use willow_web::components::MessageList;
+    use willow_web::state::{create_signals, InitialSignals};
+
+    // The per-topic history-loading flag. Starts `true` (channel is
+    // backfilling), and the `HistorySynced`-for-active-topic handler flips it
+    // to `false` — modeled here by `set_loading.set(false)`.
+    let (loading, set_loading) = signal(true);
+    // The channel's messages. Empty during backfill; a live message arrives
+    // only AFTER history sync completes.
+    let (messages, set_messages) = signal(Vec::<willow_client::DisplayMessage>::new());
+
+    let container = mount_test(move || {
+        // MessageView (rendered per message) reads the reactive trust map from
+        // context, so seed an AppState / write pair as the real app does.
+        let InitialSignals {
+            app_state,
+            write,
+            trust_store: _,
+        } = create_signals();
+        provide_context(app_state);
+        provide_context(write);
+
+        view! {
+            <MessageList messages=messages loading=loading />
+        }
+    });
+
+    tick().await;
+
+    // Phase 1: backfilling — the channel-history skeleton is visible and no
+    // message rows have rendered yet.
+    assert!(
+        query(&container, ".chat-skeleton").is_some(),
+        "channel-history spinner (.chat-skeleton) must show while the active topic is backfilling"
+    );
+    assert!(
+        query_all(&container, ".message").is_empty(),
+        "no message rows should render during backfill"
+    );
+
+    // Phase 2: the active topic's provider sent HistorySyncComplete → the web
+    // pipeline emits HistorySynced for the active topic → per-topic loading
+    // flag clears. The skeleton must disappear.
+    set_loading.set(false);
+    tick().await;
+
+    assert!(
+        query(&container, ".chat-skeleton").is_none(),
+        "channel-history spinner must hide once HistorySynced fires for the active topic"
+    );
+
+    // Phase 3: a later LIVE message arrives on the topic (post-backfill). The
+    // skeleton must STAY hidden — backfill completion is sticky; live traffic
+    // must never re-trigger the history spinner.
+    let now_ms = js_sys::Date::now() as u64;
+    set_messages.set(vec![make_msg("Mira", "live after history sync", now_ms)]);
+    tick().await;
+
+    assert!(
+        query(&container, ".chat-skeleton").is_none(),
+        "channel-history spinner must stay hidden across later live events"
+    );
+    assert_eq!(
+        query_all(&container, ".message").len(),
+        1,
+        "the live message must render after history sync completes"
+    );
+}
+
 // ── Feature: Edit/Delete Own Messages Tests ─────────────────────────────────
 
 #[wasm_bindgen_test]

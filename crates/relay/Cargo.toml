@@ -32,6 +32,7 @@ serde_json = "1"
 willow-network = { path = "../network", features = ["test-utils"] }
 willow-identity = { path = "../identity" }
 willow-common = { path = "../common" }
+willow-state = { path = "../state" }
 willow-transport = { path = "../transport" }
 bytes = { workspace = true }
 hex = "0.4"
