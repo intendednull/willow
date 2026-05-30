@@ -631,6 +631,20 @@ upgraded," matching the status quo.
   without `SyncProvider` MAY initiate but MUST refuse to serve once
   the gate lands.
 
+  > **Resolved 2026-05-30** (PR #664): the serving gate honors the
+  > owner/admins' **implicit** `SyncProvider`. The gossip `SyncRequestV2`
+  > responder gates on `ServerState::is_sync_provider` (i.e.
+  > `has_permission(SyncProvider)`), **not** `has_explicit_permission`.
+  > Under the authority model the owner is the root of all permissions and
+  > admins inherit every permission, so the owner — the canonical source of
+  > her own server's state — serves a joining member, and any explicit
+  > grant-holder serves too. A regular member without the grant still
+  > refuses, so the gate stays meaningful. Rationale: an explicit-only gate
+  > made a 2-peer server (where nobody holds an explicit grant) **unsyncable**
+  > — the owner refused to backfill the joiner, who then timed out. Honoring
+  > the owner is required for the P2P member-to-member backfill model.
+  > See `docs/reports/2026-05-30-heads-sync-owner-serve-and-eose-emission.md`.
+
 [permission-enum]: ../../crates/state/src/event.rs
 
 ## Testing

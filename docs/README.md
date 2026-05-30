@@ -64,6 +64,10 @@ Every entry below carries one of:
 - [Iroh migration](plans/2026-03-29-iroh-migration.md) — migrates networking layer from libp2p to iroh with `IrohNetwork` and `MemNetwork`. `[landed]`
 - [Relay upgrade bundle](plans/2026-05-28-relay-upgrade-bundle.md) — six sequential PRs realizing the capability-doc, heads-based sync, history-sync EOSE, and pkarr-discovery specs. `[active]`
 
+**Reports**
+
+- [Heads-sync owner-serve gate + gossip EOSE emission](reports/2026-05-30-heads-sync-owner-serve-and-eose-emission.md) — two PR4/PR5 E2E regressions root-caused: the serving gate excluded the owner (now honors the owner/admins' implicit `SyncProvider`), and the EOSE marker was worker-only and unobservable by gossip clients (now also emitted by the `SyncRequestV2` responder). `[landed]`
+
 ### Identity, Crypto & Trust
 
 **Specs**
