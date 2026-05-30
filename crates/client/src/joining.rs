@@ -286,6 +286,9 @@ impl<N: willow_network::Network> ClientHandle<N> {
             link_id: link.link_id.clone(),
             server_name,
             inviter_name,
+            // Populated with the inviter's known SyncProvider bootstrap IDs in
+            // PR 6 Task 6.3; empty until that ranking/enumeration lands.
+            bootstrap_endpoint_ids: Vec::new(),
         };
         self.join_links.lock().push(link);
         self.persist_join_links_for(&server_id);
