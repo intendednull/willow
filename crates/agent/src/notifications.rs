@@ -262,7 +262,7 @@ pub fn event_to_json(event: &ClientEvent) -> serde_json::Value {
     }
 }
 
-/// All 31 event type names for validation.
+/// All 32 event type names for validation.
 pub const EVENT_TYPE_NAMES: &[&str] = &[
     "MessageReceived",
     "MessageEdited",
