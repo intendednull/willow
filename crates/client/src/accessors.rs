@@ -175,6 +175,24 @@ impl<N: willow_network::Network> ClientHandle<N> {
         willow_actor::state::select(&self.event_state_addr, |es| es.admins.clone()).await
     }
 
+    /// Enumerate the live (un-revoked) `SyncProvider` grants in the active
+    /// server's replayed DAG — the trust layer (Layer 3) of relay discovery.
+    ///
+    /// An endpoint is a candidate sync source for this server iff it holds an
+    /// explicit, un-revoked `SyncProvider` grant. Implicit admin/owner
+    /// authority does **not** count (see
+    /// [`crate::relay_discovery::enumerate_sync_providers`] and pinned
+    /// decision 4): auto-serving from admin status would make the serving gate
+    /// and its audit trail meaningless. The set this returns is exactly the
+    /// list of endpoints whose addresses the client should resolve via pkarr
+    /// (Layer 1) and whose capability docs it should fetch (Layer 2).
+    pub async fn sync_providers(&self) -> std::collections::BTreeSet<willow_identity::EndpointId> {
+        willow_actor::state::select(&self.event_state_addr, |es| {
+            crate::relay_discovery::enumerate_sync_providers(es)
+        })
+        .await
+    }
+
     pub async fn channel_kinds(&self) -> Vec<(String, willow_state::ChannelKind)> {
         willow_actor::state::select(&self.event_state_addr, |es| {
             es.channels

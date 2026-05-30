@@ -32,6 +32,7 @@ pub mod ops;
 pub mod persistence_actor;
 pub mod presence;
 pub mod queue;
+pub mod relay_discovery;
 pub mod search;
 pub mod state;
 pub mod state_actors;
@@ -99,6 +100,10 @@ mod tests_heads_sync;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/history_eose.rs"]
 mod tests_history_eose;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "tests/relay_discovery.rs"]
+mod tests_relay_discovery;
 
 /// How long a typing indicator remains visible after the last typing event, in milliseconds.
 pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
