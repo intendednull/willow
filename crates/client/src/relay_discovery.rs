@@ -120,13 +120,19 @@ pub struct RankedRelay {
 /// into it and a `RevokePermission { SyncProvider }` removes from it, so a
 /// revoked grant simply isn't present — no separate liveness check is needed.
 ///
-/// Implicit admin/owner authority is deliberately **excluded**: an admin holds
-/// `SyncProvider` via [`ServerState::has_permission`]'s "admins have every
-/// permission" rule, but is only enumerated here if it was *explicitly*
-/// granted the role (its key appears in `peer_permissions`). This matches the
-/// serving gate's [`ServerState::has_explicit_permission`] predicate (pinned
-/// decision 4): auto-serving from admin status would make the gate, and its
-/// audit trail, meaningless.
+/// Implicit admin/owner authority is deliberately **excluded** *for discovery*:
+/// an admin holds `SyncProvider` via [`ServerState::has_permission`]'s "admins
+/// have every permission" rule, but is only enumerated here if it was
+/// *explicitly* granted the role (its key appears in `peer_permissions`). This
+/// is a discovery-ranking choice — a peer is advertised as a *dedicated* sync
+/// source only when deliberately designated, so the outbox layer ranks explicit
+/// providers rather than every admin.
+///
+/// Note: this is **not** the serving gate. The SyncRequestV2 responder gates on
+/// [`ServerState::is_sync_provider`] (which honors the owner/admins implicitly),
+/// so the owner serves its own server's state to joining members even though it
+/// is not enumerated here. Discovery (who to *advertise*) and serving (who may
+/// *answer*) answer different questions.
 pub fn enumerate_sync_providers(state: &ServerState) -> BTreeSet<EndpointId> {
     state
         .peer_permissions

@@ -21,7 +21,7 @@ use willow_network::Network;
 use willow_state::{AuthorHead, Event, EventHash, EventKind, HeadsSummary};
 
 use crate::listeners::{process_received_message, ListenerCtx};
-use crate::{test_client, ClientHandle};
+use crate::{test_client, ClientEvent, ClientHandle, EventReceiver};
 
 // ───── Helpers ──────────────────────────────────────────────────────────
 
@@ -43,6 +43,7 @@ fn make_ctx<N: willow_network::Network>(client: &ClientHandle<N>) -> ListenerCtx
         dag: client.dag_addr.clone(),
         server_registry: client.server_registry_addr.clone(),
         on_neighbor_up: None,
+        history_stream_generation: 0,
     }
 }
 
@@ -286,16 +287,28 @@ async fn up_to_date_requester_gets_empty_terminator() {
         .await;
 }
 
-// ───── 3. responder refuses to serve without SyncProvider (gate) ──────────
-
+// ───── 3. a regular member (not owner/admin, no grant) refuses to serve ────
+//
+// Reconciled 2026-05-30: the responder gate is `ServerState::is_sync_provider`,
+// which honors the authority model — the owner/admins hold `SyncProvider`
+// *implicitly* (owner = root of all permissions; admins inherit every
+// permission), and explicit grant-holders serve too. A *regular* member who is
+// neither owner/admin nor explicitly granted `SyncProvider` still refuses, so
+// the gate remains meaningful. This test pins that residual refusal.
+//
+// Earlier this test asserted the *owner herself* served nothing without an
+// explicit self-grant; that encoded the now-corrected strict-explicit deviation
+// from pinned decision 4 (which the owner satisfies implicitly). The owner-serve
+// path is now pinned by `owner_without_explicit_grant_serves` below.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responder_without_sync_provider_serves_nothing() {
+async fn regular_member_without_sync_provider_serves_nothing() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
             let hub = Arc::new(MemHub::new());
-            // Alice does NOT grant herself SyncProvider.
-            let (alice, _b) = test_client();
+
+            // Alice owns the server and authors a chain.
+            let (alice, _ab) = test_client();
             for i in 0..5 {
                 alice
                     .send_message("general", &format!("m{i}"))
@@ -304,10 +317,39 @@ async fn responder_without_sync_provider_serves_nothing() {
             }
             let server_id = server_id_of(&alice).await;
 
-            let alice_ctx = make_ctx(&alice);
+            // Carol is a *regular member*: she holds Alice's full DAG (replayed
+            // in) but her own identity is NOT the genesis author, so she is
+            // neither owner nor admin, and was never granted SyncProvider.
+            let (carol, _cb) = test_client();
+            let alice_full = snapshot_dag(&alice).await;
+            replay_into(&carol, alice_full).await;
+            let carol_local = carol.identity.endpoint_id();
+            let (carol_is_admin, carol_explicit, carol_provider) =
+                willow_actor::state::select(&carol.event_state_addr, move |es| {
+                    (
+                        es.is_admin(&carol_local),
+                        es.has_explicit_permission(
+                            &carol_local,
+                            &willow_state::Permission::SyncProvider,
+                        ),
+                        es.is_sync_provider(&carol_local),
+                    )
+                })
+                .await;
+            assert!(!carol_is_admin, "test precondition: Carol is not an admin");
+            assert!(
+                !carol_explicit,
+                "test precondition: Carol has no explicit SyncProvider grant"
+            );
+            assert!(
+                !carol_provider,
+                "test precondition: Carol is not a SyncProvider by any path"
+            );
+
+            let carol_ctx = make_ctx(&carol);
             let topic_id = willow_network::topic_id("heads-sync-test-3");
-            let alice_net = MemNetwork::new(&hub);
-            let (alice_topic, _e) = alice_net.subscribe(topic_id, vec![]).await.expect("sub");
+            let carol_net = MemNetwork::new(&hub);
+            let (carol_topic, _e) = carol_net.subscribe(topic_id, vec![]).await.expect("sub");
             let reader_net = MemNetwork::new(&hub);
             let (_rt, mut reader_events) = reader_net
                 .subscribe(topic_id, vec![])
@@ -327,12 +369,99 @@ async fn responder_without_sync_provider_serves_nothing() {
                 },
             };
             let batches =
-                request_and_collect(&alice_ctx, &alice_topic, &mut reader_events, &bob, request)
+                request_and_collect(&carol_ctx, &carol_topic, &mut reader_events, &bob, request)
                     .await;
             assert!(
                 batches.is_empty(),
-                "a peer without SyncProvider must not serve a SyncRequestV2 (got {} batches)",
+                "a regular member without SyncProvider must not serve a SyncRequestV2 (got {} batches)",
                 batches.len()
+            );
+        })
+        .await;
+}
+
+// ───── 3a. the server OWNER serves without an explicit self-grant ─────────
+//
+// Bug fix 2026-05-30: the SyncRequestV2 gate previously used
+// `has_explicit_permission`, which ignores the owner/admin implicit-permission
+// rule, so the server owner — the canonical source of her own server's state —
+// refused to serve a joining peer. In the web E2E mesh nobody holds an explicit
+// grant, so joiners could never backfill. Pinned decision 4 says "a peer serves
+// a delta only if it holds SyncProvider", and the owner DOES hold it implicitly
+// (authority model: owner = root of all permissions). The gate now honors that.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owner_without_explicit_grant_serves() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let hub = Arc::new(MemHub::new());
+
+            // Alice owns the server (genesis author = auto-admin) and authors a
+            // chain. She does NOT grant herself an explicit SyncProvider.
+            let (alice, _ab) = test_client();
+            let alice_peer = alice.identity.endpoint_id();
+            let (is_admin, has_explicit) =
+                willow_actor::state::select(&alice.event_state_addr, move |es| {
+                    (
+                        es.is_admin(&alice_peer),
+                        es.has_explicit_permission(
+                            &alice_peer,
+                            &willow_state::Permission::SyncProvider,
+                        ),
+                    )
+                })
+                .await;
+            assert!(is_admin, "test precondition: owner is auto-admin");
+            assert!(
+                !has_explicit,
+                "test precondition: owner holds NO explicit SyncProvider grant"
+            );
+
+            for i in 0..8 {
+                alice
+                    .send_message("general", &format!("owner {i}"))
+                    .await
+                    .expect("send");
+            }
+            let server_id = server_id_of(&alice).await;
+            let alice_total = dag_len(&alice).await;
+
+            let alice_ctx = make_ctx(&alice);
+            let topic_id = willow_network::topic_id("heads-sync-test-3a");
+            let alice_net = MemNetwork::new(&hub);
+            let (alice_topic, _e) = alice_net.subscribe(topic_id, vec![]).await.expect("sub");
+            let reader_net = MemNetwork::new(&hub);
+            let (_rt, mut reader_events) = reader_net
+                .subscribe(topic_id, vec![])
+                .await
+                .expect("sub reader");
+
+            // Bob requests everything (empty heads).
+            let bob = willow_identity::Identity::generate();
+            let request = crate::ops::WireMessage::SyncRequestV2 {
+                request_id: "req-3a".to_string(),
+                heads: HeadsSummary::default(),
+                filter: willow_common::SyncFilter {
+                    server_id,
+                    channels: None,
+                    authors: None,
+                    event_kinds: None,
+                    since_ms: None,
+                },
+            };
+            let batches =
+                request_and_collect(&alice_ctx, &alice_topic, &mut reader_events, &bob, request)
+                    .await;
+
+            assert!(
+                !batches.is_empty(),
+                "the owner must serve a SyncRequestV2 even without an explicit grant"
+            );
+            assert!(!batches.last().unwrap().1, "final batch clears `more`");
+            let total: usize = batches.iter().map(|(e, _)| e.len()).sum();
+            assert_eq!(
+                total, alice_total,
+                "owner streams the entire chain to a joining peer"
             );
         })
         .await;
@@ -496,6 +625,148 @@ async fn bob_converges_via_sync_request_v2() {
                 "Bob must converge to Alice's full DAG via SyncRequestV2 ({} vs {})",
                 dag_len(&bob).await,
                 alice_total
+            );
+        })
+        .await;
+}
+
+// ───── 5. owner-served gossip backfill emits a HistorySyncComplete the ─────
+//        joiner surfaces as ClientEvent::HistorySynced (provider = owner)
+//
+// Bug fix 2026-05-30: the HistorySyncComplete EOSE marker was previously emitted
+// ONLY by workers in response to a WorkerRequest::Sync. Web clients backfill
+// over gossip (SyncRequestV2) and never touch the worker ALPN path, so no marker
+// ever reached them — the EOSE feature was dead end-to-end for clients. The
+// gossip SyncRequestV2 responder now also emits the marker after a successful
+// serve, and the receiver's trust gate honors the owner/admins (Change B), so a
+// peer/owner-served backfill produces an observable HistorySynced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn owner_served_backfill_emits_history_synced() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let hub = Arc::new(MemHub::new());
+
+            // Alice owns the server (genesis author) and authors a chain. No
+            // explicit SyncProvider self-grant — she serves via the owner rule.
+            let (alice, _ab) = test_client();
+            for i in 0..6 {
+                alice
+                    .send_message("general", &format!("hist {i}"))
+                    .await
+                    .expect("send");
+            }
+            let server_id = server_id_of(&alice).await;
+            let alice_total = dag_len(&alice).await;
+            let alice_peer = alice.identity.endpoint_id();
+
+            // Bob is a joiner that holds only Alice's genesis prefix, so Alice's
+            // marker is trusted (Alice is the owner in Bob's replayed state) and
+            // the backfill is non-empty.
+            let (bob, bob_broker) = test_client();
+            let full = snapshot_dag(&alice).await;
+            let genesis_only: Vec<Event> = full.iter().take(1).cloned().collect();
+            replay_into(&bob, genesis_only).await;
+            let mut bob_rx = EventReceiver::subscribe(&bob_broker, &bob.system).await;
+
+            // Shared topic: Alice broadcasts batches + marker; we drain them and
+            // replay each frame into Bob's listener (the gossip delivery the
+            // MemHub would otherwise perform), so Bob both converges AND sees the
+            // EOSE marker.
+            let topic_id = willow_network::topic_id("heads-sync-test-5");
+            let alice_ctx = make_ctx(&alice);
+            let alice_net = MemNetwork::new(&hub);
+            let (alice_topic, _ae) = alice_net.subscribe(topic_id, vec![]).await.expect("sub");
+            let reader_net = MemNetwork::new(&hub);
+            let (_rt, mut reader_events) = reader_net
+                .subscribe(topic_id, vec![])
+                .await
+                .expect("sub reader");
+
+            // Bob requests everything (empty heads) — pump it into Alice.
+            let bob_identity = bob.identity.clone();
+            let request = crate::ops::WireMessage::SyncRequestV2 {
+                request_id: "req-5".to_string(),
+                heads: HeadsSummary::default(),
+                filter: willow_common::SyncFilter {
+                    server_id,
+                    channels: None,
+                    authors: None,
+                    event_kinds: None,
+                    since_ms: None,
+                },
+            };
+            let req_bytes = crate::ops::pack_wire(&request, &bob_identity).expect("pack request");
+            process_received_message(
+                &req_bytes,
+                bob_identity.endpoint_id(),
+                &alice_ctx,
+                &alice_topic,
+            )
+            .await;
+
+            // Drain every frame Alice broadcast and replay it into Bob's
+            // listener, stopping once we have seen the HistorySyncComplete marker.
+            let bob_ctx = make_ctx(&bob);
+            let bob_topic = {
+                let bob_net = MemNetwork::new(&hub);
+                let (h, _e) = bob_net
+                    .subscribe(willow_network::topic_id("heads-sync-test-5-bob"), vec![])
+                    .await
+                    .expect("sub bob");
+                h
+            };
+            use willow_network::traits::{GossipEvent, TopicEvents as _};
+            let drained = tokio::time::timeout(Duration::from_secs(5), async {
+                while let Some(Ok(ev)) = reader_events.next().await {
+                    let GossipEvent::Received(msg) = ev else {
+                        continue;
+                    };
+                    let sender = msg.sender;
+                    // Replay verbatim into Bob's listener.
+                    process_received_message(&msg.content, sender, &bob_ctx, &bob_topic).await;
+                    if let Some((crate::ops::WireMessage::HistorySyncComplete { .. }, _signer)) =
+                        crate::ops::unpack_wire(&msg.content)
+                    {
+                        // Marker is the last frame Alice emits after a serve.
+                        break;
+                    }
+                }
+            })
+            .await;
+            assert!(drained.is_ok(), "responder must emit a terminal marker");
+
+            // Bob converged to Alice's full DAG.
+            assert_eq!(
+                dag_len(&bob).await,
+                alice_total,
+                "Bob converges to the owner's full DAG via the gossip backfill"
+            );
+
+            // Bob surfaced exactly one HistorySynced for the owner-served topic.
+            let mut synced = Vec::new();
+            let _ = tokio::time::timeout(Duration::from_millis(300), async {
+                loop {
+                    match bob_rx.try_recv() {
+                        Some(ClientEvent::HistorySynced {
+                            topic,
+                            provider,
+                            still_pending,
+                        }) => synced.push((topic, provider, still_pending)),
+                        Some(_) => {}
+                        None => tokio::task::yield_now().await,
+                    }
+                }
+            })
+            .await;
+            assert_eq!(
+                synced.len(),
+                1,
+                "owner-served backfill emits exactly one HistorySynced (got {synced:?})"
+            );
+            assert_eq!(
+                synced[0].1, alice_peer,
+                "the HistorySynced provider is the owner (recovered from the marker signer)"
             );
         })
         .await;

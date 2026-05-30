@@ -173,6 +173,15 @@ impl<N: willow_network::Network> ClientHandle<N> {
             storage::save_settings(&storage::NetworkSettings { relay_addr: None });
         }
 
+        // One stable `stream_generation` per connect() call, shared by every
+        // listener context built below (ops + profile + channel). The gossip
+        // `SyncRequestV2` responder stamps it on every `HistorySyncComplete`
+        // marker it emits, so repeated serves to a reconnecting peer dedup on
+        // the receiver's `(provider, stream_generation)` table instead of
+        // re-emitting `HistorySynced`. `uuid` is WASM-safe (workspace `js`
+        // feature); `as_u64_pair().0` extracts a random `u64` without `std` RNG.
+        let history_stream_generation = uuid::Uuid::new_v4().as_u64_pair().0;
+
         let listener_ctx = listeners::ListenerCtx {
             event_state: self.event_state_addr.clone(),
             chat_meta: self.chat_meta_addr.clone(),
@@ -188,6 +197,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             dag: self.dag_addr.clone(),
             server_registry: self.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation,
         };
 
         // Subscribe to the server ops topic.

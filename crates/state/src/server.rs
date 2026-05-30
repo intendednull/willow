@@ -161,14 +161,16 @@ impl ServerState {
     /// ignoring the implicit "admins have every permission" rule that
     /// [`has_permission`](Self::has_permission) applies.
     ///
-    /// This is the predicate the heads-based sync **serving gate** uses (plan
-    /// PR 4, pinned decision 4): a peer serves a `SyncRequestV2` delta only if
-    /// it was *deliberately* designated a `SyncProvider`, not merely because it
-    /// happens to be an admin/owner. The relay/worker trust model grants
-    /// `SyncProvider` explicitly (`docs/specs` Trust Model; `crates/client/src/
-    /// servers.rs`), so an owner that wants to serve its own server grants
-    /// itself the role — auto-serving from admin status would make the gate
-    /// (and its audit trail) meaningless.
+    /// This returns `true` *only* for an explicit `GrantPermission` recorded in
+    /// [`peer_permissions`](Self::peer_permissions); the owner/admins do **not**
+    /// satisfy it by virtue of their status. It remains available for callers
+    /// that need strict explicit-grant semantics (e.g. auditing who was
+    /// deliberately designated for a permission, independent of admin status).
+    ///
+    /// Note: the heads-based sync **serving gate** does *not* use this predicate
+    /// — it uses [`is_sync_provider`](Self::is_sync_provider) (i.e.
+    /// [`has_permission`](Self::has_permission)) so the owner/admins serve their
+    /// own server's state implicitly, which member-to-member backfill requires.
     pub fn has_explicit_permission(&self, peer_id: &EndpointId, perm: &Permission) -> bool {
         self.peer_permissions
             .get(peer_id)

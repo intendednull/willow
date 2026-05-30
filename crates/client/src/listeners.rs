@@ -120,6 +120,14 @@ pub struct ListenerCtx {
     /// gossip mesh — ensuring late-arriving peers see the display name even
     /// when the initial broadcast happened before the link was established.
     pub on_neighbor_up: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Stable per-session `stream_generation` stamped on every
+    /// [`crate::ops::WireMessage::HistorySyncComplete`] marker this peer emits
+    /// from the gossip `SyncRequestV2` responder. Generated once per
+    /// [`ClientHandle::connect`](crate::ClientHandle::connect) call and shared
+    /// across every listener context, so repeated serves to a reconnecting peer
+    /// are deduped by the receiver's `(provider, stream_generation)` table
+    /// rather than re-emitting a fresh `HistorySynced` each time.
+    pub history_stream_generation: u64,
 }
 
 impl Clone for ListenerCtx {
@@ -139,6 +147,7 @@ impl Clone for ListenerCtx {
             dag: self.dag.clone(),
             server_registry: self.server_registry.clone(),
             on_neighbor_up: self.on_neighbor_up.clone(),
+            history_stream_generation: self.history_stream_generation,
         }
     }
 }
@@ -448,14 +457,19 @@ pub(crate) async fn process_received_message<T: TopicHandle>(
             heads,
             filter,
         } => {
-            // SyncProvider serving gate: only serve a delta if *we* hold an
-            // explicit `SyncProvider` grant for this server (pinned decision
-            // 4). We check the explicit grant, not `has_permission`, so an
-            // admin/owner does not auto-serve — serving is a deliberately
-            // designated role, matching the relay/worker trust model.
+            // SyncProvider serving gate (pinned decision 4): only serve a delta
+            // if *we* hold `SyncProvider` for this server. We use the
+            // owner-honoring `is_sync_provider` predicate (i.e.
+            // `has_permission(SyncProvider)`), so the owner/admins — who hold
+            // every permission implicitly under the authority model — serve,
+            // alongside any peer with an explicit grant. A *regular* member
+            // without the grant still refuses. Honoring the owner here is what
+            // makes member-to-member backfill from the canonical source of the
+            // server's own state possible (a 2-peer server where nobody holds an
+            // explicit grant would otherwise be unsyncable).
             let local_id = ctx.identity.endpoint_id();
             let may_serve = willow_actor::state::select(&ctx.event_state, move |es| {
-                es.has_explicit_permission(&local_id, &willow_state::Permission::SyncProvider)
+                es.is_sync_provider(&local_id)
             })
             .await;
             if !may_serve {
@@ -491,6 +505,15 @@ pub(crate) async fn process_received_message<T: TopicHandle>(
                 })
                 .await;
 
+            // Capture the hash of the last event we are about to stream BEFORE
+            // `delta` is consumed by `pack_sync_batches`. This becomes the
+            // `last_event_hash` of the EOSE marker below: the receiver checks it
+            // is present locally before flipping its history-loaded flag, so the
+            // marker can never falsely claim completion past a truncated stream.
+            // `None` (empty delta) is the "nothing to backfill" case and never
+            // truncates.
+            let last_event_hash = delta.last().map(|e| e.hash);
+
             let batches =
                 willow_common::pack_sync_batches(delta, willow_common::SYNC_ENVELOPE_BUDGET);
             for (events, more) in batches {
@@ -505,6 +528,33 @@ pub(crate) async fn process_received_message<T: TopicHandle>(
                         "topic.broadcast SyncBatchV2 (SyncRequestV2 reply)",
                     );
                 }
+            }
+
+            // End-of-stored-events marker (history-sync-eose spec, plan PR 5).
+            //
+            // The worker ALPN path emits this marker after a `WorkerRequest::Sync`
+            // reply, but web clients backfill over *gossip* (this responder) and
+            // never touch the worker path — so worker-only emission left the EOSE
+            // feature dead for clients. We emit it here too, after a successful
+            // gossip serve, so an owner/admin/granted-provider backfill produces an
+            // observable `HistorySynced` on the joiner. The `topic_id` is the
+            // SERVER_OPS id (SyncRequestV2 flows on SERVER_OPS) — identical to the
+            // worker's `ops_topic_id()`. `stream_generation` is a stable
+            // per-session value (`ctx.history_stream_generation`), NOT a fresh
+            // value per serve: the receiver dedups on `(provider,
+            // stream_generation)`, so a stable value makes repeated serves on
+            // reconnect idempotent (no marker spam).
+            let topic_id = *willow_network::topic_id(crate::ops::SERVER_OPS_TOPIC).as_bytes();
+            let marker = crate::ops::WireMessage::HistorySyncComplete {
+                topic_id,
+                last_event_hash,
+                stream_generation: ctx.history_stream_generation,
+            };
+            if let Some(data) = crate::ops::pack_wire(&marker, &ctx.identity) {
+                warn_if_err(
+                    topic.broadcast(bytes::Bytes::from(data)).await,
+                    "topic.broadcast HistorySyncComplete (SyncRequestV2 EOSE)",
+                );
             }
         }
         // Heads-based delta-sync receiver (negentropy-sync spec, plan PR 4).
@@ -1052,11 +1102,14 @@ pub(crate) async fn process_received_message<T: TopicHandle>(
         // topic; everything it sends afterwards is live, not backfill. We:
         //
         //   1. Trust-gate on the **signer** — the marker is honored only if the
-        //      verified envelope signer holds an explicit `SyncProvider` grant
-        //      for this server (markers from untrusted peers are ignored, so a
-        //      random peer cannot flip the UI loading flag off). We check the
-        //      explicit grant, not `has_permission`, mirroring the responder
-        //      gate (pinned decision 4 / the SyncRequestV2 path above).
+        //      verified envelope signer is a `SyncProvider` for this server
+        //      (markers from untrusted peers are ignored, so a random peer
+        //      cannot flip the UI loading flag off). We use the owner-honoring
+        //      `is_sync_provider` predicate, matching the SyncRequestV2 responder
+        //      gate (pinned decision 4): the owner/admins hold `SyncProvider`
+        //      implicitly under the authority model, so a marker from the owner
+        //      (the common member-to-member backfill case) is trusted, as is one
+        //      from any explicit grant-holder.
         //   2. Detect truncation via `last_event_hash`: if the provider claims a
         //      last event we do **not** hold, the stream did not reach us
         //      intact — log a warning and emit **no** completion (no false
@@ -1073,16 +1126,17 @@ pub(crate) async fn process_received_message<T: TopicHandle>(
         } => {
             let provider = signer;
 
-            // (1) Trust gate: ignore markers from peers without an explicit
-            // SyncProvider grant for this server.
+            // (1) Trust gate: ignore markers from peers that are not a
+            // SyncProvider for this server (owner/admins implicitly, or an
+            // explicit grant-holder).
             let trusted = willow_actor::state::select(&ctx.event_state, move |es| {
-                es.has_explicit_permission(&provider, &willow_state::Permission::SyncProvider)
+                es.is_sync_provider(&provider)
             })
             .await;
             if !trusted {
                 tracing::debug!(
                     %provider,
-                    "ignoring HistorySyncComplete: signer lacks explicit SyncProvider grant"
+                    "ignoring HistorySyncComplete: signer is not a SyncProvider for this server"
                 );
                 return;
             }
@@ -1123,15 +1177,14 @@ pub(crate) async fn process_received_message<T: TopicHandle>(
 
             // (4) still_pending = connected trusted providers that have not yet
             // completed this topic. "Connected" = ChatMeta.peers; "trusted" =
-            // explicit SyncProvider grant. The provider that just completed is
+            // `is_sync_provider` (owner/admins implicitly, plus explicit grants),
+            // matching the trust gate above. The provider that just completed is
             // already recorded, so it is excluded.
             let connected = willow_actor::state::select(&ctx.chat_meta, |c| c.peers.clone()).await;
             let connected_trusted = willow_actor::state::select(&ctx.event_state, move |es| {
                 connected
                     .into_iter()
-                    .filter(|p| {
-                        es.has_explicit_permission(p, &willow_state::Permission::SyncProvider)
-                    })
+                    .filter(|p| es.is_sync_provider(p))
                     .collect::<Vec<_>>()
             })
             .await;
@@ -1234,6 +1287,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         };
 
         // Mallory signs the packet, but claims it's from Bob. Neither
@@ -1329,6 +1383,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         };
 
         let bob = willow_identity::Identity::generate();
@@ -1411,6 +1466,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         };
 
         let attacker = willow_identity::Identity::generate();
@@ -1474,6 +1530,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         };
 
         let attacker = willow_identity::Identity::generate();
@@ -1525,6 +1582,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         }
     }
 
@@ -1842,6 +1900,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         };
         (client, ctx, topic)
     }
@@ -2153,6 +2212,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         };
         (client, ctx, topic, observer_events)
     }

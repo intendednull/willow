@@ -44,6 +44,7 @@ fn make_ctx<N: willow_network::Network>(client: &ClientHandle<N>) -> ListenerCtx
         dag: client.dag_addr.clone(),
         server_registry: client.server_registry_addr.clone(),
         on_neighbor_up: None,
+        history_stream_generation: 0,
     }
 }
 
