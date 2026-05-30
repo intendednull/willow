@@ -6390,6 +6390,7 @@ dependencies = [
  "bincode",
  "bytes",
  "clap",
+ "rand 0.9.4",
  "serde",
  "tempfile",
  "tokio",

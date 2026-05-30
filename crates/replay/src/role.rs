@@ -1689,6 +1689,98 @@ mod tests {
         }
     }
 
+    // ── PR 5 Task 5.3: last served event hash for HistorySyncComplete ────────
+    //
+    // The worker's SERVER_OPS marker carries the hash of the last event the
+    // provider streamed in its Sync reply (or `None` for an empty store). That
+    // value is derived purely from the served `WorkerResponse` via
+    // `WorkerResponse::last_synced_hash`, so the emitting actor needs no
+    // role-specific knowledge. These tests pin the contract for the replay
+    // role's two reply shapes (delta batch / empty terminator).
+
+    /// A non-empty replay delta yields `Some(last_event_hash)` equal to the
+    /// hash of the last served event — the value the marker carries.
+    #[test]
+    fn served_delta_reports_last_event_hash() {
+        let mut role = ReplayRole::new(ReplayConfig {
+            max_events_per_author: 100,
+            ..Default::default()
+        });
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        let mut prev = genesis_hash;
+        let mut last_hash = genesis_hash;
+        for seq in 2..=4 {
+            let e = make_message(&owner, seq, prev);
+            prev = e.hash;
+            last_hash = e.hash;
+            role.ingest_event("srv-1", &e);
+        }
+
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary::default(),
+        });
+        match &resp {
+            WorkerResponse::SyncBatch { events, .. } => {
+                // events are (author, seq)-ascending; the last is the newest.
+                assert_eq!(events.last().map(|e| e.hash), Some(last_hash));
+            }
+            other => panic!("expected SyncBatch, got {other:?}"),
+        }
+        assert_eq!(
+            resp.last_synced_hash(),
+            Some(last_hash),
+            "marker must carry the last served event hash"
+        );
+    }
+
+    /// An empty terminator (caught-up peer) yields `None` — the empty-store /
+    /// nothing-to-send case the marker encodes as `last_event_hash: None`.
+    #[test]
+    fn empty_terminator_reports_no_last_hash() {
+        let mut role = ReplayRole::new(ReplayConfig {
+            max_events_per_author: 100,
+            ..Default::default()
+        });
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        let mut prev = genesis_hash;
+        let mut last_hash = genesis_hash;
+        for seq in 2..=3 {
+            let e = make_message(&owner, seq, prev);
+            prev = e.hash;
+            last_hash = e.hash;
+            role.ingest_event("srv-1", &e);
+        }
+
+        // Peer already knows everything → empty terminator batch.
+        let mut their_heads = BTreeMap::new();
+        their_heads.insert(
+            owner.endpoint_id(),
+            willow_state::AuthorHead {
+                seq: 3,
+                hash: last_hash,
+            },
+        );
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary { heads: their_heads },
+        });
+        match &resp {
+            WorkerResponse::SyncBatch { events, more } => {
+                assert!(events.is_empty());
+                assert!(!more);
+            }
+            other => panic!("expected empty SyncBatch terminator, got {other:?}"),
+        }
+        assert_eq!(
+            resp.last_synced_hash(),
+            None,
+            "an empty served batch carries no last_event_hash"
+        );
+    }
+
     /// When the delta exceeds one envelope's byte budget, the replay role
     /// returns only the budget-fitting first batch with `more: true`, so the
     /// framed envelope cannot exceed `SYNC_ENVELOPE_BUDGET` and the requester

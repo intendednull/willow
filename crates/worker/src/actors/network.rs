@@ -3,6 +3,8 @@
 //! Uses [`StreamHandler`] to receive gossip events and dispatches
 //! parsed messages to the state actor via typed [`Addr`] messages.
 
+use std::collections::HashSet;
+
 use tracing::warn;
 use willow_actor::{Actor, Addr, Context, Handler};
 use willow_identity::EndpointId;
@@ -22,6 +24,21 @@ pub struct NetworkActor<E: TopicEvents + 'static, T: TopicHandle + 'static> {
     /// Optional SERVER_OPS topic events stream.
     ops_events: Option<E>,
     reply_topic: T,
+    /// Optional SERVER_OPS broadcast handle. When present, the actor broadcasts
+    /// a [`crate::WireMessage::HistorySyncComplete`] marker on SERVER_OPS after
+    /// serving a [`crate::WorkerRequest::Sync`] so subscribed clients learn the
+    /// historical backfill from this provider is complete (PR 5 Task 5.3).
+    ops_sender: Option<T>,
+    /// Per-run random stream generation for the `HistorySyncComplete` marker
+    /// (pinned decision 6: random `u64`, not a persisted counter — equality
+    /// dedup needs no ordering). Fixed for the lifetime of this actor (one
+    /// worker run); a restart draws a fresh value so a client holding a stale
+    /// marker is not confused.
+    stream_generation: u64,
+    /// Neighbors (Sync requesters) already sent a marker in `stream_generation`.
+    /// Bounds emission to **at most one marker per neighbor per generation** so
+    /// a reconnect/re-sync loop cannot spam subscribed UIs.
+    marked_neighbors: HashSet<EndpointId>,
     /// Optional ready signal — drain tasks wait for `true` before pulling events.
     /// Uses `watch` so late subscribers see the value even if StateActor started first.
     ready: Option<tokio::sync::watch::Receiver<bool>>,
@@ -42,6 +59,11 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> NetworkActor<E, T> {
             events: Some(events),
             ops_events: None,
             reply_topic,
+            ops_sender: None,
+            // Random per-run generation (decision 6). `rand::random` uses a
+            // thread-local CSPRNG (ChaCha-based) seeded from the OS.
+            stream_generation: rand::random::<u64>(),
+            marked_neighbors: HashSet::new(),
             ready: None,
         }
     }
@@ -51,6 +73,22 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> NetworkActor<E, T> {
     pub fn with_ops_events(mut self, ops_events: E) -> Self {
         self.ops_events = Some(ops_events);
         self
+    }
+
+    /// Attach the SERVER_OPS broadcast handle. With it set, the actor emits a
+    /// [`crate::WireMessage::HistorySyncComplete`] marker on SERVER_OPS after
+    /// serving a [`crate::WorkerRequest::Sync`] (PR 5 Task 5.3). Without it the
+    /// actor never broadcasts a marker (e.g. tests that only check ingest).
+    pub fn with_ops_sender(mut self, ops_sender: T) -> Self {
+        self.ops_sender = Some(ops_sender);
+        self
+    }
+
+    /// The 32-byte gossip `TopicId` of the SERVER_OPS topic. Carried explicitly
+    /// in the `HistorySyncComplete` marker so it survives relay-bridge
+    /// forwarding (the topic is not otherwise recoverable from the frame).
+    fn ops_topic_id(&self) -> [u8; 32] {
+        *willow_network::topic_id(crate::types::SERVER_OPS_TOPIC).as_bytes()
     }
 
     /// Attach a ready signal. Drain tasks will wait for `true` before pulling
@@ -127,71 +165,132 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<GossipEventMsg>
         let event = msg.0;
         let reply_topic = self.reply_topic.clone();
 
-        async move {
-            if let GossipEvent::Received(msg) = event {
-                let requester = msg.sender;
-                match parse_worker_message(&msg.content, &local_peer_id) {
-                    WorkerMessageAction::HandleRequest {
-                        request_id,
-                        payload,
-                    } => {
-                        if let Ok(response) = state_addr.ask(WorkerRequestMsg(payload)).await {
-                            // target_peer identifies the original requester so
-                            // clients can filter responses addressed to them.
-                            let reply = WorkerWireMessage::Response {
-                                request_id: request_id.clone(),
-                                target_peer: requester,
-                                payload: Box::new(response),
+        // Parse synchronously so the per-neighbor dedup decision for the
+        // HistorySyncComplete marker can mutate `self.marked_neighbors` here,
+        // before any `await`. `parse_worker_message` is a pure CPU function.
+        let GossipEvent::Received(gmsg) = event else {
+            return futures_noop();
+        };
+        let requester = gmsg.sender;
+        let action = parse_worker_message(&gmsg.content, &local_peer_id);
+
+        // Decide whether to emit a HistorySyncComplete marker on SERVER_OPS for
+        // this request: only for `Sync` requests, only when we hold the
+        // SERVER_OPS broadcast handle, and at most once per neighbor per
+        // generation (so a reconnect/re-sync loop cannot spam the UI). We
+        // record the neighbor up front; if the reply later fails to build, the
+        // worst case is a missed marker for this generation, never a loop.
+        let marker_ctx = match &action {
+            WorkerMessageAction::HandleRequest {
+                payload: willow_common::WorkerRequest::Sync { .. },
+                ..
+            } => self.ops_sender.clone().and_then(|ops_sender| {
+                if self.marked_neighbors.insert(requester) {
+                    Some((ops_sender, self.stream_generation, self.ops_topic_id()))
+                } else {
+                    None
+                }
+            }),
+            _ => None,
+        };
+
+        Box::pin(async move {
+            match action {
+                WorkerMessageAction::HandleRequest {
+                    request_id,
+                    payload,
+                } => {
+                    if let Ok(response) = state_addr.ask(WorkerRequestMsg(payload)).await {
+                        // The marker carries the hash of the last event this
+                        // reply streams (or `None` for an empty store) — read it
+                        // off the response before it is moved into the reply.
+                        let last_event_hash = response.last_synced_hash();
+
+                        // target_peer identifies the original requester so
+                        // clients can filter responses addressed to them.
+                        let reply = WorkerWireMessage::Response {
+                            request_id: request_id.clone(),
+                            target_peer: requester,
+                            payload: Box::new(response),
+                        };
+                        let wire = willow_common::WireMessage::Worker(reply);
+                        if let Some(bytes) = willow_common::pack_wire(&wire, &identity) {
+                            if let Err(err) = reply_topic.broadcast(bytes::Bytes::from(bytes)).await
+                            {
+                                warn!(
+                                    %err,
+                                    %request_id,
+                                    %requester,
+                                    "worker reply broadcast failed"
+                                );
+                            }
+                        }
+
+                        // After the Sync reply, broadcast the end-of-stored-events
+                        // marker on SERVER_OPS (where the joining client is
+                        // subscribed). The provider's identity is *not* in the
+                        // payload — the client recovers it from the verified
+                        // envelope signer at unpack time.
+                        if let Some((ops_sender, stream_generation, topic_id)) = marker_ctx {
+                            let marker = willow_common::WireMessage::HistorySyncComplete {
+                                topic_id,
+                                last_event_hash,
+                                stream_generation,
                             };
-                            let wire = willow_common::WireMessage::Worker(reply);
-                            if let Some(bytes) = willow_common::pack_wire(&wire, &identity) {
+                            if let Some(bytes) = willow_common::pack_wire(&marker, &identity) {
                                 if let Err(err) =
-                                    reply_topic.broadcast(bytes::Bytes::from(bytes)).await
+                                    ops_sender.broadcast(bytes::Bytes::from(bytes)).await
                                 {
                                     warn!(
                                         %err,
-                                        %request_id,
                                         %requester,
-                                        "worker reply broadcast failed"
+                                        stream_generation,
+                                        "HistorySyncComplete broadcast on SERVER_OPS failed"
                                     );
                                 }
                             }
                         }
                     }
-                    WorkerMessageAction::Ignore => {}
-                    WorkerMessageAction::PeerIdMismatch {
-                        signer,
-                        claimed,
+                }
+                WorkerMessageAction::Ignore => {}
+                WorkerMessageAction::PeerIdMismatch {
+                    signer,
+                    claimed,
+                    kind,
+                } => {
+                    warn!(
+                        signer = %signer,
+                        claimed = %claimed,
                         kind,
-                    } => {
-                        warn!(
-                            signer = %signer,
-                            claimed = %claimed,
-                            kind,
-                            "rejecting worker message: self-declared peer_id does not match Ed25519 signer"
-                        );
-                    }
-                    WorkerMessageAction::DeserializeError(_) => {
-                        match parse_server_message(&msg.content) {
-                            ServerMessageAction::Events(events) => {
-                                for event in events {
-                                    let event_hash = event.hash;
-                                    if state_addr.do_send(EventMsg(event)).is_err() {
-                                        warn!(
-                                            %event_hash,
-                                            source = "workers-topic",
-                                            "worker event dropped: state mailbox full"
-                                        );
-                                    }
+                        "rejecting worker message: self-declared peer_id does not match Ed25519 signer"
+                    );
+                }
+                WorkerMessageAction::DeserializeError(_) => {
+                    match parse_server_message(&gmsg.content) {
+                        ServerMessageAction::Events(events) => {
+                            for event in events {
+                                let event_hash = event.hash;
+                                if state_addr.do_send(EventMsg(event)).is_err() {
+                                    warn!(
+                                        %event_hash,
+                                        source = "workers-topic",
+                                        "worker event dropped: state mailbox full"
+                                    );
                                 }
                             }
-                            ServerMessageAction::Ignore => {}
                         }
+                        ServerMessageAction::Ignore => {}
                     }
                 }
             }
-        }
+        })
     }
+}
+
+/// A pinned, boxed no-op future matching the handler's return type. Used for
+/// the early-return path when a gossip event is not a `Received` message.
+fn futures_noop() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    Box::pin(async {})
 }
 
 impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<ServerOpsEventMsg>
@@ -203,10 +302,22 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<ServerOpsEventM
         _ctx: &mut Context<Self>,
     ) -> impl std::future::Future<Output = ()> + Send {
         let state_addr = self.state_addr.clone();
+        let local_peer_id = self.local_peer_id;
         let event = msg.0;
 
         async move {
             if let GossipEvent::Received(msg) = event {
+                // Self-echo filter (PR 5 Task 5.3 risk note): SERVER_OPS was
+                // ingest-only for workers; now that the worker *broadcasts*
+                // HistorySyncComplete markers here, the gossip mesh echoes the
+                // worker's own frames back to it. Drop any frame whose sender is
+                // ourselves so a worker never re-ingests its own broadcast into
+                // a loop. (The marker variant is also not an `Event`, so it
+                // would be ignored downstream — but filtering by sender is the
+                // robust, content-agnostic guard the spec asks for.)
+                if msg.sender == local_peer_id {
+                    return;
+                }
                 match parse_server_message(&msg.content) {
                     ServerMessageAction::Events(events) => {
                         for event in events {

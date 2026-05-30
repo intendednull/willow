@@ -567,6 +567,86 @@ mod tests {
         }
     }
 
+    // ── PR 5 Task 5.3: last served event hash for HistorySyncComplete ────────
+    //
+    // The worker's SERVER_OPS marker carries the hash of the last event the
+    // provider streamed in its Sync reply (or `None` for an empty store),
+    // derived purely from the served `WorkerResponse` via
+    // `WorkerResponse::last_synced_hash`. These tests pin the contract for the
+    // storage role's reply shapes (delta batch / empty terminator).
+
+    /// A non-empty storage delta yields `Some(last_event_hash)` equal to the
+    /// hash of the last served event.
+    #[test]
+    fn served_delta_reports_last_event_hash() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let mut role = StorageRole::new(store);
+        role.set_default_server("srv-1".to_string());
+
+        let id = Identity::generate();
+        let mut prev = EventHash::ZERO;
+        let mut last_hash = EventHash::ZERO;
+        for seq in 1..=3 {
+            let e = make_message(&id, seq, prev, "general");
+            prev = e.hash;
+            last_hash = e.hash;
+            role.on_event(&e);
+        }
+
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary::default(),
+        });
+        match &resp {
+            WorkerResponse::SyncBatch { events, .. } => {
+                assert_eq!(events.last().map(|e| e.hash), Some(last_hash));
+            }
+            other => panic!("expected SyncBatch, got {other:?}"),
+        }
+        assert_eq!(
+            resp.last_synced_hash(),
+            Some(last_hash),
+            "marker must carry the last served event hash"
+        );
+    }
+
+    /// An empty terminator (caught-up requester) yields `None`.
+    #[test]
+    fn empty_terminator_reports_no_last_hash() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let mut role = StorageRole::new(store);
+        role.set_default_server("srv-1".to_string());
+
+        let id = Identity::generate();
+        let mut last_hash = EventHash::ZERO;
+        for seq in 1..=3 {
+            let e = make_message(&id, seq, last_hash, "general");
+            last_hash = e.hash;
+            role.on_event(&e);
+        }
+
+        let mut their_heads = std::collections::BTreeMap::new();
+        their_heads.insert(
+            id.endpoint_id(),
+            willow_state::AuthorHead {
+                seq: 3,
+                hash: last_hash,
+            },
+        );
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary { heads: their_heads },
+        });
+        match &resp {
+            WorkerResponse::SyncBatch { events, more } => {
+                assert!(events.is_empty());
+                assert!(!more);
+            }
+            other => panic!("expected empty SyncBatch terminator, got {other:?}"),
+        }
+        assert_eq!(resp.last_synced_hash(), None);
+    }
+
     /// A fully caught-up requester still receives exactly one zero-event
     /// terminator (`more: false`) rather than nothing.
     #[test]
