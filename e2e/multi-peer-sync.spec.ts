@@ -314,10 +314,16 @@ test.describe('Multi-peer state synchronization', () => {
       await openMemberList(page1);
       const bobMember = page1.locator('.member-item', { hasText: 'Bob' });
       await bobMember.waitFor({ timeout: 20_000 });
+      // The per-row grant controls (`.member-actions`) are hover-revealed:
+      // `display: none` until `.member-item:hover` (see crates/web/style.css).
+      // Hover the row so the Trust button is visible before we drive it; the
+      // mouse stays over the row through the subsequent click (the button is a
+      // descendant, so the parent keeps its :hover state).
+      await bobMember.hover();
       // Exact match: `hasText: 'Trust'` would also match the sibling
       // "Untrust" button (substring), so anchor to the whole label.
       const trustBtn = bobMember.locator('button', { hasText: /^Trust$/ });
-      await trustBtn.waitFor({ timeout: 10_000 });
+      await trustBtn.waitFor({ state: 'visible', timeout: 10_000 });
       await trustBtn.click();
 
       // The grant is itself an event; both peers converge on it.
