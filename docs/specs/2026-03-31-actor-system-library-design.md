@@ -30,6 +30,25 @@ should remain dependency-free (no Leptos, no willow-specific types).
 
 ---
 
+## Prior Art
+
+This design is a deliberately minimal adaptation of an established lineage — the
+actor model and its channel-per-task realization in async Rust — with everything
+heavyweight (distributed actors, OTP-style supervision trees, persistence/event
+sourcing) explicitly cut as a non-goal. Each row notes what Willow borrowed or
+how it diverges.
+
+| System | Relevance to this design |
+|---|---|
+| **Actor model** (Hewitt, Bishop & Steiger, IJCAI 1973) | Originating model from "A Universal Modular ACTOR Formalism for Artificial Intelligence": an actor encapsulates private state and processes one message at a time, communicating only by message passing. Willow adopts this core invariant — actor owns state, one-at-a-time mailbox processing — as the replacement for shared-lock (`Arc<Mutex>`/`Arc<RwLock>`) business state. |
+| **Erlang/OTP `gen_server` + supervisor behaviours** | Canonical generic-server with `call` (request/response) vs `cast` (fire-and-forget), plus supervision trees and "let it crash" recovery. Willow borrows the call/cast split (`ask` via oneshot vs `handle() -> ()`) but explicitly rejects OTP supervision trees and process linking/monitoring as non-goals. |
+| **Akka / Akka Typed** (JVM; maintained by Lightbend, the company since renamed Akka) | Large-scale typed-actor toolkit with location transparency and clustering; type-safe message handling via a contravariant `ActorRef`. Cited as the heavyweight end of the spectrum Willow deliberately avoids — no distributed/remote actors, no cluster membership. |
+| **actix** (Rust) | The established Rust actor framework: `Actor` trait + per-message `Handler<M>` impls, typed `Message::Result`, and `Addr` handles. Willow's `Handle`/typed-message shape mirrors actix's `Addr` + `Message` conventions while keeping the framework minimal and dual-target. |
+| **ractor** (Rust) | Pure-Rust framework inspired by Erlang's `gen_server`, automating supervision trees and (optionally) distributed clustering. The closest "do OTP in Rust" alternative; rejected because its supervision/cluster surface is precisely Willow's stated non-goal — "minimal dependencies, no heavyweight framework." |
+| **kameo** (Rust) | Fault-tolerant async actors built on Tokio, using `mpsc` mailboxes, panic-catching restarts, and built-in distributed actors over libp2p. Same Tokio/mpsc foundation Willow uses, but Willow drops the distributed-actor and actor-linking/hierarchical-supervision machinery (it keeps single-actor `RestartPolicy` supervision) and adds wasm32 support. |
+| **xtra** (Rust) | A "tiny actor framework for asynchronous Rust" — runtime-agnostic with an async `Handler` over `&mut self` and an optional `wasm_bindgen` feature. The minimalist niche Willow occupies; building in-house was chosen to keep dependencies minimal and to own the dual-target Send/Sync cfg-gating directly. |
+| **"Actors with Tokio"** (Alice Ryhl, ryhl.io, 2021) | The canonical hand-rolled pattern this design implements directly: an actor task owns its state, a cloneable `mpsc`-backed `Handle`, and `oneshot` reply senders for request/response, with graceful shutdown when all handles drop and the mailbox closes. Willow's addition over the blog pattern is the wasm32 cfg-gating that relaxes `Send`/`Sync` for `spawn_local`. |
+
 ## 1. State Actor
 
 A generic actor that owns a value of type `S` and provides a uniform

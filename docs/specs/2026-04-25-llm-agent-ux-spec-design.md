@@ -18,6 +18,21 @@ other member, but their identity, capabilities, and UI treatment are distinct.
 
 ---
 
+## Prior Art
+
+The design draws on established bot-platform, streaming-API, and wire-format-evolution practice:
+
+| System | Key idea adopted / how Willow diverges |
+|---|---|
+| **Discord — Application Commands & BOT tag** | Bots are first-class members with a distinct visual tag, registered slash commands, and @mention/auto-respond behaviour. Willow mirrors the BOT-tag UX, bot-as-member treatment, and slash-command palette, but the bot participates *in-protocol* (a `willow-bot` `WorkerRole` peer with its own Ed25519 identity) instead of calling a centralized gateway. |
+| **Slack — Events API & slash commands** | Separates installable *app/bot* identity (bot token `xoxb-`, posts under the app's name) from human-*user* identity, with bots subscribing to events and exposing slash commands. Willow keeps the identity split but models it additively: `peer_kind: Option<PeerKind>` / `data_policy: Option<DataPolicy>` overlaid on the canonical `Profile`/`ProfileDelta` via `#[serde(default)]`, rather than a parallel app-identity type. |
+| **Matrix — Application Service API (appservices)** | Bridge/bot programs register namespaces and act as services that puppet members and bridge external systems over a defined appservice API. Willow's new `crates/bot` plays the in-protocol-participant role of an appservice, deliberately kept separate from the MCP/JSON-RPC host bridge in `crates/agent` (a native participant vs. an external-system bridge). |
+| **Matrix — EDUs & `m.typing` ephemeral events** | Ephemeral Data Units (typing, presence, receipts) are delivered/federated over the wire but never written to a room's persistent event graph. Directly mirrors Willow's `StreamStart`/`Chunk`/`End`/`Cancel` and `Thinking`/`StoppedThinking` as ephemeral `WireMessage` variants dropped from the event store; only the final `EventKind::Message` is recorded. |
+| **Model Context Protocol (MCP)** (Anthropic, Nov 2024; JSON-RPC 2.0) | Host-side bridge connecting external LLMs/tools to an application over JSON-RPC. Willow uses MCP for exactly this host-bridge role in `crates/agent`, and contrasts it with the in-protocol `willow-bot`: the decision *not* to reuse `crates/agent` for in-protocol participation avoids conflating MCP transport with native membership and shared inference deps. |
+| **Server-Sent Events** (WHATWG HTML Living Standard, `text/event-stream`) and **OpenAI/Anthropic streaming chat APIs** | Incremental token-chunk delivery as an open-ended stream of `delta` chunks terminated by an end signal, with cancellation. Willow adopts the start/chunk/end/cancel streaming shape but carries it as ephemeral gossip `WireMessage`s rather than an HTTP connection, persisting only the assembled final message — chosen over per-token state events that would bloat the DAG and make replay expensive. |
+| **Protocol Buffers — unknown-field retention & `reserved` tags** | proto3 preserves unrecognized fields on round-trip (reinstated in protobuf v3.5.0, 2017, matching proto2) and lets schemas `reserve` retired field numbers so old and new peers interoperate without flag-day upgrades. Motivates Willow's versioned envelope (`{kind_tag/wire_tag: u32, payload: Vec<u8>}`) with an `Unknown` no-op fallback for both `EventKind` and `WireMessage` (Phase 0 prerequisite). |
+| **Cap'n Proto — ordinal-based schema evolution** (Kenton Varda) | Forward/backward compatibility via stable, consecutively-numbered, never-reused field ordinals (`@0`, `@1`, …) rather than positional encoding. Reinforces choosing an explicit numeric `kind_tag`/`wire_tag` envelope (Option B) over a hand-written `Deserialize` catch-all (rejected Option A), which is brittle to variant reordering. |
+
 ## 1. Identity & Presence
 
 ### Agent Identity

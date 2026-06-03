@@ -71,6 +71,21 @@ Willow's voice chat is audio-only with minimal UI — just mute/deafen/disconnec
 - **In scope:** Call page (main view), camera video, screen sharing via WebRTC, speaking detection, grid/focus layout switching, participant tiles with video and speaking indicators.
 - **Out of scope:** SFU/MCU topology changes (stays full mesh), recording, virtual backgrounds, simultaneous camera + screen share (mutually exclusive — one video track per direction).
 
+## Prior Art
+
+This design builds on WebRTC standards and on the topologies and patterns proven by existing conferencing systems:
+
+| System / Spec | Relevance to Willow |
+|---|---|
+| **WebRTC: Real-Time Communication in Browsers** (W3C Recommendation, 2021-01-26; re-published 2024-10-08) | Defines the `RTCPeerConnection` API Willow renegotiates over: `addTrack()`/`removeTrack()` on a live connection fires `negotiationneeded` and triggers a fresh offer/answer round. Willow adopts this in-place renegotiation model rather than tearing down and rebuilding peer connections when a peer starts/stops video. |
+| **WebRTC "Perfect Negotiation" pattern** (W3C `webrtc-pc` example added by Jan-Ivar Bruaroey, 2019; documented on MDN / webrtc.org) | Source of Willow's glare handling: polite/impolite roles plus a `makingOffer` flag and `setLocalDescription({type:"rollback"})` to resolve simultaneous offers. Willow assigns roles deterministically by lexicographic peer-ID comparison (lower ID = polite) instead of "first to connect," and — per the realised state — relies on the `making_offer` flag alone rather than polling `signalingState`. |
+| **W3C Media Capture and Streams** (`getUserMedia`, CR Draft) and **W3C Screen Capture** (`getDisplayMedia`, WD) | Define camera/mic and screen acquisition. Willow feeds both into a single outbound video track, switching the active source (camera ↔ screen) rather than capturing both at once — and must call `getDisplayMedia()` synchronously in the click handler to preserve transient activation. |
+| **Jitsi Meet** (peer-to-peer full-mesh mode vs. Jitsi Videobridge SFU) | Closest architectural analog: Jitsi runs direct full-mesh P2P for small calls and escalates to the Videobridge SFU as participants grow. Willow deliberately stops at the full-mesh half of that spectrum — SFU/MCU explicitly out of scope — accepting the O(n²) upload cost the bridge exists to avoid. |
+| **LiveKit** and **mediasoup** (open-source WebRTC SFU servers) | Canonical selective-forwarding-unit implementations that scale calls by routing all media through a server. Cited as the rejected alternative: Willow forgoes their scalability to keep media strictly peer-to-peer, never routing call media through an operator-run server. |
+| **Discord voice/video** (custom C++ WebRTC SFU) | The product Willow replaces routes all voice/video/screen-share through Discord-operated selective-forwarding servers that hold the stream keys. Willow's full-mesh choice is the direct decentralization/privacy counterpoint — no operator server ever sees or relays call media. |
+| **Matrix / Element Call** (full-mesh MSC3401 → MatrixRTC + LiveKit SFU, MSC4143/MSC4195) | Element Call's evolution makes Willow's tradeoff explicit: it began full-mesh (MSC3401) and later moved to a LiveKit-based SFU precisely because full-mesh does not scale past small groups — the same scaling ceiling Willow knowingly accepts to stay serverless-for-media. |
+| **W3C Web Audio API** (`AnalyserNode.getByteFrequencyData`) | Provides the frequency/amplitude analysis Willow's `VoiceManager`/`SpeakingDetector` polls (~60 ms `setInterval`) for client-side speaking detection, instead of inferring activity from server-side RTP or a dedicated voice-activity-detection service — fitting Willow's no-media-server model. |
+
 ## Design
 
 ### 1. Call Page (Main View)

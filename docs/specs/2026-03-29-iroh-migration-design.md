@@ -47,6 +47,21 @@ built-in), and a cleaner protocol composition model.
 - Migrating in a single atomic step (phased approach)
 - Preserving backward compatibility with old libp2p data (clean break)
 
+## Prior Art
+
+The networking redesign builds on a deep lineage of P2P transport, gossip, and key-addressed-identity systems:
+
+| System | Key idea adopted / how Willow diverges |
+|---|---|
+| **iroh / n0 stack** (Endpoint, iroh-gossip, iroh-blobs, iroh-relay, iroh-base) | The entire networking layer. QUIC-native `Endpoint` + ALPN `Router`, gossip, content-addressed blobs, and pure-forwarding relay — adopted via a thin trait boundary that speaks iroh's own `TopicId`/`EndpointId` (plus `bytes::Bytes` from the shared Tokio ecosystem). The one Willow-invented wrapper is `BlobHash` (`crates/network/src/traits.rs:14-20`), used because `iroh_blobs` does not compile on WASM; content addressing stays BLAKE3 either way. |
+| **libp2p** (GossipSub mesh, Kademlia DHT, Noise/Yamux, DCUtR, circuit relay v2, request-response) | The system being replaced. We abandon its PeerId multihash, GossipSub framing, and Kademlia records wholesale — a clean break with no data backward-compat — citing fragile browser WebRTC/WebTransport, operational weight of three subsystems, and finicky DCUtR hole-punching. |
+| **HyParView** (Leitão, Pereira & Rodrigues, DSN 2007) + **Plumtree** / Epidemic Broadcast Trees (Leitão, Pereira & Rodrigues, SRDS 2007) | The gossip algorithm lineage underneath iroh-gossip: HyParView's hybrid active/passive partial-view membership plus Plumtree's eager-push spanning tree with lazy-push gossip repair. We inherit this overlay instead of GossipSub's flood-and-mesh design; topics are `blake3(server_id ‖ channel)` `TopicId`s. |
+| **QUIC** (RFC 9000) + **TLS 1.3 for QUIC** (RFC 9001) | UDP-based multiplexed transport with built-in TLS 1.3 encryption, stream multiplexing, connection migration, and low-latency setup. Provides hop-by-hop transport encryption and identity binding; Willow keeps its X25519 + ChaCha20-Poly1305 E2E `Content` sealing independent and on top, so relays forwarding encrypted QUIC never see plaintext. |
+| **BLAKE3** (O'Connor, Aumasson, Neves & Wilcox-O'Hearn, 2020) + **Bao** verified-streaming spec | The blob-transfer model behind iroh-blobs: BLAKE3's Merkle-tree hash enables incremental, resumable, content-addressed verified streaming of slices. We delete the custom `willow-files` libp2p request-response protocol and address avatars/attachments by content hash (`BlobHash`). |
+| **pkarr** (Public Key Addressable Resource Records) over **Mainline DHT** (BitTorrent, BEP 44) + DNS-over-HTTPS | Key-addressed discovery: publish signed node records keyed by the Ed25519 public key to the Mainline DHT and to n0's DNS server; resolve an `EndpointId` to dialable addresses via `PkarrResolver` / `n0_dns`. Replaces operating a Willow-side Kademlia DHT. |
+| **Nostr** (NIP-01) | Comparable public-key-as-identity, relay-mediated propagation model. Willow shares the "raw pubkey is the identity" stance (`EndpointId` = 32-byte Ed25519 key; Nostr uses 32-byte secp256k1/Schnorr per BIP-340 — a curve divergence) but diverges sharply: Willow peers form direct QUIC gossip overlays, with relays as pure encrypted-packet forwarders rather than store-and-forward event databases. |
+| **Matrix** (federated homeserver model) | Contrast point for the relay/trust model. Matrix federates trusted homeservers that hold and replicate room state; Willow's relay is a regular, untrusted gossip/forwarding participant (granted SyncProvider only if explicitly authorized) and state lives in the per-author event DAG, not on a server. |
+
 ## Architecture Mapping
 
 ### Identity

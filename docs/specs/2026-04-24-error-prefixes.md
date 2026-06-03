@@ -60,6 +60,20 @@ each other and may merge in either order; whichever ships second
 inherits a single trivial conflict in `crates/common/src/wire.rs`
 where both add a new variant.
 
+## Prior Art
+
+Machine-readable rejection signalling is a well-trodden path. Willow's contribution is to carry it as a *typed, exhaustively-matched* `WireRejectReason` enum with structured payloads (e.g. `retry_after_ms`, the violated `Permission`) over its binary bincode wire, rather than as stringly-typed prefixes parsed by convention.
+
+| System | Key idea adopted / how Willow diverges |
+|---|---|
+| **Nostr NIP-01** (relay `OK`/`CLOSED` messages with machine-readable prefixes: `duplicate`, `pow`, `blocked`, `rate-limited`, `invalid`, `restricted`, `mute`, `error`) | The motivating precedent (cited inline): rejections must be *categorized*, not free-form. Willow diverges by encoding categories as a closed Rust `enum` (compile-time exhaustive matching + structured payloads) instead of `prefix:` strings a client must match by convention and can silently forget to handle. The string-payload variants (`Invalid`, `Restricted`) deliberately mirror NIP-01's "prefix + human text" discipline. |
+| **Nostr NIP-42** (relay authentication: `AUTH` challenge, plus the `auth-required` and `restricted` prefixes layered onto NIP-01 `OK`/`CLOSED`) | Direct model for the `AuthRequired` and `Restricted` variants — distinguishing "you must authenticate first" from "you authenticated but are not authorized". Willow folds both into the same typed reject channel rather than a separate command. |
+| **Matrix Client-Server API standardized errors** (`M_FORBIDDEN`, `M_LIMIT_EXCEEDED` carrying `retry_after_ms`, `M_UNKNOWN_TOKEN`) | Closest analog for a *structured rate-limit payload*: Matrix ships `retry_after_ms` in the error body, which Willow mirrors verbatim in `RateLimited { retry_after_ms }`. Willow uses a binary wire enum rather than a stringly `errcode` + JSON envelope. (Note: Matrix deprecated `retry_after_ms` for the `Retry-After` header in v1.10; Willow keeps the millisecond field as its single canonical form.) |
+| **gRPC status model** (`google.rpc.Code` canonical codes + the richer error model `google.rpc.Status` with typed details such as `RetryInfo` and `ErrorInfo`) | Precedent for pairing a finite typed code with *structured, machine-readable detail payloads* (e.g. `RetryInfo` carrying a backoff). Willow's per-variant payloads (violated `Permission`, `retry_after_ms`, mismatched `EventHash`) are the same idea expressed natively in the Rust type system instead of `Any`-packed protobuf detail messages. |
+| **HTTP `429 Too Many Requests` + `Retry-After`** (RFC 6585) | The canonical structured rate-limit rejection: a dedicated status plus a quantified retry hint. `RateLimited { retry_after_ms }` is the millisecond-precision binary equivalent of the `Retry-After` header, and open question 3 (advisory vs. enforced) is the same ambiguity HTTP leaves to servers. |
+| **WebSocket close codes** (RFC 6455) | Precedent for a *fixed, machine-readable enumeration* of closure/rejection reasons negotiated on the wire — the strongest analog for choosing a closed enum over open strings. WebSocket close frames carry a numeric code + free-form reason text; Willow keeps the human string strictly non-canonical (`human`, "never parsed") and instead attaches *structured* per-reason payloads the close frame cannot express. |
+| **QUIC transport & application error codes** (RFC 9000) | Establishes typed, namespaced error codes for connection/stream termination in the same transport family iroh builds on. Reinforces surfacing rejections as typed codes rather than ad-hoc strings; Willow layers application-semantic variants (`PermissionDenied`, `AuthRequired`, `NotSyncProvider`) above the transport, where QUIC stops at transport/application code integers without payloads. |
+
 ## Proposed format
 
 The enum lives in `willow-common` rather than `willow-transport`. The

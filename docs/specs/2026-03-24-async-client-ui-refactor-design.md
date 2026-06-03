@@ -17,6 +17,22 @@ Additionally, the Leptos `App` component is an 800-line monolith that creates 30
 - **Out of scope:** Bevy native app (`crates/app/`). The refactored Client API will break the Bevy integration. This is acceptable since Bevy is disabled. It can be re-adapted later if needed.
 - **Out of scope:** Yew frontend. This design makes the client framework-agnostic, which will make a future Yew frontend straightforward, but building it is not part of this work.
 
+## Prior Art
+
+This refactor adapts established UI and concurrency architecture patterns to a single-threaded WASM client:
+
+| Prior art | Relevance to this design |
+|---|---|
+| **The Elm Architecture (TEA)** (Evan Czaplicki, Elm; 2012) | Model/Update/View with strict unidirectional flow: messages drive state, state drives the view. Mirrored here by `NetworkEvent` -> `ClientEventLoop` -> `ClientEvent` -> signal updater -> Leptos view, with no view-to-state back-channel. |
+| **Redux / Flux** (Dan Abramov & Andrew Clark, 2015; Facebook Flux, 2014) | A read-only store mutated only via dispatched actions through one processing path. Maps to the read/write signal split: `ReadSignal` halves live in `AppState` context (read-only to components); `WriteSignal` halves (`AppWriteSignals`) are held solely by the event-processing layer. |
+| **CQRS** (Greg Young, ~2010; building on Bertrand Meyer's Command-Query Separation, Eiffel) | Separate the command/write model from the read/query model. Mirrored by `ClientHandle` (cloneable command + read interface, optimistic local writes) vs. the single non-cloneable `ClientEventLoop` (exclusive async event processor), and again by the `ReadSignal`/`WriteSignal` split. |
+| **Actor handle/inbox pattern** (actix `Addr<A>`; ractor; kameo) | A cheaply-cloneable address that enqueues messages to exactly one owning message loop. Directly parallels the cloneable `ClientHandle` (sends `NetworkCommand`s over an `UnboundedSender`) plus the single owning `ClientEventLoop` that drains the inbox and is the only writer of shared state. |
+| **iced / relm4** (Elm-inspired Rust GUIs; iced on `futures`, relm4 on gtk4-rs) | Demonstrate TEA's `Message`/`update`/`view` in Rust; iced's first-class async actions turn `futures` into the message source — the substitute for polling that this design also adopts (`select!` over `futures::channel::mpsc` instead of a 16ms/50ms interval poll). |
+| **SolidJS fine-grained signals** (the acknowledged inspiration for Leptos) | `createSignal` returns a `[getter, setter]` tuple, making read/write segregation first-class and enabling targeted DOM updates with no virtual DOM. This design leans on the same split (`ReadSignal`/`WriteSignal`) and propagates the read halves via `provide_context` rather than threading 30 signals as props. |
+| **Stream `select!` event loops** (`futures`, `tokio`) | Backpressure-free async channels (`futures::channel::mpsc::unbounded`) consumed via `select!` replace timer-driven `std::sync::mpsc` polling, so commands and events are delivered the instant they are produced. |
+
+Out of scope but informed by the same lineage: **Yew / Seed** (Elm-style Rust/WASM frontends) are named future targets — the framework-agnostic `ClientHandle`/`ClientEventLoop` split is intended to make such a frontend straightforward later.
+
 ## Design
 
 ### 1. Async Channels
