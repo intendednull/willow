@@ -154,6 +154,24 @@ impl ServerState {
         if self.admins.contains(peer_id) {
             return true;
         }
+        self.has_explicit_permission(peer_id, perm)
+    }
+
+    /// Check if a peer holds an **explicit** [`GrantPermission`] for `perm`,
+    /// ignoring the implicit "admins have every permission" rule that
+    /// [`has_permission`](Self::has_permission) applies.
+    ///
+    /// This returns `true` *only* for an explicit `GrantPermission` recorded in
+    /// [`peer_permissions`](Self::peer_permissions); the owner/admins do **not**
+    /// satisfy it by virtue of their status. It remains available for callers
+    /// that need strict explicit-grant semantics (e.g. auditing who was
+    /// deliberately designated for a permission, independent of admin status).
+    ///
+    /// Note: the heads-based sync **serving gate** does *not* use this predicate
+    /// — it uses [`is_sync_provider`](Self::is_sync_provider) (i.e.
+    /// [`has_permission`](Self::has_permission)) so the owner/admins serve their
+    /// own server's state implicitly, which member-to-member backfill requires.
+    pub fn has_explicit_permission(&self, peer_id: &EndpointId, perm: &Permission) -> bool {
         self.peer_permissions
             .get(peer_id)
             .map(|perms| perms.contains(perm))

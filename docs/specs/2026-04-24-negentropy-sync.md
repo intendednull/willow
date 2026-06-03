@@ -153,6 +153,13 @@ Two design choices to call out explicitly:
    dedicated `MessageType::Sync` slot is a future option once the
    worker and client paths are demonstrably interchangeable.
 
+   > **Resolved 2026-05-28** (plan `2026-05-28-relay-upgrade-bundle.md`):
+   > **no new `MessageType` slot is allocated in this bundle.** A code
+   > comment in `crates/transport/src/lib.rs` reserves slot 7 =
+   > `HistorySyncComplete`/EOSE (see `2026-04-24-history-sync-eose.md`)
+   > and slot 8 = `Sync` for a *future* promotion, so the two specs
+   > cannot collide on a number. Neither is allocated now.
+
 2. **Reuse `HeadsSummary` directly, do not invent a new
    `HashMap<EndpointId, u64>` shape.** `HeadsSummary` already carries
    `AuthorHead { seq, hash }`. The hash field powers
@@ -508,6 +515,14 @@ possible reconciliations, to be picked when #214 lands:
 This spec deliberately does not redefine `HistorySyncComplete`; it
 only triggers it. Pick A or B in the EOSE spec PR.
 
+> **Resolved 2026-05-28** (plan `2026-05-28-relay-upgrade-bundle.md`):
+> **Option B (additive).** A new `ClientEvent::HistorySynced { topic,
+> provider, still_pending }` is introduced (EOSE PR); `SyncCompleted`
+> is kept unchanged as session-wide per-batch progress. The two
+> answer different questions, and additive avoids a silent behavior
+> change to existing `SyncCompleted` consumers. See
+> `2026-04-24-history-sync-eose.md`.
+
 [client-events]: ../../crates/client/src/events.rs
 
 [dag-insert]: ../../crates/state/src/dag.rs
@@ -615,6 +630,20 @@ upgraded," matching the status quo.
   the gate is **proposed by this spec** as part of the cutover; peers
   without `SyncProvider` MAY initiate but MUST refuse to serve once
   the gate lands.
+
+  > **Resolved 2026-05-30** (PR #664): the serving gate honors the
+  > owner/admins' **implicit** `SyncProvider`. The gossip `SyncRequestV2`
+  > responder gates on `ServerState::is_sync_provider` (i.e.
+  > `has_permission(SyncProvider)`), **not** `has_explicit_permission`.
+  > Under the authority model the owner is the root of all permissions and
+  > admins inherit every permission, so the owner — the canonical source of
+  > her own server's state — serves a joining member, and any explicit
+  > grant-holder serves too. A regular member without the grant still
+  > refuses, so the gate stays meaningful. Rationale: an explicit-only gate
+  > made a 2-peer server (where nobody holds an explicit grant) **unsyncable**
+  > — the owner refused to backfill the joiner, who then timed out. Honoring
+  > the owner is required for the P2P member-to-member backfill model.
+  > See `docs/reports/2026-05-30-heads-sync-owner-serve-and-eose-emission.md`.
 
 [permission-enum]: ../../crates/state/src/event.rs
 

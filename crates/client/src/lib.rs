@@ -32,6 +32,7 @@ pub mod ops;
 pub mod persistence_actor;
 pub mod presence;
 pub mod queue;
+pub mod relay_discovery;
 pub mod search;
 pub mod state;
 pub mod state_actors;
@@ -91,6 +92,18 @@ mod tests_search;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tests/sync_reply_cache.rs"]
 mod tests_sync_reply_cache;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "tests/heads_sync.rs"]
+mod tests_heads_sync;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "tests/history_eose.rs"]
+mod tests_history_eose;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "tests/relay_discovery.rs"]
+mod tests_relay_discovery;
 
 /// How long a typing indicator remains visible after the last typing event, in milliseconds.
 pub const TYPING_INDICATOR_TTL_MS: u64 = 5_000;
@@ -401,6 +414,42 @@ impl<N: willow_network::Network> ClientHandle<N> {
     /// Access the typed mutation interface.
     pub fn mutations(&self) -> &mutations::ClientMutations<N> {
         &self.mutation_handle
+    }
+
+    /// Emit a heads-based delta-sync request ([`WireMessage::SyncRequestV2`])
+    /// on the server-ops topic.
+    ///
+    /// Reads the local per-author [`willow_state::HeadsSummary`] + `server_id`
+    /// from the DAG, then broadcasts a single `SyncRequestV2` so any peer that
+    /// holds `SyncProvider` for this server streams back the per-author tail
+    /// this client is missing (negentropy-sync spec, plan PR 4). This is the
+    /// heads-based successor to the legacy 500-event
+    /// [`request_sync_via_network`](Self::request_sync_via_network) dump; the
+    /// legacy `SyncRequest` responder is retained for the migration window.
+    pub async fn request_heads_sync(&self) -> Result<(), crate::ClientError> {
+        let heads =
+            willow_actor::state::select(&self.dag_addr, |ds| ds.managed.dag().heads_summary())
+                .await;
+        let server_id = willow_actor::state::select(&self.dag_addr, |ds| {
+            ds.managed.dag().server_id().unwrap_or_default()
+        })
+        .await;
+        let msg = ops::WireMessage::SyncRequestV2 {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            heads,
+            filter: willow_common::SyncFilter {
+                server_id,
+                channels: None,
+                authors: None,
+                event_kinds: None,
+                since_ms: None,
+            },
+        };
+        if let Some(data) = ops::pack_wire(&msg, &self.identity) {
+            self.mutation_handle
+                .broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
+        }
+        Ok(())
     }
 
     /// Inject a local [`TrustStoreHandle`]. The UI does this at boot
@@ -1352,11 +1401,20 @@ pub async fn test_client_on_hub(
 mod tests {
     use super::*;
 
-    /// Poll a derived view until `predicate` returns `true`, yielding
-    /// between attempts. Used in place of fixed `sleep(50ms)` waits after
-    /// mutations on a *source* actor whose change must propagate through
-    /// a `DerivedActor` recompute (Notify → spawn → UpdateCache hop).
+    /// Poll a derived view until `predicate` returns `true`, parking the
+    /// poller briefly between attempts. Used in place of fixed `sleep(50ms)`
+    /// waits after mutations on a *source* actor whose change must propagate
+    /// through a `DerivedActor` recompute (Notify → spawn → UpdateCache hop).
     /// Panics on a 5-second deadline so a real regression surfaces fast.
+    ///
+    /// The inter-probe wait is a short `sleep`, **not** `yield_now()`: under
+    /// the CPU oversubscription of `cargo test --workspace` (every
+    /// `multi_thread` test spins up its own 2-thread runtime, dozens running
+    /// at once on a busy box), a bare `yield_now()` loop hot-spins the worker
+    /// thread and can starve the very recompute task it is waiting on, making
+    /// the poll time out spuriously. Parking the task hands the worker back to
+    /// the runtime so the recompute can run. See superpowers:condition-based-
+    /// waiting ("polling too fast wastes CPU — poll every ~10ms").
     async fn await_view<F, Fut>(mut probe: F)
     where
         F: FnMut() -> Fut,
@@ -1365,7 +1423,7 @@ mod tests {
         let deadline = std::time::Duration::from_secs(5);
         let ok = tokio::time::timeout(deadline, async {
             while !probe().await {
-                tokio::task::yield_now().await;
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
         .await;

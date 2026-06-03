@@ -295,6 +295,25 @@ in the current code.
   relaying any live events to the new neighbour. Until then, only
   the worker-emitted markers exist.
 
+  > **Resolved 2026-05-30** (PR #664): peer-to-peer marker emission
+  > **landed** — but via the gossip `SyncRequestV2` responder (the
+  > heads-based protocol from `2026-04-24-negentropy-sync.md`, plan PR 4),
+  > not the never-wired `SyncMessage` variant above. The gossip responder in
+  > `crates/client/src/listeners.rs` now broadcasts a `HistorySyncComplete`
+  > on SERVER_OPS after a successful serve, with `last_event_hash` = the hash
+  > of the last streamed event and `stream_generation` = a stable
+  > per-session value (`ListenerCtx::history_stream_generation`, generated
+  > once per `connect()`). This is **required**, not optional: worker-only
+  > emission is unobservable by gossip clients (web clients backfill over
+  > SyncRequestV2 and never touch the worker ALPN `WorkerRequest::Sync`
+  > path), so the EOSE feature was dead end-to-end for clients until the
+  > responder emitted the marker. The receiver's trust gate honors the
+  > owner/admins (see the gate note in `2026-04-24-negentropy-sync.md`), so
+  > an owner-served backfill produces an observable `HistorySynced`. The
+  > stable `stream_generation` lets the receiver's `(provider,
+  > stream_generation)` dedup make repeated serves on reconnect idempotent.
+  > See `docs/reports/2026-05-30-heads-sync-owner-serve-and-eose-emission.md`.
+
 The provider tracks which neighbours it has already sent a marker to
 in this `stream_generation` so a reconnect loop cannot spam the UI.
 
@@ -382,6 +401,26 @@ live events.
   carries the marker"); no change to their trust status.
 
 ## Open questions
+
+> **Resolved 2026-05-28** (plan `2026-05-28-relay-upgrade-bundle.md`):
+> - **Q1 (`last_event_hash` mandatory?)** → keep **optional**; `None`
+>   cleanly encodes the empty-store case without a sentinel hash.
+> - **Q5 (`stream_generation` counter vs random?)** → **random `u64`**
+>   (from the existing `rand`/`ChaCha20Rng` dep); equality-based dedup
+>   needs no ordering, and randomness avoids the "did I bump it?" bug
+>   class and counter persistence across restarts.
+> - **`SyncCompleted` vs `HistorySynced` reconciliation** → **Option B
+>   (additive)**: introduce `ClientEvent::HistorySynced`, keep
+>   `SyncCompleted` as session-wide progress.
+> - **Peer-to-peer provider class** → ~~deferred~~ **landed 2026-05-30
+>   (PR #664)**. Originally deferred to a follow-up after the heads-sync
+>   responder/receiver landed (plan PR 4); the replay + storage worker
+>   provider classes shipped first (plan PR 5). It is now in: the gossip
+>   `SyncRequestV2` responder emits the marker after a successful serve
+>   (owner/admin/granted providers), because worker-only emission turned out
+>   **unobservable** by gossip clients — the EOSE feature was dead end-to-end
+>   for clients without it. See the "Provider-side emission" note above and
+>   `docs/reports/2026-05-30-heads-sync-owner-serve-and-eose-emission.md`.
 
 1. Should `last_event_hash` be mandatory rather than optional? Making
    it required forces providers to decide "am I empty?" vs "am I done

@@ -16,6 +16,13 @@ export { expect };
 
 export type ClientEvent =
   | { kind: 'SyncCompleted'; opsApplied: number }
+  // History-sync EOSE marker (history-sync-eose spec, plan PR 5). Fired once a
+  // trusted SyncProvider finishes streaming a topic's stored history. `topic`
+  // is the lowercase-hex of the marker's 32-byte topic_id; `provider` is the
+  // verified envelope signer; `stillPending` counts trusted providers that have
+  // not yet completed for the same topic. Mirror of
+  // crates/web/src/test_hooks/wire.rs::WireEvent::HistorySynced.
+  | { kind: 'HistorySynced'; topic: string; provider: string; stillPending: number }
   | { kind: 'MessageReceived'; channel: string; messageId: string; isLocal: boolean }
   | { kind: 'PeerConnected'; peerId: string }
   | { kind: 'PeerDisconnected'; peerId: string }
@@ -57,6 +64,13 @@ interface WillowTestHooksJS {
   heads(): Promise<Record<string, AuthorHead>>;
   event_count(): Promise<number>;
   last_event(): Promise<string | null>;
+  /**
+   * Test-only: rewrite a `#join=` token so its bootstrap_endpoint_ids lead
+   * with a freshly-generated (unreachable) EndpointId. Drives the
+   * outbox-relay-discovery fallback path in multi-peer-sync.spec.ts. Mirror of
+   * crates/web/src/test_hooks/mod.rs::WillowTestHooks::prepend_unreachable_bootstrap.
+   */
+  prepend_unreachable_bootstrap(token: string): string;
 }
 
 /**

@@ -18,6 +18,20 @@ use willow_worker::{WorkerRequest, WorkerResponse, WorkerRole, WorkerRoleInfo};
 /// When exceeded, the least recently accessed server is evicted.
 const MAX_SERVERS: usize = 1000;
 
+/// OOM guard on the per-`Sync` delta walk.
+///
+/// The **authoritative** bound on a sync batch is the per-envelope byte budget
+/// ([`willow_common::SYNC_ENVELOPE_BUDGET`]): the `Sync` arm packs the delta
+/// with [`willow_common::pack_sync_batches`] and serves only the first
+/// budget-fitting batch (setting `more` so the requester re-issues `Sync` with
+/// advanced heads). This count cap is a *secondary* defence so a single
+/// `events_since` walk cannot materialize an unbounded `Vec<Event>` in memory
+/// before byte-budgeting — it is deliberately far larger than any plausible
+/// per-envelope batch (a 64 KiB envelope cannot hold 10,000 non-trivial
+/// events), so it should never be the binding limit in practice. See
+/// `docs/specs/2026-04-24-negentropy-sync.md` § Wire protocol.
+const SYNC_DELTA_OOM_GUARD: usize = 10_000;
+
 /// Returns the current wall-clock time in milliseconds since the Unix epoch.
 ///
 /// Replay is native-only (see `crates/replay/Cargo.toml`) so `SystemTime`
@@ -308,7 +322,7 @@ impl WorkerRole for ReplayRole {
 
                 let delta: Vec<Event> = data
                     .dag
-                    .events_since(&their_heads, Some(10_000))
+                    .events_since(&their_heads, Some(SYNC_DELTA_OOM_GUARD))
                     .into_iter()
                     .cloned()
                     .collect();
@@ -332,11 +346,31 @@ impl WorkerRole for ReplayRole {
                             post_snapshot_events: vec![],
                         }
                     } else {
-                        // Fully synced.
-                        WorkerResponse::SyncBatch { events: vec![] }
+                        // Fully synced — single zero-event terminator.
+                        WorkerResponse::SyncBatch {
+                            events: vec![],
+                            more: false,
+                        }
                     }
                 } else {
-                    WorkerResponse::SyncBatch { events: delta }
+                    // Byte-budget the delta so a single response envelope stays
+                    // within the gossip layer's 64 KiB ceiling. The worker path
+                    // is request/response (one `WorkerResponse` per `Sync`), so
+                    // we serve only the first budget-fitting batch and set
+                    // `more: true` when further events remain — the requester
+                    // re-issues `Sync` with advanced heads to drain the rest
+                    // (see `WorkerResponse::SyncBatch` docs and
+                    // `docs/specs/2026-04-24-negentropy-sync.md` § Wire protocol).
+                    let (events, more) = willow_common::pack_sync_batches(
+                        delta,
+                        willow_common::SYNC_ENVELOPE_BUDGET,
+                    )
+                    .into_iter()
+                    .next()
+                    // `pack_sync_batches` always yields at least one
+                    // (possibly empty) terminator batch.
+                    .expect("pack_sync_batches always returns ≥1 batch");
+                    WorkerResponse::SyncBatch { events, more }
                 }
             }
             WorkerRequest::History { .. } => WorkerResponse::Denied {
@@ -368,6 +402,22 @@ mod tests {
             EventKind::Message {
                 channel_id: "general".to_string(),
                 body: format!("message seq={seq}"),
+                reply_to: None,
+            },
+        )
+    }
+
+    /// A message whose body is `body_bytes` long, so a known number of them
+    /// overflows the per-envelope `SYNC_ENVELOPE_BUDGET`. Used to drive the
+    /// byte-budgeted streaming + `more`-flag behaviour.
+    fn make_big_message(id: &Identity, seq: u64, prev: EventHash, body_bytes: usize) -> Event {
+        make_dag_event(
+            id,
+            seq,
+            prev,
+            EventKind::Message {
+                channel_id: "general".to_string(),
+                body: "x".repeat(body_bytes),
                 reply_to: None,
             },
         )
@@ -453,7 +503,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 4),
+            WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 4),
             _ => panic!("expected SyncBatch"),
         }
     }
@@ -503,7 +553,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 2),
+            WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 2),
             _ => panic!("expected SyncBatch"),
         }
     }
@@ -717,7 +767,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => assert!(
+            WorkerResponse::SyncBatch { events, .. } => assert!(
                 events.is_empty(),
                 "peer at same seq should be considered fully synced"
             ),
@@ -749,7 +799,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => assert_eq!(
+            WorkerResponse::SyncBatch { events, .. } => assert_eq!(
                 events.len(),
                 5,
                 "new peer should receive all events as a delta batch"
@@ -843,7 +893,7 @@ mod tests {
         // Pre-compaction: member's events are still in memory so we get a
         // SyncBatch with them rather than a Snapshot.
         match resp {
-            WorkerResponse::SyncBatch { events } => {
+            WorkerResponse::SyncBatch { events, .. } => {
                 assert_eq!(
                     events.len(),
                     2,
@@ -933,7 +983,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 2),
+            WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 2),
             _ => panic!("expected SyncBatch"),
         }
     }
@@ -970,7 +1020,7 @@ mod tests {
         });
 
         match resp {
-            WorkerResponse::SyncBatch { events } => {
+            WorkerResponse::SyncBatch { events, .. } => {
                 // Should get all 3 events (genesis + 2 messages).
                 assert_eq!(events.len(), 3);
             }
@@ -1593,6 +1643,197 @@ mod tests {
                 assert!(pending_count as usize <= max_entries);
             }
             _ => panic!("expected Replay"),
+        }
+    }
+
+    // ── Byte-budgeted sync streaming + `more` flag (plan PR 4 Task 4.4) ──────
+    //
+    // The replay `Sync` arm must byte-budget the delta it serves so a single
+    // `WorkerResponse::SyncBatch` envelope stays within the gossip layer's
+    // 64 KiB ceiling (`willow_common::SYNC_ENVELOPE_BUDGET`), and set `more`:
+    //   - `more: true`  when further events remain past this envelope (the
+    //     requester re-issues `Sync` with advanced heads),
+    //   - `more: false` on the final / only batch (end-of-stream marker).
+    // The legacy 10_000-event `events_since` cap stays solely as an OOM guard.
+
+    use willow_common::SYNC_ENVELOPE_BUDGET;
+
+    /// A small delta (well under one envelope) is served in a single batch
+    /// with `more: false` — the terminator.
+    #[test]
+    fn sync_small_delta_is_single_batch_more_false() {
+        let mut role = ReplayRole::new(ReplayConfig {
+            max_events_per_author: 100,
+            ..Default::default()
+        });
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        let mut prev = genesis_hash;
+        for seq in 2..=4 {
+            let e = make_message(&owner, seq, prev);
+            prev = e.hash;
+            role.ingest_event("srv-1", &e);
+        }
+
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary::default(),
+        });
+
+        match resp {
+            WorkerResponse::SyncBatch { events, more } => {
+                assert_eq!(events.len(), 4);
+                assert!(!more, "a small delta must terminate with more: false");
+            }
+            other => panic!("expected SyncBatch, got {other:?}"),
+        }
+    }
+
+    // ── PR 5 Task 5.3: last served event hash for HistorySyncComplete ────────
+    //
+    // The worker's SERVER_OPS marker carries the hash of the last event the
+    // provider streamed in its Sync reply (or `None` for an empty store). That
+    // value is derived purely from the served `WorkerResponse` via
+    // `WorkerResponse::last_synced_hash`, so the emitting actor needs no
+    // role-specific knowledge. These tests pin the contract for the replay
+    // role's two reply shapes (delta batch / empty terminator).
+
+    /// A non-empty replay delta yields `Some(last_event_hash)` equal to the
+    /// hash of the last served event — the value the marker carries.
+    #[test]
+    fn served_delta_reports_last_event_hash() {
+        let mut role = ReplayRole::new(ReplayConfig {
+            max_events_per_author: 100,
+            ..Default::default()
+        });
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        let mut prev = genesis_hash;
+        let mut last_hash = genesis_hash;
+        for seq in 2..=4 {
+            let e = make_message(&owner, seq, prev);
+            prev = e.hash;
+            last_hash = e.hash;
+            role.ingest_event("srv-1", &e);
+        }
+
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary::default(),
+        });
+        match &resp {
+            WorkerResponse::SyncBatch { events, .. } => {
+                // events are (author, seq)-ascending; the last is the newest.
+                assert_eq!(events.last().map(|e| e.hash), Some(last_hash));
+            }
+            other => panic!("expected SyncBatch, got {other:?}"),
+        }
+        assert_eq!(
+            resp.last_synced_hash(),
+            Some(last_hash),
+            "marker must carry the last served event hash"
+        );
+    }
+
+    /// An empty terminator (caught-up peer) yields `None` — the empty-store /
+    /// nothing-to-send case the marker encodes as `last_event_hash: None`.
+    #[test]
+    fn empty_terminator_reports_no_last_hash() {
+        let mut role = ReplayRole::new(ReplayConfig {
+            max_events_per_author: 100,
+            ..Default::default()
+        });
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        let mut prev = genesis_hash;
+        let mut last_hash = genesis_hash;
+        for seq in 2..=3 {
+            let e = make_message(&owner, seq, prev);
+            prev = e.hash;
+            last_hash = e.hash;
+            role.ingest_event("srv-1", &e);
+        }
+
+        // Peer already knows everything → empty terminator batch.
+        let mut their_heads = BTreeMap::new();
+        their_heads.insert(
+            owner.endpoint_id(),
+            willow_state::AuthorHead {
+                seq: 3,
+                hash: last_hash,
+            },
+        );
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary { heads: their_heads },
+        });
+        match &resp {
+            WorkerResponse::SyncBatch { events, more } => {
+                assert!(events.is_empty());
+                assert!(!more);
+            }
+            other => panic!("expected empty SyncBatch terminator, got {other:?}"),
+        }
+        assert_eq!(
+            resp.last_synced_hash(),
+            None,
+            "an empty served batch carries no last_event_hash"
+        );
+    }
+
+    /// When the delta exceeds one envelope's byte budget, the replay role
+    /// returns only the budget-fitting first batch with `more: true`, so the
+    /// framed envelope cannot exceed `SYNC_ENVELOPE_BUDGET` and the requester
+    /// knows to re-issue `Sync` with advanced heads.
+    #[test]
+    fn sync_large_delta_byte_budgets_first_batch_more_true() {
+        let mut role = ReplayRole::new(ReplayConfig {
+            max_events_per_author: 100,
+            ..Default::default()
+        });
+        let (owner, genesis_hash) = setup_server(&mut role, "srv-1");
+
+        // ~8 KiB body each → 9 events ≈ 72 KiB > 64 KiB, forcing a split.
+        let mut prev = genesis_hash;
+        for seq in 2..=10 {
+            let e = make_big_message(&owner, seq, prev, 8 * 1024);
+            prev = e.hash;
+            role.ingest_event("srv-1", &e);
+        }
+
+        let resp = role.handle_request(WorkerRequest::Sync {
+            server_id: "srv-1".to_string(),
+            heads: HeadsSummary::default(),
+        });
+
+        match resp {
+            WorkerResponse::SyncBatch { events, more } => {
+                assert!(
+                    more,
+                    "an over-budget delta must set more: true on the first batch"
+                );
+                assert!(
+                    !events.is_empty(),
+                    "the first batch must carry at least one event"
+                );
+                // Re-packing the returned events with the same budget must
+                // yield exactly one batch — proof the served batch already
+                // fits within `SYNC_ENVELOPE_BUDGET`.
+                let repacked =
+                    willow_common::pack_sync_batches(events.clone(), SYNC_ENVELOPE_BUDGET);
+                assert_eq!(
+                    repacked.len(),
+                    1,
+                    "served batch must fit within SYNC_ENVELOPE_BUDGET in a single envelope"
+                );
+                // genesis + 9 big messages = 10 events; the first batch must
+                // not contain them all (that would overflow the envelope).
+                assert!(
+                    events.len() < 10,
+                    "byte-budgeted first batch must not contain all 10 over-budget events"
+                );
+            }
+            other => panic!("expected SyncBatch, got {other:?}"),
         }
     }
 }

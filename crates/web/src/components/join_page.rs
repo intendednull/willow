@@ -95,14 +95,30 @@ pub fn JoinPage() -> impl IntoView {
                         placeholder="Enter your name..."
                         prop:value=move || name.get()
                         on:input=move |ev| set_name.set(event_target_value(&ev))
-                        disabled=move || status.get() == "connecting"
+                        disabled=move || {
+                            let s = status.get();
+                            s == "connecting" || s == "resolving"
+                        }
                     />
                 </div>
 
                 {move || {
                     let s = status.get();
                     let server = token.get().map(|t| t.server_name.clone()).unwrap_or_default();
-                    if s == "connecting" {
+                    if s == "resolving" {
+                        // Layer-1 pkarr/DHT resolution of the link's bootstrap
+                        // endpoint IDs is in flight (latency is seconds). Surface
+                        // progress so the join page isn't a frozen button while
+                        // the addressing lookup runs.
+                        view! {
+                            <button class="btn btn-primary join-card-btn connecting" disabled>
+                                "Finding the server..."
+                            </button>
+                            <p class="join-card-hint">
+                                "Locating the server on the network."
+                            </p>
+                        }.into_any()
+                    } else if s == "connecting" {
                         view! {
                             <button class="btn btn-primary join-card-btn connecting" disabled>
                                 "Connecting..."

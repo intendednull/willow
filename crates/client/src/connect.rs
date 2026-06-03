@@ -173,6 +173,15 @@ impl<N: willow_network::Network> ClientHandle<N> {
             storage::save_settings(&storage::NetworkSettings { relay_addr: None });
         }
 
+        // One stable `stream_generation` per connect() call, shared by every
+        // listener context built below (ops + profile + channel). The gossip
+        // `SyncRequestV2` responder stamps it on every `HistorySyncComplete`
+        // marker it emits, so repeated serves to a reconnecting peer dedup on
+        // the receiver's `(provider, stream_generation)` table instead of
+        // re-emitting `HistorySynced`. `uuid` is WASM-safe (workspace `js`
+        // feature); `as_u64_pair().0` extracts a random `u64` without `std` RNG.
+        let history_stream_generation = uuid::Uuid::new_v4().as_u64_pair().0;
+
         let listener_ctx = listeners::ListenerCtx {
             event_state: self.event_state_addr.clone(),
             chat_meta: self.chat_meta_addr.clone(),
@@ -188,6 +197,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
             dag: self.dag_addr.clone(),
             server_registry: self.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation,
         };
 
         // Subscribe to the server ops topic.
@@ -208,6 +218,12 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 .insert(ops_topic_str.to_string(), sender.clone());
             let ops_topics_for_retry = Arc::clone(&self.topics);
             let ops_identity_for_retry = self.identity.clone();
+            let ops_dag_for_retry = self.dag_addr.clone();
+            // On NeighborUp re-emit the heads-based `SyncRequestV2` (PR 4
+            // cutover) so a peer that joins the mesh after the initial join
+            // request still triggers a delta sync. Heads + server_id are read
+            // from the DAG inside the spawned task because this callback is
+            // synchronous; the broadcast was already async-spawned before.
             let ops_on_neighbor_up: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                 let topics = ops_topics_for_retry
                     .read()
@@ -216,27 +232,40 @@ impl<N: willow_network::Network> ClientHandle<N> {
                     return;
                 };
                 drop(topics);
-                let msg = ops::WireMessage::SyncRequest {
-                    state_hash: willow_state::EventHash::ZERO,
-                    topic: None,
+                let identity = ops_identity_for_retry.clone();
+                let dag = ops_dag_for_retry.clone();
+                let build_and_broadcast = async move {
+                    let heads =
+                        willow_actor::state::select(&dag, |ds| ds.managed.dag().heads_summary())
+                            .await;
+                    let server_id = willow_actor::state::select(&dag, |ds| {
+                        ds.managed.dag().server_id().unwrap_or_default()
+                    })
+                    .await;
+                    let msg = ops::WireMessage::SyncRequestV2 {
+                        request_id: uuid::Uuid::new_v4().to_string(),
+                        heads,
+                        filter: willow_common::SyncFilter {
+                            server_id,
+                            channels: None,
+                            authors: None,
+                            event_kinds: None,
+                            since_ms: None,
+                        },
+                    };
+                    if let Some(data) = ops::pack_wire(&msg, &identity) {
+                        handle.broadcast(bytes::Bytes::from(data)).await.ok();
+                    }
                 };
-                let Some(data) = ops::pack_wire(&msg, &ops_identity_for_retry) else {
-                    return;
-                };
-                let bytes = bytes::Bytes::from(data);
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     if let Ok(rt) = tokio::runtime::Handle::try_current() {
-                        rt.spawn(async move {
-                            handle.broadcast(bytes).await.ok();
-                        });
+                        rt.spawn(build_and_broadcast);
                     }
                 }
                 #[cfg(target_arch = "wasm32")]
                 {
-                    wasm_bindgen_futures::spawn_local(async move {
-                        handle.broadcast(bytes).await.ok();
-                    });
+                    wasm_bindgen_futures::spawn_local(build_and_broadcast);
                 }
             });
             let ops_listener_ctx = listeners::ListenerCtx {

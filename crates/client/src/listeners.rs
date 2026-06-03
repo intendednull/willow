@@ -120,6 +120,14 @@ pub struct ListenerCtx {
     /// gossip mesh — ensuring late-arriving peers see the display name even
     /// when the initial broadcast happened before the link was established.
     pub on_neighbor_up: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Stable per-session `stream_generation` stamped on every
+    /// [`crate::ops::WireMessage::HistorySyncComplete`] marker this peer emits
+    /// from the gossip `SyncRequestV2` responder. Generated once per
+    /// [`ClientHandle::connect`](crate::ClientHandle::connect) call and shared
+    /// across every listener context, so repeated serves to a reconnecting peer
+    /// are deduped by the receiver's `(provider, stream_generation)` table
+    /// rather than re-emitting a fresh `HistorySynced` each time.
+    pub history_stream_generation: u64,
 }
 
 impl Clone for ListenerCtx {
@@ -139,6 +147,7 @@ impl Clone for ListenerCtx {
             dag: self.dag.clone(),
             server_registry: self.server_registry.clone(),
             on_neighbor_up: self.on_neighbor_up.clone(),
+            history_stream_generation: self.history_stream_generation,
         }
     }
 }
@@ -305,7 +314,7 @@ async fn try_insert_event(ctx: &ListenerCtx, event: willow_state::Event) {
 
 // ───── Message processing ───────────────────────────────────────────────────
 
-async fn process_received_message<T: TopicHandle>(
+pub(crate) async fn process_received_message<T: TopicHandle>(
     data: &[u8],
     _sender: EndpointId,
     ctx: &ListenerCtx,
@@ -427,6 +436,178 @@ async fn process_received_message<T: TopicHandle>(
                         "topic.broadcast SyncBatch (SyncRequest reply)",
                     );
                 }
+            }
+        }
+        // Heads-based delta-sync responder (negentropy-sync spec, plan PR 4).
+        //
+        // We compute the per-author tail the requester is missing via the PR 3
+        // `events_since_filtered` query over the requester's `heads` + the
+        // request `filter`, then greedily pack the delta into byte-budgeted
+        // `SyncBatchV2` envelopes (incremental accumulator, not O(n²)) and
+        // stream them back reusing the request's `request_id`. The terminal
+        // batch clears `more`; a fully caught-up requester receives a single
+        // empty `more: false` batch.
+        //
+        // Serving is gated on the local peer holding `SyncProvider` for this
+        // server (pinned decision 4): a peer without the grant serves nothing.
+        // Requesters are never gated, and the legacy `SyncRequest` responder
+        // above stays ungated through the migration window.
+        crate::ops::WireMessage::SyncRequestV2 {
+            request_id,
+            heads,
+            filter,
+        } => {
+            // SyncProvider serving gate (pinned decision 4): only serve a delta
+            // if *we* hold `SyncProvider` for this server. We use the
+            // owner-honoring `is_sync_provider` predicate (i.e.
+            // `has_permission(SyncProvider)`), so the owner/admins — who hold
+            // every permission implicitly under the authority model — serve,
+            // alongside any peer with an explicit grant. A *regular* member
+            // without the grant still refuses. Honoring the owner here is what
+            // makes member-to-member backfill from the canonical source of the
+            // server's own state possible (a 2-peer server where nobody holds an
+            // explicit grant would otherwise be unsyncable).
+            let local_id = ctx.identity.endpoint_id();
+            let may_serve = willow_actor::state::select(&ctx.event_state, move |es| {
+                es.is_sync_provider(&local_id)
+            })
+            .await;
+            if !may_serve {
+                tracing::debug!(
+                    %request_id, %signer,
+                    "refusing SyncRequestV2: local peer lacks SyncProvider for this server"
+                );
+                return;
+            }
+
+            // Build the per-author seq cursor the DAG query expects, plus an
+            // `EventFilter` from the wire filter's scoping facets (`server_id`
+            // selects *which* DAG, not which events within it).
+            let their_seqs: std::collections::BTreeMap<EndpointId, u64> = heads
+                .heads
+                .iter()
+                .map(|(author, head)| (*author, head.seq))
+                .collect();
+            let event_filter = willow_state::EventFilter {
+                channels: filter.channels,
+                authors: filter.authors,
+                event_kinds: filter.event_kinds,
+                since_ms: filter.since_ms,
+            };
+            let delta: Vec<willow_state::Event> =
+                willow_actor::state::select(&ctx.dag, move |ds| {
+                    ds.managed
+                        .dag()
+                        .events_since_filtered(&their_seqs, Some(&event_filter), None)
+                        .into_iter()
+                        .cloned()
+                        .collect()
+                })
+                .await;
+
+            // Capture the hash of the last event we are about to stream BEFORE
+            // `delta` is consumed by `pack_sync_batches`. This becomes the
+            // `last_event_hash` of the EOSE marker below: the receiver checks it
+            // is present locally before flipping its history-loaded flag, so the
+            // marker can never falsely claim completion past a truncated stream.
+            // `None` (empty delta) is the "nothing to backfill" case and never
+            // truncates.
+            let last_event_hash = delta.last().map(|e| e.hash);
+
+            let batches =
+                willow_common::pack_sync_batches(delta, willow_common::SYNC_ENVELOPE_BUDGET);
+            for (events, more) in batches {
+                let msg = crate::ops::WireMessage::SyncBatchV2 {
+                    request_id: request_id.clone(),
+                    events,
+                    more,
+                };
+                if let Some(data) = crate::ops::pack_wire(&msg, &ctx.identity) {
+                    warn_if_err(
+                        topic.broadcast(bytes::Bytes::from(data)).await,
+                        "topic.broadcast SyncBatchV2 (SyncRequestV2 reply)",
+                    );
+                }
+            }
+
+            // End-of-stored-events marker (history-sync-eose spec, plan PR 5).
+            //
+            // The worker ALPN path emits this marker after a `WorkerRequest::Sync`
+            // reply, but web clients backfill over *gossip* (this responder) and
+            // never touch the worker path — so worker-only emission left the EOSE
+            // feature dead for clients. We emit it here too, after a successful
+            // gossip serve, so an owner/admin/granted-provider backfill produces an
+            // observable `HistorySynced` on the joiner. The `topic_id` is the
+            // SERVER_OPS id (SyncRequestV2 flows on SERVER_OPS) — identical to the
+            // worker's `ops_topic_id()`. `stream_generation` is a stable
+            // per-session value (`ctx.history_stream_generation`), NOT a fresh
+            // value per serve: the receiver dedups on `(provider,
+            // stream_generation)`, so a stable value makes repeated serves on
+            // reconnect idempotent (no marker spam).
+            let topic_id = *willow_network::topic_id(crate::ops::SERVER_OPS_TOPIC).as_bytes();
+            let marker = crate::ops::WireMessage::HistorySyncComplete {
+                topic_id,
+                last_event_hash,
+                stream_generation: ctx.history_stream_generation,
+            };
+            if let Some(data) = crate::ops::pack_wire(&marker, &ctx.identity) {
+                warn_if_err(
+                    topic.broadcast(bytes::Bytes::from(data)).await,
+                    "topic.broadcast HistorySyncComplete (SyncRequestV2 EOSE)",
+                );
+            }
+        }
+        // Heads-based delta-sync receiver (negentropy-sync spec, plan PR 4).
+        //
+        // Apply each streamed event via the shared `try_insert_event` path
+        // (dedup + per-author chain ordering + pending-buffer drain). The
+        // `request_id` correlates the stream and `more: false` terminates it.
+        // We keep the receiver-side count cap as documented defense-in-depth
+        // against an oversized/malicious batch (mirrors the legacy `SyncBatch`
+        // arm and the producer-side `SYNC_BATCH_LIMIT`).
+        crate::ops::WireMessage::SyncBatchV2 {
+            request_id,
+            events,
+            more,
+        } => {
+            if events.len() > SYNC_BATCH_LIMIT {
+                tracing::warn!(
+                    %request_id,
+                    size = events.len(),
+                    "rejecting oversized SyncBatchV2 (max {})",
+                    SYNC_BATCH_LIMIT
+                );
+                return;
+            }
+            // Track the responder as a peer.
+            let signer2 = signer;
+            willow_actor::state::mutate(&ctx.chat_meta, move |c| {
+                if !c.peers.contains(&signer2) {
+                    c.peers.push(signer2);
+                }
+            })
+            .await;
+            let count = events.len();
+            for event in events {
+                try_insert_event(ctx, event).await;
+            }
+            if count > 0 {
+                // ManagedDag marks synced automatically when genesis arrives.
+                // Surface session-wide per-batch progress like the legacy path
+                // (pinned decision 5 keeps `SyncCompleted`'s meaning).
+                warn_if_err(
+                    ctx.event_broker
+                        .do_send(willow_actor::Publish(ClientEvent::SyncCompleted {
+                            ops_applied: count,
+                        })),
+                    "event_broker.do_send Publish(SyncCompleted from SyncBatchV2)",
+                );
+            }
+            if !more {
+                tracing::debug!(
+                    %request_id, %signer,
+                    "SyncBatchV2 stream complete (more: false)"
+                );
             }
         }
         crate::ops::WireMessage::TypingIndicator { channel } => {
@@ -915,10 +1096,133 @@ async fn process_received_message<T: TopicHandle>(
                 "event_broker.do_send Publish(ProfileUpdated from ProfileAnnounce)",
             );
         }
+        // End-of-stored-events marker (history-sync-eose spec, plan PR 5).
+        //
+        // A trusted `SyncProvider` has finished streaming its history for this
+        // topic; everything it sends afterwards is live, not backfill. We:
+        //
+        //   1. Trust-gate on the **signer** — the marker is honored only if the
+        //      verified envelope signer is a `SyncProvider` for this server
+        //      (markers from untrusted peers are ignored, so a random peer
+        //      cannot flip the UI loading flag off). We use the owner-honoring
+        //      `is_sync_provider` predicate, matching the SyncRequestV2 responder
+        //      gate (pinned decision 4): the owner/admins hold `SyncProvider`
+        //      implicitly under the authority model, so a marker from the owner
+        //      (the common member-to-member backfill case) is trusted, as is one
+        //      from any explicit grant-holder.
+        //   2. Detect truncation via `last_event_hash`: if the provider claims a
+        //      last event we do **not** hold, the stream did not reach us
+        //      intact — log a warning and emit **no** completion (no false
+        //      positive). `None` is the empty-store case and never truncates.
+        //   3. Dedup by `(provider, stream_generation)`: a repeat marker is
+        //      dropped, but a new random `stream_generation` (provider restarted
+        //      and re-streamed) re-emits (decision 6).
+        //   4. Compute `still_pending` from the connected trusted providers that
+        //      have not yet completed this topic (first-trusted-wins default).
+        crate::ops::WireMessage::HistorySyncComplete {
+            topic_id,
+            last_event_hash,
+            stream_generation,
+        } => {
+            let provider = signer;
+
+            // (1) Trust gate: ignore markers from peers that are not a
+            // SyncProvider for this server (owner/admins implicitly, or an
+            // explicit grant-holder).
+            let trusted = willow_actor::state::select(&ctx.event_state, move |es| {
+                es.is_sync_provider(&provider)
+            })
+            .await;
+            if !trusted {
+                tracing::debug!(
+                    %provider,
+                    "ignoring HistorySyncComplete: signer is not a SyncProvider for this server"
+                );
+                return;
+            }
+
+            // (2) Truncation check: a non-None `last_event_hash` we do not hold
+            // means the stream did not reach us intact. Warn and do NOT emit a
+            // completion (the spec forbids a false positive here).
+            if let Some(expected) = last_event_hash {
+                let have = willow_actor::state::select(&ctx.dag, move |ds| {
+                    ds.managed.dag().get(&expected).is_some()
+                })
+                .await;
+                if !have {
+                    tracing::warn!(
+                        %provider, %expected,
+                        "HistorySyncComplete last_event_hash not in local DAG — \
+                         treating sync as incomplete, suppressing HistorySynced"
+                    );
+                    return;
+                }
+            }
+
+            // (3) Dedup + record. `record_history_marker` returns false for a
+            // repeat `(provider, stream_generation)`; a new generation is fresh.
+            let topic = topic_id_to_hex(&topic_id);
+            let topic_for_record = topic.clone();
+            let fresh = willow_actor::state::mutate(&ctx.network, move |n| {
+                n.record_history_marker(provider, stream_generation, &topic_for_record)
+            })
+            .await;
+            if !fresh {
+                tracing::debug!(
+                    %provider, stream_generation,
+                    "ignoring duplicate HistorySyncComplete (already seen this generation)"
+                );
+                return;
+            }
+
+            // (4) still_pending = connected trusted providers that have not yet
+            // completed this topic. "Connected" = ChatMeta.peers; "trusted" =
+            // `is_sync_provider` (owner/admins implicitly, plus explicit grants),
+            // matching the trust gate above. The provider that just completed is
+            // already recorded, so it is excluded.
+            let connected = willow_actor::state::select(&ctx.chat_meta, |c| c.peers.clone()).await;
+            let connected_trusted = willow_actor::state::select(&ctx.event_state, move |es| {
+                connected
+                    .into_iter()
+                    .filter(|p| es.is_sync_provider(p))
+                    .collect::<Vec<_>>()
+            })
+            .await;
+            let topic_for_count = topic.clone();
+            let still_pending = willow_actor::state::select(&ctx.network, move |n| {
+                n.pending_history_providers(&topic_for_count, &connected_trusted)
+            })
+            .await;
+
+            warn_if_err(
+                ctx.event_broker
+                    .do_send(willow_actor::Publish(ClientEvent::HistorySynced {
+                        topic,
+                        provider,
+                        still_pending,
+                    })),
+                "event_broker.do_send Publish(HistorySynced)",
+            );
+        }
         // Worker messages travel on the _willow_workers topic and are never
         // delivered to the client's server-ops listener.
         crate::ops::WireMessage::Worker(_) => {}
     }
+}
+
+/// Lowercase-hex of a 32-byte gossip `topic_id`. Used to key the
+/// [`ClientEvent::HistorySynced`](crate::events::ClientEvent::HistorySynced)
+/// `topic` field and the per-topic completion table — the marker carries only
+/// the blake3 `topic_id`, not the original topic string, so its hex is the
+/// stable identifier the UI matches against the active channel's `TopicId`.
+/// Mirrors `blob_hash_to_hex` rather than pulling in the `hex` crate as a
+/// direct dependency.
+fn topic_id_to_hex(topic_id: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for byte in topic_id {
+        s.push_str(&format!("{byte:02x}"));
+    }
+    s
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -983,6 +1287,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         };
 
         // Mallory signs the packet, but claims it's from Bob. Neither
@@ -1078,6 +1383,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         };
 
         let bob = willow_identity::Identity::generate();
@@ -1160,6 +1466,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         };
 
         let attacker = willow_identity::Identity::generate();
@@ -1223,6 +1530,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         };
 
         let attacker = willow_identity::Identity::generate();
@@ -1274,6 +1582,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         }
     }
 
@@ -1591,6 +1900,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         };
         (client, ctx, topic)
     }
@@ -1902,6 +2212,7 @@ mod tests {
             dag: client.dag_addr.clone(),
             server_registry: client.server_registry_addr.clone(),
             on_neighbor_up: None,
+            history_stream_generation: 0,
         };
         (client, ctx, topic, observer_events)
     }

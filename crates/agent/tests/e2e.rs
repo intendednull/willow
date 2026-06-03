@@ -937,10 +937,10 @@ async fn notification_serialization_covers_all_variants() {
     // in `EVENT_TYPE_NAMES`. This test complements the unit tests in
     // `notifications.rs` by running in the integration test context.
     //
-    // The count is pinned to 31 — one entry per `ClientEvent` variant.
+    // The count is pinned to 32 — one entry per `ClientEvent` variant.
     // When a new variant is added, bump this assertion and extend the
     // `notifications::event_to_json` match + `EVENT_TYPE_NAMES` list.
-    assert_eq!(willow_agent::notifications::EVENT_TYPE_NAMES.len(), 31);
+    assert_eq!(willow_agent::notifications::EVENT_TYPE_NAMES.len(), 32);
 
     for name in willow_agent::notifications::EVENT_TYPE_NAMES {
         assert!(!name.is_empty(), "event type name should not be empty");

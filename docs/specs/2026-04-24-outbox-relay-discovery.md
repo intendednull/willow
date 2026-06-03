@@ -318,6 +318,21 @@ event kind. What remains:
    to the user? The behaviour matters for share-link UX and is
    genuinely unsettled.
 
+> **Resolved 2026-05-28** (plan `2026-05-28-relay-upgrade-bundle.md`):
+> - **Q1 (sign `bootstrap_endpoint_ids`?)** → **deferred**. An
+>   `EndpointId` is self-certifying (it *is* the public key), so a
+>   tampered bootstrap list causes connection failure, not state
+>   forgery. Whole-token signing is a separable enhancement.
+> - **Q2 (pkarr fallback policy)** → fall back to `Config::relay_url`
+>   (the single configured relay) for relay-mediated dialing; surface
+>   an error only if **both** pkarr and the configured relay fail.
+> - **Client fetch/verify** (`fetch_relay_info`) is **defined once** by
+>   the capability-doc consumer work (plan PR 6, reusing PR 1's
+>   `verify_capability_doc`) and **reused** here for worker ranking —
+>   not redefined. iroh already ships `features =
+>   ["discovery-pkarr-dht"]`, so enabling pkarr is builder wiring, not
+>   a Cargo feature change.
+
 These are the only questions worth keeping open. Replaceable-event
 semantics, multi-device writes to the same author chain, anti-
 centralization algorithms, and `RelayLiveness` are all rendered

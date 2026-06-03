@@ -54,10 +54,16 @@ use willow_identity::EndpointId;
 use willow_network::traits::{GossipEvent, TopicEvents};
 use willow_network::Network;
 
-/// Maximum concurrent client connections accepted by the bootstrap-id
-/// HTTP endpoint. Excess accepts are dropped immediately to prevent
-/// FD/memory exhaustion under a connection-flood DoS.
-pub const MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS: usize = 1024;
+/// Maximum concurrent client connections accepted by the public relay
+/// proxy listener. Every connection accepted by [`run_proxy_listener`]
+/// — `/bootstrap-id`, the `/.well-known/willow` capability endpoint, and
+/// the iroh-relay proxy fallthrough alike — is gated by this cap. Excess
+/// accepts are dropped immediately to prevent FD/memory exhaustion under
+/// a connection-flood DoS.
+///
+/// (Formerly `MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS`; renamed because it
+/// gates the whole proxy listener, not just bootstrap-id traffic.)
+pub const MAX_CONCURRENT_PROXY_CONNECTIONS: usize = 1024;
 
 /// HTTP path served by [`handle_bootstrap_connection`] to expose the
 /// bootstrap node's endpoint ID. The public proxy routes requests to
@@ -83,6 +89,33 @@ pub const BOOTSTRAP_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// [`BOOTSTRAP_IO_TIMEOUT`]. Matches [`PROXY_REQUEST_LINE_BUFFER`] so
 /// the relay applies a single, symmetric budget for header bytes.
 pub const BOOTSTRAP_DRAIN_BUFFER_CAP: usize = 8 * 1024;
+
+/// HTTP path of the signed relay capability document
+/// (`GET /.well-known/willow`), an RFC 8615 well-known URI. Clients fetch
+/// it before connecting to discover protocol versions, limits, and
+/// operator metadata. See the
+/// [capability-doc spec](../../../docs/specs/2026-04-24-relay-capability-doc.md).
+pub const CAPABILITY_PATH: &str = "/.well-known/willow";
+
+/// `Content-Type` for the capability document. The `+json` structured
+/// suffix opts into generic JSON tooling while the distinct media type
+/// disambiguates it from a plain `application/json` body.
+pub const CAPABILITY_CONTENT_TYPE: &str = "application/willow+json; charset=utf-8";
+
+/// `Cache-Control` for a steady-state (`status: "ok"`) capability
+/// document. Dynamic `degraded`/`read_only` status (which would warrant a
+/// shorter, must-revalidate TTL) is deferred, so this is effectively the
+/// only tier until dynamic status lands.
+const CAPABILITY_CACHE_CONTROL: &str = "public, max-age=300";
+
+/// HTTP methods accepted on [`CAPABILITY_PATH`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityMethod {
+    /// `GET` — return the signed document (or `304` on a matching ETag).
+    Get,
+    /// `OPTIONS` — CORS preflight, answered with `204` + CORS headers.
+    Options,
+}
 
 /// Maximum number of distinct channel topics the topic-announce
 /// listener will subscribe to. Once this cap is reached the listener
@@ -233,6 +266,8 @@ pub async fn dispatch_connection(
     mut client: TcpStream,
     upstream_addr: SocketAddr,
     bootstrap_id: Arc<String>,
+    capability_json: Arc<str>,
+    capability_etag: Arc<str>,
 ) -> std::io::Result<()> {
     // Disable Nagle — the iroh-relay expects the upstream path to be
     // responsive, and responses from the bootstrap handler are small
@@ -267,9 +302,25 @@ pub async fn dispatch_connection(
         }
     };
 
-    // If we have a request line, try to match the bootstrap-id path.
+    // If we have a request line, try to match a locally-served path.
+    // Capability-doc routes are checked before bootstrap-id; everything
+    // unmatched falls through to the upstream iroh-relay.
     if let Some(end) = request_line_end {
         let line = &buffered[..end];
+        if let Some(method) = request_line_matches_capability_doc(line) {
+            return match method {
+                CapabilityMethod::Get => {
+                    handle_capability_request_after_line(
+                        client,
+                        &buffered,
+                        &capability_json,
+                        &capability_etag,
+                    )
+                    .await
+                }
+                CapabilityMethod::Options => handle_capability_options(client, &buffered).await,
+            };
+        }
         if request_line_matches_bootstrap_id(line) {
             return handle_bootstrap_request_after_line(client, &buffered, &bootstrap_id).await;
         }
@@ -305,6 +356,27 @@ fn request_line_matches_bootstrap_id(line: &[u8]) -> bool {
     method == b"GET" && path == BOOTSTRAP_ID_PATH.as_bytes()
 }
 
+/// Returns the [`CapabilityMethod`] iff the HTTP request line (without
+/// trailing CRLF) targets [`CAPABILITY_PATH`] with `GET` or `OPTIONS`.
+/// Any other method (`POST`, `PUT`, …) on the path returns `None` so the
+/// request falls through to the upstream proxy, matching the
+/// bootstrap-id endpoint's GET-only behaviour. The path is matched
+/// verbatim (no query string) because the endpoint takes no parameters.
+fn request_line_matches_capability_doc(line: &[u8]) -> Option<CapabilityMethod> {
+    // Expected shape: "GET /.well-known/willow HTTP/1.x" (or OPTIONS).
+    let mut parts = line.splitn(3, |b| *b == b' ');
+    let method = parts.next()?;
+    let path = parts.next()?;
+    if path != CAPABILITY_PATH.as_bytes() {
+        return None;
+    }
+    match method {
+        b"GET" => Some(CapabilityMethod::Get),
+        b"OPTIONS" => Some(CapabilityMethod::Options),
+        _ => None,
+    }
+}
+
 /// Complete a bootstrap-id request once the proxy has identified the
 /// path. Drains any remaining bytes of the request (up to the
 /// end-of-headers marker) so the client sees a well-formed response
@@ -314,55 +386,7 @@ async fn handle_bootstrap_request_after_line(
     already_read: &[u8],
     id: &str,
 ) -> std::io::Result<()> {
-    // Drain the rest of the request (best effort). If the
-    // end-of-headers marker "\r\n\r\n" is already in what we read, we
-    // don't need to read more.
-    if !already_read.windows(4).any(|w| w == b"\r\n\r\n") {
-        // Accumulate every chunk we read into a single buffer and
-        // search the *whole* buffer for "\r\n\r\n" each iteration.
-        // Searching only the latest chunk would miss a marker that
-        // straddles a chunk boundary, leaving the loop spinning until
-        // BOOTSTRAP_IO_TIMEOUT (issue #238).
-        //
-        // Seed the accumulator with the trailing 3 bytes of
-        // `already_read` so a marker straddling the boundary between
-        // the request line and the first newly-read chunk is also
-        // caught. (3 bytes is the most that can contribute to a
-        // 4-byte marker without itself containing the full marker —
-        // if `already_read` already held it, we wouldn't be here.)
-        let mut buffered: Vec<u8> = Vec::with_capacity(1024);
-        let seed_start = already_read.len().saturating_sub(3);
-        buffered.extend_from_slice(&already_read[seed_start..]);
-
-        let mut chunk = [0u8; 1024];
-        let deadline = tokio::time::sleep(BOOTSTRAP_IO_TIMEOUT);
-        tokio::pin!(deadline);
-        loop {
-            tokio::select! {
-                _ = &mut deadline => break,
-                res = client.read(&mut chunk) => match res {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        buffered.extend_from_slice(&chunk[..n]);
-                        if buffered.windows(4).any(|w| w == b"\r\n\r\n") {
-                            break;
-                        }
-                        if buffered.len() >= BOOTSTRAP_DRAIN_BUFFER_CAP {
-                            warn!(
-                                cap = BOOTSTRAP_DRAIN_BUFFER_CAP,
-                                "bootstrap request headers exceeded drain cap; closing"
-                            );
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                "bootstrap request headers exceeded drain cap",
-                            ));
-                        }
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-        }
-    }
+    drain_request_headers(&mut client, already_read).await?;
 
     let response = format!(
         "HTTP/1.1 200 OK\r\n\
@@ -384,6 +408,168 @@ async fn handle_bootstrap_request_after_line(
     Ok(())
 }
 
+/// Drain the remainder of an HTTP request's headers up to the
+/// end-of-headers marker (`\r\n\r\n`), bounded by [`BOOTSTRAP_IO_TIMEOUT`]
+/// and [`BOOTSTRAP_DRAIN_BUFFER_CAP`]. Shared by every locally-served
+/// endpoint (bootstrap-id and the capability doc) so a well-formed
+/// response is written only after the client's request is fully read.
+///
+/// Returns `Err(InvalidData)` if the headers exceed the drain cap before
+/// the marker is seen, and `Err(_)` on an underlying read error. A
+/// timeout is treated as "client sent everything it is going to" and
+/// returns `Ok(())` so the handler still responds — matching the prior
+/// bootstrap-id behaviour.
+async fn drain_request_headers<S>(client: &mut S, already_read: &[u8]) -> std::io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    // If the end-of-headers marker "\r\n\r\n" is already in what we read,
+    // we don't need to read more.
+    if already_read.windows(4).any(|w| w == b"\r\n\r\n") {
+        return Ok(());
+    }
+
+    // Accumulate every chunk we read into a single buffer and search the
+    // *whole* buffer for "\r\n\r\n" each iteration. Searching only the
+    // latest chunk would miss a marker that straddles a chunk boundary,
+    // leaving the loop spinning until BOOTSTRAP_IO_TIMEOUT (issue #238).
+    //
+    // Seed the accumulator with the trailing 3 bytes of `already_read` so
+    // a marker straddling the boundary between the request line and the
+    // first newly-read chunk is also caught. (3 bytes is the most that
+    // can contribute to a 4-byte marker without itself containing the
+    // full marker — if `already_read` already held it, we wouldn't be
+    // here.)
+    let mut buffered: Vec<u8> = Vec::with_capacity(1024);
+    let seed_start = already_read.len().saturating_sub(3);
+    buffered.extend_from_slice(&already_read[seed_start..]);
+
+    let mut chunk = [0u8; 1024];
+    let deadline = tokio::time::sleep(BOOTSTRAP_IO_TIMEOUT);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            res = client.read(&mut chunk) => match res {
+                Ok(0) => break,
+                Ok(n) => {
+                    buffered.extend_from_slice(&chunk[..n]);
+                    if buffered.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                    if buffered.len() >= BOOTSTRAP_DRAIN_BUFFER_CAP {
+                        warn!(
+                            cap = BOOTSTRAP_DRAIN_BUFFER_CAP,
+                            "request headers exceeded drain cap; closing"
+                        );
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "request headers exceeded drain cap",
+                        ));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse the (optional) `If-None-Match` header value from the bytes of an
+/// HTTP request, returning the entity-tag with surrounding double quotes
+/// stripped. Case-insensitive on the header name per RFC 9110; only the
+/// first match is honoured. Returns `None` if the header is absent.
+fn parse_if_none_match(request: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(request).ok()?;
+    for line in text.split("\r\n") {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case("If-None-Match") {
+            let v = value.trim();
+            // Strip optional weak-validator prefix and surrounding quotes.
+            let v = v.strip_prefix("W/").unwrap_or(v).trim();
+            let v = v.trim_matches('"');
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+/// Complete a `GET /.well-known/willow` request once the proxy has
+/// identified the path. Drains the rest of the request, then writes the
+/// pre-rendered (built + signed once at startup) capability document with
+/// CORS headers, a strong `ETag`, and a steady-state `Cache-Control`. If
+/// the client's `If-None-Match` matches the current ETag, a bodyless
+/// `304 Not Modified` is returned instead.
+async fn handle_capability_request_after_line(
+    mut client: TcpStream,
+    already_read: &[u8],
+    info_json: &str,
+    etag: &str,
+) -> std::io::Result<()> {
+    let if_none_match = parse_if_none_match(already_read);
+    drain_request_headers(&mut client, already_read).await?;
+
+    let response = if if_none_match.as_deref() == Some(etag) {
+        format!(
+            "HTTP/1.1 304 Not Modified\r\n\
+             Access-Control-Allow-Origin: *\r\n\
+             Access-Control-Allow-Methods: GET, OPTIONS\r\n\
+             Access-Control-Allow-Headers: Accept, Content-Type, If-None-Match\r\n\
+             ETag: \"{etag}\"\r\n\
+             Cache-Control: {CAPABILITY_CACHE_CONTROL}\r\n\
+             Connection: close\r\n\
+             \r\n"
+        )
+    } else {
+        format!(
+            "HTTP/1.1 200 OK\r\n\
+             Access-Control-Allow-Origin: *\r\n\
+             Access-Control-Allow-Methods: GET, OPTIONS\r\n\
+             Access-Control-Allow-Headers: Accept, Content-Type, If-None-Match\r\n\
+             Content-Type: {CAPABILITY_CONTENT_TYPE}\r\n\
+             ETag: \"{etag}\"\r\n\
+             Cache-Control: {CAPABILITY_CACHE_CONTROL}\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\
+             \r\n\
+             {info_json}",
+            info_json.len(),
+        )
+    };
+
+    tokio::time::timeout(BOOTSTRAP_IO_TIMEOUT, client.write_all(response.as_bytes()))
+        .await
+        .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "capability write timed out")
+        })??;
+    Ok(())
+}
+
+/// Answer an `OPTIONS /.well-known/willow` CORS preflight with `204 No
+/// Content` and the full ACAO/ACAM/ACAH header set. Carries no body.
+async fn handle_capability_options(
+    mut client: TcpStream,
+    already_read: &[u8],
+) -> std::io::Result<()> {
+    drain_request_headers(&mut client, already_read).await?;
+
+    let response = "HTTP/1.1 204 No Content\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Access-Control-Allow-Methods: GET, OPTIONS\r\n\
+         Access-Control-Allow-Headers: Accept, Content-Type, If-None-Match\r\n\
+         Connection: close\r\n\
+         \r\n";
+
+    tokio::time::timeout(BOOTSTRAP_IO_TIMEOUT, client.write_all(response.as_bytes()))
+        .await
+        .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "capability write timed out")
+        })??;
+    Ok(())
+}
+
 /// Run the public HTTP accept loop that fronts the iroh-relay. Each
 /// accepted connection is dispatched by [`dispatch_connection`]:
 /// requests for [`BOOTSTRAP_ID_PATH`] are answered locally, everything
@@ -395,6 +581,8 @@ pub async fn run_proxy_listener(
     upstream_addr: SocketAddr,
     id: Arc<String>,
     semaphore: Arc<Semaphore>,
+    capability_json: Arc<str>,
+    capability_etag: Arc<str>,
 ) {
     loop {
         let (stream, peer) = match listener.accept().await {
@@ -418,8 +606,13 @@ pub async fn run_proxy_listener(
         };
 
         let id = Arc::clone(&id);
+        let capability_json = Arc::clone(&capability_json);
+        let capability_etag = Arc::clone(&capability_etag);
         tokio::spawn(async move {
-            if let Err(e) = dispatch_connection(stream, upstream_addr, id).await {
+            if let Err(e) =
+                dispatch_connection(stream, upstream_addr, id, capability_json, capability_etag)
+                    .await
+            {
                 tracing::debug!(%e, %peer, "relay proxy connection error");
             }
             drop(permit);

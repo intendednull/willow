@@ -130,6 +130,33 @@ impl WillowTestHooks {
     }
 }
 
+#[wasm_bindgen]
+impl WillowTestHooks {
+    /// Rewrite a `#join=...` token so its `bootstrap_endpoint_ids` lead with a
+    /// freshly-generated — therefore **unreachable** — `EndpointId`.
+    ///
+    /// Test-only: lets an e2e test exercise the outbox-relay-discovery fallback
+    /// path (share-link join where the *first* bootstrap endpoint cannot be
+    /// dialled) deterministically, without standing up a second unreachable
+    /// node. The random ID is self-certifying but has no pkarr record and no
+    /// relay route, so the join must fall through to the surviving bootstrap /
+    /// relay fallback for heads to converge. Exposed on `window.__willow`.
+    ///
+    /// Returns the rewritten base64 token, or the input unchanged if it does
+    /// not decode (so a malformed input surfaces as a normal join failure, not
+    /// a hook panic). Takes `&self` only to ride the existing `__willow`
+    /// object — it reads no instance state.
+    pub fn prepend_unreachable_bootstrap(&self, token: &str) -> String {
+        use willow_client::ops::JoinToken;
+        let Some(mut decoded) = JoinToken::decode(token) else {
+            return token.to_string();
+        };
+        let unreachable = willow_identity::Identity::generate().endpoint_id();
+        decoded.bootstrap_endpoint_ids.insert(0, unreachable);
+        decoded.encode()
+    }
+}
+
 /// `serde_wasm_bindgen::Serializer` configured to emit Rust maps as plain
 /// JS objects rather than `Map` instances.
 ///

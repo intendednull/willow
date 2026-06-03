@@ -55,12 +55,18 @@ Every entry below carries one of:
 - [Relay capability document](specs/2026-04-24-relay-capability-doc.md) — NIP-11-style `/.well-known/willow` JSON sidecar for pre-connection relay discovery. `[active]`
 - [History sync — heads-based delta exchange](specs/2026-04-24-negentropy-sync.md) — consolidates client and worker sync onto the same `HeadsSummary` delta protocol. `[active]`
 - [Relay discovery — pkarr plus capability negotiation](specs/2026-04-24-outbox-relay-discovery.md) — composes iroh pkarr, capability doc, and `SyncProvider` grants for relay discovery. `[active]`
+- [Web pkarr join flow — bootstrap resolution + progress](specs/2026-05-29-web-pkarr-join-flow-design.md) — web join flow consumes `JoinToken.bootstrap_endpoint_ids` (pkarr first, relay fallback) with a "resolving" progress surface (relay-upgrade-bundle PR 6 Task 6.4). `[active]`
 - [History sync completion signal](specs/2026-04-24-history-sync-eose.md) — adds `HistorySyncComplete` wire message so clients know when backfill has finished. `[active]`
 - [Iroh migration design](specs/2026-03-29-iroh-migration-design.md) — replaces libp2p with iroh QUIC transport and trait abstraction (`Network`, `TopicHandle`). `[landed]`
 
 **Plans**
 
 - [Iroh migration](plans/2026-03-29-iroh-migration.md) — migrates networking layer from libp2p to iroh with `IrohNetwork` and `MemNetwork`. `[landed]`
+- [Relay upgrade bundle](plans/2026-05-28-relay-upgrade-bundle.md) — six sequential PRs realizing the capability-doc, heads-based sync, history-sync EOSE, and pkarr-discovery specs. `[active]`
+
+**Reports**
+
+- [Heads-sync owner-serve gate + gossip EOSE emission](reports/2026-05-30-heads-sync-owner-serve-and-eose-emission.md) — two PR4/PR5 E2E regressions root-caused: the serving gate excluded the owner (now honors the owner/admins' implicit `SyncProvider`), and the EOSE marker was worker-only and unobservable by gossip clients (now also emitted by the `SyncRequestV2` responder). `[landed]`
 
 ### Identity, Crypto & Trust
 

@@ -109,7 +109,16 @@ pub enum WorkerRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkerResponse {
     /// Batch of events for sync catch-up.
-    SyncBatch { events: Vec<Event> },
+    ///
+    /// `more` mirrors the gossip-path [`crate::WireMessage::SyncBatchV2`]
+    /// terminator semantics: `true` when the responder byte-budgeted the
+    /// delta and further events remain past this envelope (the requester
+    /// should re-issue [`WorkerRequest::Sync`] with advanced heads), and
+    /// `false` on the final batch — the end-of-stream marker. The outer
+    /// [`WorkerWireMessage::Response`] already carries `request_id`, so it
+    /// is not duplicated inside the payload (see
+    /// `docs/specs/2026-04-24-negentropy-sync.md` § Wire protocol).
+    SyncBatch { events: Vec<Event>, more: bool },
 
     /// Full DAG snapshot for far-behind peers.
     Snapshot {
@@ -122,6 +131,30 @@ pub enum WorkerResponse {
 
     /// Request denied.
     Denied { reason: String },
+}
+
+impl WorkerResponse {
+    /// Hash of the last event this response streams to the requester, or `None`
+    /// when it carries no events (empty store / caught-up terminator / denial).
+    ///
+    /// This is the value a worker puts in the
+    /// [`crate::WireMessage::HistorySyncComplete`] marker's `last_event_hash`
+    /// field after serving a [`WorkerRequest::Sync`] (PR 5 Task 5.3). Batches
+    /// are `(author, seq)`-ascending, so the last event is the newest; for a
+    /// `Snapshot` reply the relevant tail is `post_snapshot_events`. `None`
+    /// cleanly distinguishes "nothing to send" from "done streaming N events"
+    /// (pinned decision 7). See `docs/specs/2026-04-24-history-sync-eose.md`.
+    pub fn last_synced_hash(&self) -> Option<willow_state::EventHash> {
+        match self {
+            WorkerResponse::SyncBatch { events, .. } => events.last().map(|e| e.hash),
+            WorkerResponse::Snapshot {
+                post_snapshot_events,
+                ..
+            } => post_snapshot_events.last().map(|e| e.hash),
+            WorkerResponse::HistoryPage { events, .. } => events.last().map(|e| e.hash),
+            WorkerResponse::Denied { .. } => None,
+        }
+    }
 }
 
 /// The trait that each worker binary implements.
@@ -362,12 +395,37 @@ mod tests {
 
     #[test]
     fn worker_response_sync_batch_round_trip() {
-        let resp = WorkerResponse::SyncBatch { events: vec![] };
+        let resp = WorkerResponse::SyncBatch {
+            events: vec![],
+            more: false,
+        };
         let bytes = bincode::serialize(&resp).unwrap();
         let decoded: WorkerResponse = bincode::deserialize(&bytes).unwrap();
         match decoded {
-            WorkerResponse::SyncBatch { events } => assert!(events.is_empty()),
+            WorkerResponse::SyncBatch { events, more } => {
+                assert!(events.is_empty());
+                assert!(!more);
+            }
             _ => panic!("expected SyncBatch"),
+        }
+    }
+
+    /// The new `more` flag must survive a bincode round-trip in both
+    /// states so a streamed multi-envelope sync can mark intermediate
+    /// batches (`more: true`) distinctly from the terminator (`more: false`).
+    #[test]
+    fn worker_response_sync_batch_more_flag_round_trips() {
+        for more in [true, false] {
+            let resp = WorkerResponse::SyncBatch {
+                events: vec![],
+                more,
+            };
+            let bytes = bincode::serialize(&resp).unwrap();
+            let decoded: WorkerResponse = bincode::deserialize(&bytes).unwrap();
+            match decoded {
+                WorkerResponse::SyncBatch { more: m, .. } => assert_eq!(m, more),
+                _ => panic!("expected SyncBatch"),
+            }
         }
     }
 
@@ -495,6 +553,65 @@ mod tests {
             }
             _ => panic!("expected Response"),
         }
+    }
+
+    /// `last_synced_hash` extracts the newest event's hash from a batch reply
+    /// (the value the `HistorySyncComplete` marker carries), and `None` from an
+    /// empty / non-event reply. Covers all `WorkerResponse` arms directly.
+    #[test]
+    fn last_synced_hash_reports_last_event_or_none() {
+        use willow_state::{Event, EventHash, EventKind};
+
+        let id = Identity::generate();
+        let e1 = Event::new(
+            &id,
+            1,
+            EventHash::ZERO,
+            vec![],
+            EventKind::CreateServer {
+                name: "s".to_string(),
+            },
+            0,
+        );
+        let e2 = Event::new(
+            &id,
+            2,
+            e1.hash,
+            vec![],
+            EventKind::Message {
+                channel_id: "c".to_string(),
+                body: "b".to_string(),
+                reply_to: None,
+            },
+            100,
+        );
+
+        // Non-empty batch → last event's hash.
+        let batch = WorkerResponse::SyncBatch {
+            events: vec![e1.clone(), e2.clone()],
+            more: false,
+        };
+        assert_eq!(batch.last_synced_hash(), Some(e2.hash));
+
+        // Empty batch → None.
+        let empty = WorkerResponse::SyncBatch {
+            events: vec![],
+            more: false,
+        };
+        assert_eq!(empty.last_synced_hash(), None);
+
+        // HistoryPage → last event's hash.
+        let page = WorkerResponse::HistoryPage {
+            events: vec![e1.clone()],
+            has_more: false,
+        };
+        assert_eq!(page.last_synced_hash(), Some(e1.hash));
+
+        // Denied → None.
+        let denied = WorkerResponse::Denied {
+            reason: "x".to_string(),
+        };
+        assert_eq!(denied.last_synced_hash(), None);
     }
 
     #[test]

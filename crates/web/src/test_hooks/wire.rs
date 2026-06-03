@@ -55,6 +55,19 @@ pub enum WireEvent {
         role_id: String,
         name: String,
     },
+    /// History-sync EOSE boundary marker (history-sync-eose spec, plan PR 5).
+    /// Surfaced to e2e so `e2e/history-sync.spec.ts` can assert the
+    /// `HistorySyncComplete` marker fires for a joining peer. `topic` is the
+    /// lowercase-hex of the marker's 32-byte `topic_id`; `provider` is the
+    /// verified envelope signer; `stillPending` counts trusted providers that
+    /// have not yet completed for the same topic. Mirrors
+    /// `e2e/test-hooks.ts`'s `HistorySynced` variant.
+    HistorySynced {
+        topic: String,
+        provider: String,
+        #[serde(rename = "stillPending")]
+        still_pending: u32,
+    },
 }
 
 /// Convert a `ClientEvent` to its wire shape, or `None` if the variant
@@ -97,6 +110,15 @@ pub fn to_wire(event: &ClientEvent) -> Option<WireEvent> {
         ClientEvent::RoleCreated { name, role_id } => Some(WireEvent::RoleCreated {
             role_id: role_id.clone(),
             name: name.clone(),
+        }),
+        ClientEvent::HistorySynced {
+            topic,
+            provider,
+            still_pending,
+        } => Some(WireEvent::HistorySynced {
+            topic: topic.clone(),
+            provider: provider.to_string(),
+            still_pending: *still_pending as u32,
         }),
         // Internal-only variants are filtered out.
         _ => None,
@@ -202,6 +224,27 @@ mod tests {
             json,
             r#"{"kind":"RoleCreated","roleId":"r1","name":"moderator"}"#,
         );
+    }
+
+    #[test]
+    fn history_synced_serializes_to_stable_shape() {
+        // The e2e surface (`e2e/history-sync.spec.ts`, via `e2e/test-hooks.ts`)
+        // waits for `{ kind: 'HistorySynced', topic, provider, stillPending }`.
+        // Without this mapping `to_wire` returns `None` and the event is
+        // silently dropped, so the e2e EOSE assertion (the PR 5 deliverable)
+        // can never fire. Pin the exact wire shape.
+        let ev = ClientEvent::HistorySynced {
+            topic: "ab".repeat(32),
+            provider: endpoint_a(),
+            still_pending: 2,
+        };
+        let wire = to_wire(&ev).expect("HistorySynced must convert to the e2e wire shape");
+        let json = serde_json::to_string(&wire).unwrap();
+        assert!(json.contains(r#""kind":"HistorySynced""#));
+        assert!(json.contains(&format!(r#""topic":"{}""#, "ab".repeat(32))));
+        assert!(json.contains(r#""stillPending":2"#));
+        // provider is the signer's EndpointId string.
+        assert!(json.contains(r#""provider":"#));
     }
 
     /// Task 3.4: ensure internal-only variants are filtered.

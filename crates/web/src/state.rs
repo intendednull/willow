@@ -80,6 +80,12 @@ pub struct ParsedJoinToken {
     pub inviter_peer_id: willow_identity::EndpointId,
     pub server_name: String,
     pub inviter_name: String,
+    /// Bootstrap `SyncProvider` endpoint IDs the inviter shipped in the share
+    /// link (outbox-relay-discovery spec, Layer 1). The join flow resolves
+    /// these via pkarr first and falls back to `DEFAULT_RELAY_URL`'s bootstrap
+    /// node when empty. Self-certifying, so a tampered list fails to connect
+    /// rather than forging state.
+    pub bootstrap_endpoint_ids: Vec<willow_identity::EndpointId>,
 }
 
 // ── Read signals (provided via context) ──────────────────────────────

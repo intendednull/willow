@@ -337,7 +337,7 @@ The relay is a NAT traversal and gossip bootstrap shim. It wraps `iroh-relay` fo
 - `topic_str_is_valid`: accepts valid ASCII alphanumeric/underscore/slash/colon/dot/dash strings; rejects empty, too-long, and non-ASCII strings
 - Bootstrap HTTP handler: sends a well-formed HTTP/1.1 200 response containing the node's EndpointId string and closes the connection within `BOOTSTRAP_IO_TIMEOUT`
 - Bootstrap handler: a slow client (no read within timeout) triggers a timeout error, connection dropped
-- Bootstrap handler: concurrent connection cap (`MAX_CONCURRENT_BOOTSTRAP_CONNECTIONS`) — connections beyond the cap are dropped immediately
+- Bootstrap handler: concurrent connection cap (`MAX_CONCURRENT_PROXY_CONNECTIONS`) — connections beyond the cap are dropped immediately
 - Topic announce listener: valid `TopicAnnounce` message causes subscription to the announced topic
 - Topic announce listener: invalid topic string (fails `topic_str_is_valid`) is rejected, no subscription created
 - Topic announce listener: subscription cap (`MAX_TOPICS`) enforced — topics beyond the cap are silently dropped

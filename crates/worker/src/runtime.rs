@@ -31,7 +31,7 @@ pub async fn run<N: Network>(
     let (workers_sender, workers_events) = network.subscribe(workers_topic_id, vec![]).await?;
 
     let ops_topic_id = willow_network::topic_id(crate::types::SERVER_OPS_TOPIC);
-    let (_ops_sender, ops_events) = network.subscribe(ops_topic_id, vec![]).await?;
+    let (ops_sender, ops_events) = network.subscribe(ops_topic_id, vec![]).await?;
 
     // Create actor system and spawn actors.
     // The ready signal ensures NetworkActor waits for StateActor to
@@ -53,6 +53,10 @@ pub async fn run<N: Network>(
             identity.clone(),
         )
         .with_ops_events(ops_events)
+        // SERVER_OPS broadcast handle: after serving a `Sync`, the network
+        // actor broadcasts a `HistorySyncComplete` marker here so subscribed
+        // clients learn this provider's backfill is complete (PR 5 Task 5.3).
+        .with_ops_sender(ops_sender)
         .with_ready_signal(ready_rx),
     );
 

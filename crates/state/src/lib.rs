@@ -40,7 +40,7 @@ pub mod sync;
 pub mod types;
 
 // Re-exports for convenience.
-pub use dag::{EventDag, InsertError};
+pub use dag::{EventDag, EventFilter, InsertError};
 pub use ephemeral::{
     derive_ephemeral_state, EphemeralConfig, EphemeralKind, EphemeralState,
     DEFAULT_CHANNEL_THRESHOLD_MS, DEFAULT_THREAD_THRESHOLD_MS, DEFAULT_WHISPER_THRESHOLD_MS,

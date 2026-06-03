@@ -13,6 +13,7 @@ import {
   openSidebar,
   openMemberList,
   visibleShell,
+  waitForApp,
 } from './helpers';
 
 // Shared relay + gossip mesh — keep tests inside this file sequential
@@ -201,6 +202,143 @@ test.describe('Multi-peer state synchronization', () => {
       await openSidebar(page2);
       await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'chan-a' })).toBeVisible();
       await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'chan-b' })).toBeVisible();
+    } finally {
+      await ctx1.close();
+      await ctx2.close();
+    }
+  });
+
+  // ── Relay discovery: pkarr bootstrap + mid-session migration ───────────
+  //
+  // Covers the two Integration rows of the outbox-relay-discovery spec
+  // (docs/specs/2026-04-24-outbox-relay-discovery.md §Tests) and PR 6
+  // Task 6.4 of docs/plans/2026-05-28-relay-upgrade-bundle.md. These ride
+  // the real iroh/QUIC mesh + relay, so they sit at the Playwright tier
+  // (not MemNetwork): pkarr address resolution and relay-mediated dialing
+  // are exactly the real-network behaviour MemNetwork cannot exercise.
+
+  test('share-link join uses bootstrap_endpoint_ids and falls back when the first bootstrap is unreachable', async ({ peer, browser, baseURL }, testInfo) => {
+    // Firefox: clipboard permissions for reading the generated link are
+    // unsupported (same gate as join-links.spec.ts).
+    test.skip(testInfo.project.name.includes('firefox'), 'clipboard permissions not supported in Firefox');
+    // Mobile P2P join over the real relay flakes past budget — the Layer-1
+    // resolution + fallback logic is unit-tested in crates/web/src/app.rs
+    // (bootstrap_preference_*); this row asserts the live end-to-end path.
+    test.skip(testInfo.project.name.startsWith('mobile'), 'mobile P2P join-url real-network flake');
+    test.setTimeout(120_000);
+
+    // Alice owns the server and mints a share link. The inviter now ships
+    // the server's live SyncProvider EndpointIds in the token
+    // (bootstrap_endpoint_ids) so the joiner can resolve them via pkarr.
+    const ctxA = await browser.newContext({
+      permissions: ['clipboard-read', 'clipboard-write'],
+    });
+    const pageA = await ctxA.newPage();
+    const alice = await peer(pageA, 'Alice');
+    await freshStart(pageA);
+    await createServer(pageA, 'Discovery Test', 'Alice');
+
+    // Generate the join link from settings (same UI path as join-links.spec).
+    await openSidebar(pageA);
+    await pageA.locator(`${visibleShell(pageA)} [aria-label="grove menu"]`).first().click();
+    await pageA.locator('.settings-panel, .settings-overlay').first().waitFor({ timeout: 5_000 });
+    await pageA.locator('button', { hasText: 'Create Invite Link' }).click();
+    await pageA.locator('.copied-tooltip', { hasText: 'Copied!' }).waitFor({ timeout: 5_000 });
+    const clipboardUrl = await pageA.evaluate(() => navigator.clipboard.readText());
+    expect(clipboardUrl).toContain('#join=');
+    await pageA.locator('text=Back').click();
+
+    // Rewrite the token so its bootstrap_endpoint_ids LEAD with a freshly
+    // generated — and therefore unreachable — EndpointId. The join must
+    // still complete: an undiallable first bootstrap is skipped and the
+    // surviving bootstrap / relay fallback carries the sync (spec Layer-1
+    // fallback policy, pinned decision Q2).
+    const originalToken = clipboardUrl.substring(clipboardUrl.indexOf('#join=') + '#join='.length);
+    const rewrittenToken = await pageA.evaluate(
+      (t) => (window as unknown as {
+        __willow: { prepend_unreachable_bootstrap: (s: string) => string };
+      }).__willow.prepend_unreachable_bootstrap(t),
+      originalToken,
+    );
+    expect(rewrittenToken).not.toBe(originalToken);
+    const joinUrl = `${baseURL}/#join=${rewrittenToken}`;
+
+    // Bob opens the rewritten link. The first bootstrap is dead; resolution
+    // falls through. We assert convergence — not a specific transport — so
+    // the test pins the spec's observable contract (the join completes),
+    // not an implementation detail of which path won.
+    const ctxB = await browser.newContext();
+    const pageB = await ctxB.newPage();
+    const bob = await peer(pageB, 'Bob');
+    await pageB.goto(joinUrl);
+    await waitForApp(pageB);
+
+    await expect(pageB.locator('.join-card-server')).toContainText('Discovery Test', { timeout: 10_000 });
+    await pageB.locator('.join-card-field input').fill('Bob');
+    await pageB.locator('.join-card-btn').click();
+
+    // The chat shell mounts post-join and Bob's DAG converges with Alice's,
+    // proving the dead first bootstrap did not block the sync.
+    await pageB.locator('.app-shell, .mobile-top-bar').first().waitFor();
+    await bob.waitUntilHeadsEqual(alice);
+
+    await openSidebar(pageB);
+    await expect(pageB.locator(`${visibleShell(pageB)} .channel-item`, { hasText: 'general' })).toBeVisible();
+
+    await ctxA.close();
+    await ctxB.close();
+  });
+
+  test('authority change mid-session — existing client keeps syncing without reload', async ({ peer, browser }, testInfo) => {
+    // The member-list grant UI is desktop-only (same gate the member-list
+    // test uses); the mid-session re-resolution guarantee is itself
+    // browser-agnostic.
+    test.skip(testInfo.project.name.startsWith('mobile'), 'mobile shell does not expose the grant UI');
+    test.setTimeout(120_000);
+
+    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser);
+    const alice = await peer(page1, 'Alice');
+    const bob = await peer(page2, 'Bob');
+    try {
+      // Baseline: both peers are connected and converged.
+      await bob.waitUntilHeadsEqual(alice);
+
+      // Owner changes the server's authority/provider set mid-session. The
+      // member list's grant action ("Trust") is the UI-drivable authority
+      // change available here (granting admin → implicit all-permissions,
+      // which subsumes SyncProvider). A relay/worker migration is the same
+      // DAG-level shape: the live authoritative-provider set changes while
+      // existing sessions stay open. Clients must pick up the change by
+      // re-resolving on the open mesh — pkarr resolves each EndpointId's
+      // current addresses on demand — without a page reload.
+      await openMemberList(page1);
+      const bobMember = page1.locator('.member-item', { hasText: 'Bob' });
+      await bobMember.waitFor({ timeout: 20_000 });
+      // The per-row grant controls (`.member-actions`) are hover-revealed:
+      // `display: none` until `.member-item:hover` (see crates/web/style.css).
+      // Hover the row so the Trust button is visible before we drive it; the
+      // mouse stays over the row through the subsequent click (the button is a
+      // descendant, so the parent keeps its :hover state).
+      await bobMember.hover();
+      // Exact match: `hasText: 'Trust'` would also match the sibling
+      // "Untrust" button (substring), so anchor to the whole label.
+      const trustBtn = bobMember.locator('button', { hasText: /^Trust$/ });
+      await trustBtn.waitFor({ state: 'visible', timeout: 10_000 });
+      await trustBtn.click();
+
+      // The grant is itself an event; both peers converge on it.
+      await bob.waitUntilHeadsEqual(alice);
+
+      // Crucial assertion: WITHOUT any page reload, a NEW mutation by Alice
+      // after the authority change still propagates to Bob. If the session
+      // had to restart to pick up the changed provider set, this channel
+      // would never reach Bob. No `page.reload()` appears anywhere in this
+      // test — that absence is the assertion.
+      await createChannel(page1, 'post-migration');
+      await bob.waitUntilHeadsEqual(alice);
+
+      await openSidebar(page2);
+      await expect(page2.locator(`${visibleShell(page2)} .channel-item`, { hasText: 'post-migration' })).toBeVisible();
     } finally {
       await ctx1.close();
       await ctx2.close();

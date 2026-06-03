@@ -460,7 +460,7 @@ impl PendingBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dag::EventDag;
+    use crate::dag::{EventDag, EventFilter};
     use crate::event::EventKind;
     use crate::materialize::materialize;
     use willow_identity::Identity;
@@ -599,6 +599,302 @@ mod tests {
         let delta = dag.events_since(&their_heads, None);
         // They're missing id_b entirely.
         assert_eq!(delta.len(), 1); // b1
+    }
+
+    // ── SyncFilter-aware events_since + known_authors ──────────────────────
+
+    #[test]
+    fn known_authors_returns_every_chain_author() {
+        let id_a = Identity::generate();
+        let id_b = Identity::generate();
+        let id_c = Identity::generate();
+        let mut dag = test_dag(&id_a);
+
+        for id in [&id_b, &id_c] {
+            let e = dag.create_event(
+                id,
+                EventKind::SetProfile {
+                    display_name: "x".into(),
+                },
+                vec![],
+                0,
+            );
+            dag.insert(e).unwrap();
+        }
+
+        let mut got = dag.known_authors();
+        got.sort_by_key(|a| *a.as_bytes());
+        let mut want = vec![id_a.endpoint_id(), id_b.endpoint_id(), id_c.endpoint_id()];
+        want.sort_by_key(|a| *a.as_bytes());
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn known_authors_empty_dag() {
+        let dag = EventDag::new();
+        assert!(dag.known_authors().is_empty());
+    }
+
+    #[test]
+    fn events_since_filtered_none_matches_unfiltered() {
+        // A `None` filter must behave exactly like the legacy `events_since`.
+        let id = Identity::generate();
+        let mut dag = test_dag(&id);
+        for i in 0..3 {
+            let e = dag.create_event(
+                &id,
+                EventKind::SetProfile {
+                    display_name: format!("n{i}"),
+                },
+                vec![],
+                0,
+            );
+            dag.insert(e).unwrap();
+        }
+        let their_heads = BTreeMap::new();
+        let unfiltered: Vec<_> = dag
+            .events_since(&their_heads, None)
+            .into_iter()
+            .map(|e| e.hash)
+            .collect();
+        let filtered: Vec<_> = dag
+            .events_since_filtered(&their_heads, None, None)
+            .into_iter()
+            .map(|e| e.hash)
+            .collect();
+        assert_eq!(unfiltered, filtered);
+    }
+
+    #[test]
+    fn events_since_filtered_by_authors() {
+        let id_a = Identity::generate();
+        let id_b = Identity::generate();
+        let mut dag = test_dag(&id_a);
+        let b1 = dag.create_event(
+            &id_b,
+            EventKind::SetProfile {
+                display_name: "b".into(),
+            },
+            vec![],
+            0,
+        );
+        dag.insert(b1.clone()).unwrap();
+
+        let their_heads = BTreeMap::new();
+        let filter = EventFilter {
+            authors: Some(vec![id_b.endpoint_id()]),
+            ..Default::default()
+        };
+        let got: Vec<_> = dag
+            .events_since_filtered(&their_heads, Some(&filter), None)
+            .into_iter()
+            .map(|e| (e.author, e.hash))
+            .collect();
+        assert_eq!(got, vec![(id_b.endpoint_id(), b1.hash)]);
+    }
+
+    #[test]
+    fn events_since_filtered_channels_narrows_chat_keeps_structural() {
+        // `channels` narrows chat-shaped kinds (Message) but structural events
+        // (GrantPermission, CreateChannel) always reconcile regardless.
+        let owner = Identity::generate();
+        let member = Identity::generate();
+        let mut dag = test_dag(&owner);
+
+        // Structural: create two channels + grant a permission.
+        for (cid, name) in [("c-gen", "general"), ("c-rnd", "random")] {
+            let e = dag.create_event(
+                &owner,
+                EventKind::CreateChannel {
+                    channel_id: cid.into(),
+                    name: name.into(),
+                    kind: crate::types::ChannelKind::Text,
+                    ephemeral: None,
+                },
+                vec![],
+                0,
+            );
+            dag.insert(e).unwrap();
+        }
+        let grant = dag.create_event(
+            &owner,
+            EventKind::GrantPermission {
+                peer_id: member.endpoint_id(),
+                permission: crate::event::Permission::SendMessages,
+            },
+            vec![],
+            0,
+        );
+        dag.insert(grant).unwrap();
+
+        // Chat: one message in each channel.
+        for cid in ["c-gen", "c-rnd"] {
+            let e = dag.create_event(
+                &owner,
+                EventKind::Message {
+                    channel_id: cid.into(),
+                    body: "hi".into(),
+                    reply_to: None,
+                },
+                vec![],
+                0,
+            );
+            dag.insert(e).unwrap();
+        }
+
+        let their_heads = BTreeMap::new();
+        let filter = EventFilter {
+            channels: Some(vec!["c-gen".to_string()]),
+            ..Default::default()
+        };
+        let got = dag.events_since_filtered(&their_heads, Some(&filter), None);
+
+        // The "c-rnd" Message must be excluded; the "c-gen" Message kept; all
+        // structural events (genesis CreateServer, both CreateChannels, the
+        // GrantPermission) kept regardless of the channel filter.
+        let mut chat_channels: Vec<String> = Vec::new();
+        let mut structural = 0usize;
+        for e in &got {
+            match &e.kind {
+                EventKind::Message { channel_id, .. } => chat_channels.push(channel_id.clone()),
+                _ => structural += 1,
+            }
+        }
+        assert_eq!(chat_channels, vec!["c-gen".to_string()]);
+        // genesis + 2 CreateChannel + 1 GrantPermission = 4 structural events.
+        assert_eq!(structural, 4);
+    }
+
+    #[test]
+    fn events_since_filtered_by_event_kinds() {
+        let id = Identity::generate();
+        let mut dag = test_dag(&id);
+        let msg = dag.create_event(
+            &id,
+            EventKind::Message {
+                channel_id: "c".into(),
+                body: "m".into(),
+                reply_to: None,
+            },
+            vec![],
+            0,
+        );
+        dag.insert(msg.clone()).unwrap();
+        let profile = dag.create_event(
+            &id,
+            EventKind::SetProfile {
+                display_name: "p".into(),
+            },
+            vec![],
+            0,
+        );
+        dag.insert(profile).unwrap();
+
+        let their_heads = BTreeMap::new();
+        // Keep only Message-kind events.
+        let msg_disc = EventKind::Message {
+            channel_id: String::new(),
+            body: String::new(),
+            reply_to: None,
+        }
+        .discriminant();
+        let filter = EventFilter {
+            event_kinds: Some(vec![msg_disc]),
+            ..Default::default()
+        };
+        let got = dag.events_since_filtered(&their_heads, Some(&filter), None);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].hash, msg.hash);
+        assert!(matches!(got[0].kind, EventKind::Message { .. }));
+    }
+
+    #[test]
+    fn events_since_filtered_by_since_ms() {
+        let id = Identity::generate();
+        let mut dag = test_dag(&id); // genesis timestamp_hint_ms = 0
+        let early = dag.create_event(
+            &id,
+            EventKind::SetProfile {
+                display_name: "early".into(),
+            },
+            vec![],
+            1_000,
+        );
+        dag.insert(early).unwrap();
+        let late = dag.create_event(
+            &id,
+            EventKind::SetProfile {
+                display_name: "late".into(),
+            },
+            vec![],
+            5_000,
+        );
+        dag.insert(late.clone()).unwrap();
+
+        let their_heads = BTreeMap::new();
+        let filter = EventFilter {
+            since_ms: Some(3_000),
+            ..Default::default()
+        };
+        let got = dag.events_since_filtered(&their_heads, Some(&filter), None);
+        // Only the `late` event (ts 5000 >= 3000) survives the advisory floor;
+        // genesis (0) and early (1000) are dropped.
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].hash, late.hash);
+    }
+
+    #[test]
+    fn events_since_filtered_respects_limit() {
+        let id = Identity::generate();
+        let mut dag = test_dag(&id);
+        for i in 0..10 {
+            let e = dag.create_event(
+                &id,
+                EventKind::SetProfile {
+                    display_name: format!("n{i}"),
+                },
+                vec![],
+                0,
+            );
+            dag.insert(e).unwrap();
+        }
+        let their_heads = BTreeMap::new();
+        let got = dag.events_since_filtered(&their_heads, None, Some(4));
+        assert_eq!(got.len(), 4);
+    }
+
+    /// Pin the bincode variant-index encoding `discriminant()` relies on:
+    /// bincode is not self-describing and encodes the enum variant index as a
+    /// fixed-width u32 prefix (low byte first), independent of the serde
+    /// `tag` attribute. `discriminant()` returns that low byte and is stable
+    /// because EventKind variants are append-only (see CLAUDE.md).
+    #[test]
+    fn discriminant_matches_bincode_variant_index_low_byte() {
+        let kinds = [
+            EventKind::CreateServer {
+                name: String::new(),
+            },
+            EventKind::Message {
+                channel_id: String::new(),
+                body: String::new(),
+                reply_to: None,
+            },
+            EventKind::SetProfile {
+                display_name: String::new(),
+            },
+        ];
+        for k in kinds {
+            let bytes = bincode::serialize(&k).unwrap();
+            assert_eq!(k.discriminant(), bytes[0]);
+        }
+        // CreateServer is the first variant → index 0.
+        assert_eq!(
+            EventKind::CreateServer {
+                name: String::new()
+            }
+            .discriminant(),
+            0
+        );
     }
 
     #[test]
