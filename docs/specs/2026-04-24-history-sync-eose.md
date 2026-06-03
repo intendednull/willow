@@ -43,6 +43,22 @@ visible invariant we need is identical: **after the client has seen
 one of these markers from a trusted provider, it knows the loading
 state has resolved and the UI can commit.**
 
+## Prior Art
+
+A signal that separates the *backfill* of stored history from the ongoing *live* stream — a "you are caught up" watermark — is a recurring pattern across sync protocols. Willow borrows the watermark idea while diverging on scoping (per `(topic_id, provider, stream_generation)` rather than per-subscription) and strengthening the contract with `last_event_hash` truncation detection.
+
+| System | Relevance to Willow's completion marker |
+|---|---|
+| **Nostr NIP-01 `EOSE`** ("End of Stored Events") | Direct inspiration: `["EOSE", <subid>]` is a zero-payload frame a relay emits after flushing all *stored* events for a subscription, drawing the backfill/live line. Willow diverges deliberately — NIP-01 scopes `EOSE` to a relay subscription id, offers no integrity guarantee, and tolerates silent `limit` truncation. Willow has no subscription ids (gossip mesh), scopes per `(topic_id, provider, stream_generation)`, and makes the marker verifiable via `last_event_hash`. |
+| **Nostr Negentropy syncing** (NIP-77) | Range-Based Set Reconciliation: two peers recursively compare range fingerprints to converge on a shared event set and *know* they agree. Contrast: Willow keeps the lightweight EOSE-style "caught up" marker rather than full range reconciliation, but `last_event_hash` truncation detection plays the integrity role negentropy gets from comparing fingerprints. |
+| **Matrix Client-Server `/sync`** (`since` / `next_batch` pagination boundary) | Opaque stream cursor: each `/sync` response returns a `next_batch` token the client passes back as `since`, marking where the prior batch ended and incremental sync resumes — a per-client backfill/live boundary token. Willow's `stream_generation` is the analogous epoch token, but rides a gossip-mesh broadcast instead of an HTTP long-poll cursor and is scoped per-provider rather than per-client. |
+| **WebDAV Collection Synchronization** (RFC 6578; basis of CalDAV/CardDAV `sync-token`) | Server-issued opaque `sync-token` as a watermark between a full enumeration (empty token) and later deltas — the canonical "backfill complete, here is your resume point" pattern. Willow's marker serves the same boundary role but is peer-broadcast and authenticated (Ed25519 envelope signer) rather than a single trusted server's token. |
+| **IMAP CONDSTORE / QRESYNC** (RFC 7162) | `HIGHESTMODSEQ` watermark plus quick resynchronization lets a client tell exactly when it has caught up *and* detect vanished/missed messages. Inspires Willow's "stronger-than-EOSE" goal: detect truncation and gaps, not merely receive a soft "done." |
+| **Secure Scuttlebutt EBT** (replication based on the Epidemic Broadcast Trees / Plumtree paper; Leitão, Pereira & Rodrigues, SRDS 2007) | have/want vector-clock reconciliation over an epidemic gossip mesh (Plumtree-derived) — the closest mesh analogue to Willow's transport. Willow adopts the "broadcast a completion fact over the mesh" shape but uses an explicit named `HistorySyncComplete` marker instead of an implicit want-set drain. |
+| **Automerge / Yjs sync protocol** (terminal "no more changes" step) | A heads / state-vector exchange where an empty change payload still signals "you are caught up to my state" (Automerge always sends at least one message so the peer learns its heads). Willow's marker is the explicit, named equivalent of that terminal empty-delta, carrying `last_event_hash` so the receiver confirms convergence rather than infers it from silence. |
+| **Git fetch pack negotiation** (`done` / `ACK` boundary) | `have`/`want` negotiation terminated by `done` and a final `ACK`, bounding exactly which objects backfill the history. Mirrors Willow's need for a definitive "backfill complete up to this hash" boundary; `last_event_hash` is the DAG-tip analogue of git's negotiated cutoff. |
+| **libp2p Bitswap / GraphSync** (IPFS `want-have` / `want-block`, session completion) | Block-exchange sessions over a Merkle-DAG that complete when the requested graph is fully fetched, reinforcing the per-session completion model. Willow scopes completion per provider + generation rather than per content-addressed session, because multiple `SyncProvider` peers may serve one topic concurrently. |
+
 ## Wire format
 
 The existing transport-layer enum `MessageType` in

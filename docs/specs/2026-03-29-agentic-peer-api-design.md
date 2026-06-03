@@ -139,6 +139,22 @@ processes enables:
    client) or binds to `127.0.0.1`. No remote access without explicit
    configuration.
 
+## Prior Art
+
+The agentic peer API builds on established agent-integration protocols and bot-platform
+patterns, adopting some and pointedly diverging from others:
+
+| Work | Relevance to this design |
+|---|---|
+| **Model Context Protocol** (Anthropic, open-sourced 2024-11-25) | The substrate itself: an open standard for exposing tool/resource/prompt surfaces to LLM agents with built-in schema discovery (`tools/list`), notifications, and an auth model. Willow embeds an MCP server (`willow-agent`) so any MCP client drives it with zero integration; ClientHandle methods → tools, StateRef views → resources, Broker events → notifications. |
+| **JSON-RPC 2.0** (spec dated 2010-03-26) | The transport-agnostic request/response + notification envelope MCP rides on. Willow inherits it for free via the MCP layer rather than defining a new wire protocol — the existing client surfaces map 1:1 onto JSON-RPC methods. |
+| **OpenAI function calling / tool use** (Chat Completions, 2023-06-13) | Established the "describe a typed function, let the model emit a structured call" paradigm that MCP later standardized across clients. Willow's `schemars`-derived tool schemas are the same idea, but vendor-neutral and discoverable at runtime instead of hand-registered per model. |
+| **Matrix Application Service API** (`spec.matrix.org`, appservice `as_token`/`hs_token`) | Closest analogue *and* the key contrast. Matrix appservices are first-class, token-authenticated homeserver clients (inspiration for an agent as a real peer) — but they masquerade as users via the `user_id` query param to bridge other networks. Willow explicitly **rejects** this delegation/"act-on-behalf-of-user" model: each agent gets its own auditable Ed25519 identity ("peer, not proxy"). |
+| **Discord bot gateway + Gateway Intents** (Discord Developer Portal) | Scoped bot participation: a bot connects with a token and declares *intents* to receive only the event groups it needs, with bitwise permissions layered on top. Willow's bearer-token scopes (Full/ReadOnly/Messaging/Admin) follow the same restrict-don't-expand shape — ReadOnly even hides mutating tools from `tools/list` entirely, the MCP analogue of withholding an intent. |
+| **Slack Events API + OAuth bot scopes** (`xoxb-` bot tokens, granular per-method scopes) | The bot-as-installed-app integration model with fine-grained, per-capability OAuth scopes granted at install time. Reinforces the design's bearer-token scope axis; Willow diverges by making scopes a *local* attenuation of an already-granted network identity rather than a server-side grant. |
+| **OAuth 2.1 bearer tokens** (IETF `draft-ietf-oauth-v2-1`) + **principle of least privilege** (Saltzer & Schroeder, *The Protection of Information in Computer Systems*, Proc. IEEE, 1975) | The capability-scoping foundation: a token confers a bounded, least-authority capability. Willow's two-axis security makes this strictly attenuating — a scope can only *restrict*, never *expand*, the peer's underlying network permissions — and defaults to local-only (stdio isolation, 127.0.0.1 bind). |
+| **Server-Sent Events** (WHATWG HTML Living Standard, `text/event-stream` / `EventSource`) | The long-lived HTTP server-push model underpinning MCP's streamable-HTTP transport. Willow uses it for the notification channel (Broker `ClientEvent`s → MCP notifications) when not running over stdio. |
+
 ## Architecture
 
 ```

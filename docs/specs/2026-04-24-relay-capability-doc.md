@@ -27,6 +27,23 @@ invite or payment proof before dialling; surface a "degraded / full"
 banner; display operator name, contact, and ToS in a settings sheet;
 and filter a relay directory without connecting to each candidate.
 
+## Prior Art
+
+This design adapts the established pattern of a pre-connect, operator-controlled capability document served at a well-known HTTP path:
+
+| Source | Relevance to this design |
+|---|---|
+| **Nostr NIP-11** — Relay Information Document (`application/nostr+json`) | Closest analogue: a relay-operator-controlled JSON document fetched before opening the WebSocket, advertising supported features and `payment_required`. Willow keeps the pre-connect fetch and the operator-metadata role, but diverges on transport (a `/.well-known/willow` path under RFC 8615 rather than NIP-11's `Accept: application/nostr+json` on the relay URL, since Willow's proxy multiplexes by path, not by `Accept`) and adds a mandatory detached signature NIP-11 lacks. |
+| **Matrix Client-Server API** — `GET /_matrix/client/versions` and `GET /_matrix/client/v3/capabilities` (both distinct endpoints since r0.5.0, ~2019) | Precedent for splitting *public, cacheable, unauthenticated* version negotiation (`/versions`) from *per-user, authenticated* capabilities. Willow's document is the public-cacheable half only — the relay is topic-agnostic, so it serves one shared host-level document, with authoritative selection deferred to the connection handshake (mirrors Matrix advertising versions ahead of the actual API contract). |
+| **XMPP XEP-0115 / XEP-0390** — Entity Capabilities (1.0 and 2.0) | Source of the cache-poisoning lesson. XEP-0115's hash-as-cache-key was found forgeable; XEP-0390 re-keyed the capabilities cache on a verifiable digest. Willow applies the corrected lesson up front: the document is signed and content-addressable, so cross-relay caching keys on a verified hash rather than a spoofable advertisement. |
+| **RFC 8615** — Well-Known Uniform Resource Identifiers (URIs) | Defines the `/.well-known/` namespace used for the `/.well-known/willow` path, chosen over a top-level `/willow-info` path or a dedicated sidecar port. |
+| **RFC 8785** — JSON Canonicalization Scheme (JCS) | Provides the deterministic byte serialization the Ed25519 signature is computed over (signature field excluded), so independent verifiers and caches agree on the signed bytes and the content hash. |
+| **RFC 6455** — The WebSocket Protocol (`Sec-WebSocket-Protocol`) | The capability document's `protocol_versions` is advisory pre-connect filtering only; authoritative version selection is delegated to RFC 6455 subprotocol negotiation at the WebSocket handshake, keeping the cacheable HTTP document free of per-connection state. |
+| **NodeInfo** — Fediverse instance metadata at `/.well-known/nodeinfo` (used by Mastodon et al.) | Strong precedent for operator-published server metadata at a well-known URI with a two-step discovery indirection; Willow follows the well-known-document convention but signs the payload and serves it inline on the relay port rather than via a separate discovery document. |
+| **RFC 8414 / OpenID Connect Discovery** — OAuth 2.0 Authorization Server Metadata (`/.well-known/oauth-authorization-server`) and OIDC `/.well-known/openid-configuration` | Canonical precedent for a fetch-before-you-connect well-known capability document that clients consume to configure the subsequent protocol exchange. Willow mirrors the discovery-document role and adds payload signing to defend against on-path/CDN tampering of fields like `payment_required` and `pubkey`. |
+| **RFC 9110** — HTTP Semantics (ETag / `If-None-Match`) | Because the document is signed and content-addressable, its hash is a natural strong `ETag`; conditional `If-None-Match` revalidation lets clients and intermediaries cache it cheaply across reconnects without re-verifying unchanged bytes. |
+| **Tor directory protocol** — signed relay descriptors and directory consensus | Precedent for operator-controlled relay metadata authenticated by the relay's own signing key, so downstream consumers trust the contents independently of the transport. Willow's per-relay Ed25519 signature plays the same role for a single relay's capability document. |
+
 ## Dispatch surgery (relay)
 
 Today `dispatch_connection` in `crates/relay/src/lib.rs` carves out
@@ -427,9 +444,10 @@ mismatch banner is rendered.
   zero HTTP round-trips. Complementary to this document, not a
   replacement: SVCB cannot carry `terms_of_service`,
   `description`, or `status_detail`.
-- **Per-peer capabilities.** Matrix split `/versions` (public,
-  cacheable) from `/capabilities` (authenticated, per-user) at
-  v1.10. If/when Willow grows per-peer capability answers, route
-  them at a *new* path (e.g. `/willow/peer-capabilities`) rather
-  than overloading `/.well-known/willow` — Matrix's v1.10 retrofit
-  is a cautionary tale.
+- **Per-peer capabilities.** Matrix keeps `/versions` (public,
+  cacheable) and `/capabilities` (authenticated, per-user) as
+  separate endpoints. If/when Willow grows per-peer capability
+  answers, route them at a *new* path (e.g.
+  `/willow/peer-capabilities`) rather than overloading
+  `/.well-known/willow` — keeping the public, cacheable document
+  free of per-peer state.

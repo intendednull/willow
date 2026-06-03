@@ -173,6 +173,7 @@ See also: [`plans/STATUS.md`](plans/STATUS.md) — point-in-time audit of which 
 **Reports**
 
 - [Test audit](reports/2026-04-13-test-audit.md) — audit of 14 crates finding coverage gaps at client, relay, and UI/state bridge layers. `[active]`
+- [Prior-art coverage survey](reports/2026-05-29-prior-art-coverage-survey.md) — surveyed all 29 specs, added verified `## Prior Art` sections to 17 of them; records the adversarial citation review. `[landed]`
 
 ### Process & Tooling
 

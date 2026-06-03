@@ -44,6 +44,24 @@ TLV bodies give a forward-compatible slot for hints.
 - **No key material on screen.** We do not introduce an `nsec`
   equivalent. Private keys never have a user-facing string form.
 
+## Prior Art
+
+The encoding design draws on a lineage of human-facing, checksummed,
+type-tagged identifier formats:
+
+| System | Key idea adopted / how Willow diverges |
+|---|---|
+| **Bitcoin bech32 — BIP-173** (Pieter Wuille & Greg Maxwell, 2017) | The core format: a human-readable prefix, a `1` separator, a base32 data part, and a BCH-code checksum that loudly detects typos and substitutions. Willow takes the HRP-as-type-tag idea but rejects plain bech32 for its variable-length mutation weakness (next row). |
+| **Bitcoin bech32m — BIP-350** (Pieter Wuille, 2021) | The checksum constant Willow actually uses (`0x2bc830a3` instead of `1`), which closes bech32's "insert/delete `q` before a trailing `p`" mutation gap. Decisive for Willow because `wevent`/`wchan`/`winv` are explicitly variable-length TLV payloads where length alone cannot reject malformation. |
+| **BCH error-detecting codes** (Bose–Chaudhuri–Hocquenghem, 1959–60) | The math under the bech32/bech32m checksum: a BCH code that BIP-173 documents as detecting any error affecting at most 4 characters, with <1-in-10⁹ chance of missing larger errors. Willow inherits this guarantee wholesale; "loud error detection" in the motivation is exactly this property. |
+| **Nostr NIP-19** (bech32-encoded entities) | The most direct ancestor: per-object-kind prefixes (`npub`, `note`, `nprofile`, `nevent`, `naddr`) and TLV bodies carrying relay/author/kind hints for the compound forms. Willow mirrors the TLV numbering (type 0 = `Special`, 1 = `Relay`, 2 = `Author`) for reviewer familiarity, but diverges deliberately: bech32**m** not bech32, **no** `nsec`-equivalent secret form, and Willow-specific TLV types starting at 16 to avoid future NIP-19 collisions. NIP-19's "these strings are display-only, never on the wire" rule is adopted verbatim. |
+| **Base58Check** (Bitcoin legacy addresses) | The prior generation's answer to the same problem — a version byte for type tagging plus a truncated double-SHA-256 checksum. Willow rejects it: no in-string human-readable type, an ambiguous mixed-case alphabet, no `1`-style separator, and weaker (non-BCH) error-detection guarantees than bech32m. |
+| **Multiformats: multibase + multihash** (Protocol Labs; IPFS/IPLD/libp2p) | Self-describing encodings where a leading code names the base/hash algorithm, future-proofing the format. Willow borrows the "make the identifier self-describing" goal but pushes the type signal into a fixed per-kind HRP rather than a varint multicodec table — trading open-ended generality for a closed, human-readable, allow-listable prefix set. |
+| **Stellar StrKey** (versioned base32 + CRC16) | Independent convergence on the same recipe: a leading version byte encoding the key/object type (`G`/`S`/`M`…) plus a CRC16 checksum over RFC-4648 base32. Confirms the type-tag + checksum pattern is well-trodden; Willow swaps CRC16 for the stronger BCH checksum and an in-band ASCII HRP over an opaque version byte. |
+| **Crockford Base32** (Douglas Crockford) | The human-factors precedent: a base32 alphabet excluding visually ambiguous characters (I, L, O, U), case-insensitive on decode, with an optional check symbol. Willow gets the same readability/typo-resistance for free because bech32's charset is itself an ambiguity-avoiding base32 in this spirit. |
+| **W3C did:key** (multibase + multicodec / Multikey) | Encoding raw public keys as self-describing, copy-pasteable strings (a `z` multibase prefix over a multicodec key-type tag + raw key bytes). Same goal as Willow's `wpeer`; Willow chooses a short fixed HRP over a multicodec varint and confines the format to a display boundary rather than making it the canonical wire identifier. |
+| **Cardano CIP-19** (bech32 addresses, with kind-specific HRPs `addr` / `stake` defined in CIP-5) | A second large-scale bech32 adopter beyond Bitcoin and Nostr, using kind-specific HRPs and — like Willow — dropping bech32's fixed length cap for variable-length payloads. Cited as evidence the HRP convention scales to a real ecosystem; Willow follows the pattern with `w*` prefixes but uses bech32m rather than CIP-19's bech32. |
+
 ## Bech32 vs bech32m
 
 Willow picks **bech32m** (BIP-350) for every HRP.
