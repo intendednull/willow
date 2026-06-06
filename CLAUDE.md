@@ -106,11 +106,6 @@ just relay          # run the relay server
 just dev            # start full local dev stack (relay + workers + web)
 just dev-quick      # same as dev, but skip cargo build
 just dev-clean      # remove .dev/ (keys, logs, storage DB)
-just docker-build   # build all docker images
-just docker-up      # start full stack via docker compose
-just docker-down    # stop docker stack
-just docker-logs    # tail all docker compose logs
-just docker-ids     # print all worker peer IDs
 just clean          # cargo clean + remove crates/web/dist
 ```
 
@@ -132,6 +127,22 @@ Service logs color-coded, interleaved in terminal. `Ctrl+C` stops everything. Id
 After first run, `just dev-quick` skips build, starts services immediately.
 
 If `vibe-annotations-server` installed, `just dev` starts it auto at `http://127.0.0.1:3846` alongside other services.
+
+## Deployment
+
+Production deployment is owned by the **`infra`** repo (the shared NixOS deploy flake) —
+Willow is a `runtime = "multi"` app there (web UI + relay + replay + storage). Willow's
+only deploy artifact is the **flake** (`flake.nix` + `nix/module.nix`), which infra consumes
+as an input. There is no willow-side deploy script or CI deploy job.
+
+- **Deploy / update** (from an `infra` checkout): `nix flake update willow && just deploy web`
+  — builds on the dev box, pushes the closure over the tailnet, gates on `/healthz`.
+- **Topology:** `willow-web` (static, `127.0.0.1:8093`) fronted at `https://willow.intendednull.com`;
+  `willow-relay` (`:3340`) fronted at `https://relay.willow.intendednull.com` (`wss://`, TLS via edge
+  Caddy — browsers on HTTPS can't use plaintext `ws://`); `willow-replay` + `willow-storage` are
+  port-less P2P workers. Keys + `storage.db` persist in `/var/lib/willow`.
+- **Web relay target:** `crates/web/src/app.rs::DEFAULT_RELAY_URL` (baked `wss://relay.willow.intendednull.com`).
+- See `infra/ONBOARDING.md` and `docs/plans/2026-06-05-infra-deployment-migration.md`.
 
 ## Agent Tooling
 

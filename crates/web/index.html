@@ -46,7 +46,11 @@
     <link data-trunk rel="copy-file" href="icon-512.svg" />
     <link data-trunk rel="copy-file" href="sw.js" />
     <link data-trunk rel="copy-file" href="willow-chime.webm" />
-    <link data-trunk rel="rust" data-wasm-opt="z" />
+    <!-- Explicit href scopes trunk to this workspace member's manifest. Without it,
+         trunk searches upward from its cwd and (when run from the workspace root, e.g.
+         the Nix/crane build) hits the virtual root Cargo.toml → "could not find the
+         root package of the target crate". Harmless for `cd crates/web && trunk build`. -->
+    <link data-trunk rel="rust" href="Cargo.toml" data-wasm-opt="z" />
     <link data-trunk rel="copy-file" href="init.js" />
     <script src="init.js"></script>
 </head>

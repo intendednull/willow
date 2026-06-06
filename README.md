@@ -150,14 +150,16 @@ just relay          # relay server only
 just serve-web      # web UI only (trunk serve)
 ```
 
-### Docker
+### Deployment
 
-```bash
-just docker-build   # build all images
-just docker-up      # start full stack
-just docker-down    # stop full stack
-just docker-logs    # tail all logs
-```
+Production deployment is owned by the **`infra`** repo (a shared NixOS deploy flake).
+Willow is a `runtime = "multi"` app there — web UI + relay + replay + storage, fronted by
+the edge Caddy at `https://willow.intendednull.com` (web) and `https://relay.willow.intendednull.com`
+(`wss://` relay). Willow's only deploy artifact is the **flake** (`flake.nix` + `nix/module.nix`),
+which infra consumes as an input — there is no willow-side deploy script.
+
+Deploy/update from an `infra` checkout: `nix flake update willow && just deploy web`. See
+`infra/ONBOARDING.md` and `docs/plans/2026-06-05-infra-deployment-migration.md`.
 
 ## Testing
 

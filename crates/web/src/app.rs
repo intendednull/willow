@@ -55,7 +55,12 @@ pub type WebClientHandle = SendWrapper<ClientHandle<willow_network::iroh::IrohNe
 pub type VoiceManagerHandle = SendWrapper<Rc<RefCell<VoiceManager>>>;
 
 /// Default relay URL for the deployed Willow relay server.
-pub const DEFAULT_RELAY_URL: &str = "https://willow.intendednull.com:9443";
+///
+/// The relay is TLS-terminated by the `infra` edge Caddy at its own subdomain
+/// (browsers on an HTTPS page can't open a plaintext `ws://`), so this is a
+/// bare `wss://` host on port 443 — no explicit port. `bootstrap_id_url`
+/// rewrites the scheme to `https://` to fetch `/bootstrap-id` from the same host.
+pub const DEFAULT_RELAY_URL: &str = "wss://relay.willow.intendednull.com";
 
 /// Resolve the relay URL at runtime: checks `window.__WILLOW_RELAY_URL`,
 /// then falls back to the compiled-in default.

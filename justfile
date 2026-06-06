@@ -190,28 +190,10 @@ build-relay:
 relay *args:
     cargo run -p willow-relay -- {{args}}
 
-# Docker: build all images
-docker-build:
-    docker compose build
-
-# Docker: start full stack
-docker-up:
-    docker compose up -d
-
-# Docker: stop full stack
-docker-down:
-    docker compose down
-
-# Docker: tail all logs
-docker-logs:
-    docker compose logs -f
-
-# Docker: print all worker peer IDs
-docker-ids:
-    @docker compose exec replay-1 willow-replay --print-peer-id 2>/dev/null || echo "replay-1: not running"
-    @docker compose exec replay-2 willow-replay --print-peer-id 2>/dev/null || echo "replay-2: not running"
-    @docker compose exec storage-1 willow-storage --print-peer-id 2>/dev/null || echo "storage-1: not running"
-    @docker compose exec storage-2 willow-storage --print-peer-id 2>/dev/null || echo "storage-2: not running"
+# Deployment is owned entirely by the `infra` repo (willow is a runtime="multi"
+# app there). Deploy from an infra checkout: `nix flake update willow && just
+# deploy web`. Willow only ships the flake (flake.nix + nix/module.nix) that infra
+# consumes as an input. See the Deployment section in README.md / CLAUDE.md.
 
 # Start all services for local development (relay, workers, web UI)
 dev FEATURES="":

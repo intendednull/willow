@@ -185,6 +185,7 @@ See also: [`plans/STATUS.md`](plans/STATUS.md) — point-in-time audit of which 
 **Plans**
 
 - [Docs organization](plans/2026-05-07-docs-organization.md) — populates the master index, creates the skill mirror, and folds the design orphan into specs. `[landed]`
+- [Infra deployment migration](plans/2026-06-05-infra-deployment-migration.md) — moves deployment off the sshpass→Linode systemd deploy onto the shared `infra` NixOS flake as a `runtime="multi"` app (web + relay + replay + storage); adds `flake.nix` + `nix/module.nix`, retires `docker/` + the CI deploy. `[active]`
 
 ## Reference designs
 

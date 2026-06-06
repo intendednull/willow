@@ -15,3 +15,5 @@ playwright-report/
 
 # Local dev data
 .dev/
+/result
+/result-*

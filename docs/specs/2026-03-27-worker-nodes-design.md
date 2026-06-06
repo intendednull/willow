@@ -610,6 +610,13 @@ Configuration fields for:
 
 ## Deployment
 
+> **Superseded (2026-06-05):** The Docker Compose + sshpass/Linode systemd deployment described
+> below is retired. Production deployment now lives in the shared `infra` NixOS flake, where Willow
+> is a single `runtime = "multi"` app (web + relay + replay + storage). The `docker/` directory,
+> `docker-compose.yml`, and the CI deploy workflow were removed. See
+> [`plans/2026-06-05-infra-deployment-migration.md`](../plans/2026-06-05-infra-deployment-migration.md).
+> This section is kept as the historical record of the original worker-node deployment topology.
+
 ### Docker
 
 All infrastructure is containerized for reproducible deployment. A
