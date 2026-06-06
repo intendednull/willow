@@ -1,7 +1,10 @@
 # Plan — Migrate Willow deployment onto the `infra` NixOS flake
 
-**Date:** 2026-06-05
-**Status:** active
+**Date:** 2026-06-05 (live: 2026-06-06)
+**Status:** active — **deployed + live.** `willow.intendednull.com` (web) + `relay.willow.intendednull.com`
+serve valid LE certs; the app mounts and the WASM client connects through the relay (browser-verified).
+Two extra web-build fixes were needed for static serving (see R1/R5). Remaining: open PRs, swap infra's
+`willow` input `git+file`→`git+ssh`, decommission the old box (`172.237.156.18`).
 **Owner:** Noah (operator) + agent
 **Related:** `../infra/docs/specs/2026-06-04-deploy-infra-design.md` (target platform),
 `../infra/ONBOARDING.md` (the contract), `../infra/docs/specs/2026-06-05-multi-process-capability-design.md`
@@ -123,15 +126,21 @@ dev box, pushes it, and the `/healthz` gate verifies every unit; the public site
     `advertised_addr=127.0.0.1` hardcode actually works behind Caddy (the one real runtime risk).
 - **C4.** Update `docs/README.md` indexes (willow + infra). Mark this plan `landed`.
 
-## Risks / open items
+## Risks / open items — resolved
 
-- **R1 (build).** `wasm-bindgen-cli` 0.2.118 may not be the nixpkgs `nixos-26.05` default → override
-  `version`/`cargoHash`. Iterate with real `nix build .#web`.
-- **R2 (runtime).** Relay `advertised_addr` is hardcoded `127.0.0.1` in code. If remote browsers
-  can't establish iroh connectivity through the Caddy-fronted relay, the relay needs an
-  `--advertise-addr`/env override (a willow code change). **Gate: C3 two-browser test.** Do not
-  claim "deployed" until this passes.
-- **R3 (relay vhost).** A module-added Caddy vhost is slightly outside the "one public port" multi
-  convention. Confirm it composes with mkApp's web vhost (no domain collision) at `nix flake check`.
-- **R4 (DNS).** Public go-live blocks on the operator's DNS records; everything up to C1 + the
-  loopback gate is independent of DNS.
+- **R1 (build).** ✅ `wasm-bindgen-cli` pinned to 0.2.118 via `buildWasmBindgenCli` (nixpkgs ships
+  0.2.121). Also needed: `CC/AR_wasm32` → unwrapped LLVM so `ring` compiles its C for wasm; run
+  trunk from `crates/web` (crane runs from the workspace root → "could not find the root package").
+- **R2 (runtime).** ✅ **Cleared.** The deployed WASM client connects through the Caddy-fronted relay
+  (active iroh-gossip in a real browser, no errors) — the hardcoded `advertised_addr=127.0.0.1`
+  works behind Caddy. No relay code change needed.
+- **R3 (relay vhost).** ✅ The module-added `relay.willow.intendednull.com` vhost composes with
+  mkApp's web vhost (different domains, no collision); both serve valid LE certs.
+- **R4 (DNS).** ✅ Operator added A records (web + relay → `5.78.195.207`). Caddy needed a manual
+  `systemctl reload caddy` to clear the ACME backoff from the deploy-before-DNS sequence.
+- **R5 (static serving, web).** ✅ Two trunk-static blockers fixed in the flake's web build, **without
+  touching willow's source CSP/index.html**: (a) `--no-sri=true` — trunk SRI fails under the
+  static-web-server zstd compression; (b) `nix/externalize-bootstrap.py` — willow's CSP
+  `script-src 'self'` (no `'unsafe-inline'`) blocks trunk's inline bootstrap, so it's lifted to an
+  external `/trunk-bootstrap.js` (allowed by `'self'`). **Latent willow bug** (the app can't be
+  served as static files under its own CSP); proper long-term fix belongs in willow's web build.
