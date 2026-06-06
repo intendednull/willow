@@ -149,7 +149,7 @@ jobs:
           key: browser-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: browser-
       - name: Install wasm-pack
-        uses: taiki-e/install-action@50b4a718b59c718df4ef27a3b445f86cd57b9f00 # v2.80.0
+        uses: taiki-e/install-action@56545b37b57562edd73171cb6c62cc509db4c34e # v2.81.7
         with:
           tool: wasm-pack
       - id: browser
