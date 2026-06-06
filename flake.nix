@@ -131,6 +131,12 @@
         '';
         installPhaseCommand = ''
           cp -r crates/web/dist $out
+          chmod -R u+w $out
+          # Trunk emits its WASM bootstrap inline; the app's strict CSP
+          # (script-src 'self', no 'unsafe-inline') blocks inline scripts, so the
+          # statically-served app never boots. Lift it to an external module file
+          # (allowed by 'self') — no CSP change. See nix/externalize-bootstrap.py.
+          ${pkgs.python3}/bin/python3 ${./nix/externalize-bootstrap.py} $out/index.html
         '';
       });
     in
