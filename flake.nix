@@ -119,8 +119,15 @@
         # root package of the target crate". Run trunk from inside crates/web (a subshell
         # so the install step still copies from the workspace root). cargo still finds the
         # workspace root + crane's prebuilt target/ + CARGO_HOME vendor config (all absolute).
+        #
+        # --no-sri: the edge serves these assets compressed (static-web-server zstd), and
+        # Chrome's SRI check rejects the integrity-tagged module/wasm under that encoding,
+        # so the WASM never instantiates → blank "Loading…" page. SRI adds ~nothing for
+        # same-origin first-party assets (the same origin serves index.html AND the hashes;
+        # TLS already covers MITM), so drop it for the deploy build. Local `trunk serve`
+        # (uncompressed) keeps SRI — this only affects the compressed production artifact.
         buildPhaseCargoCommand = ''
-          ( cd crates/web && trunk build --release=true index.html )
+          ( cd crates/web && trunk build --release=true --no-sri=true index.html )
         '';
         installPhaseCommand = ''
           cp -r crates/web/dist $out
