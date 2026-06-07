@@ -62,11 +62,12 @@ Every entry below carries one of:
 **Plans**
 
 - [Iroh migration](plans/2026-03-29-iroh-migration.md) — migrates networking layer from libp2p to iroh with `IrohNetwork` and `MemNetwork`. `[landed]`
-- [Relay upgrade bundle](plans/2026-05-28-relay-upgrade-bundle.md) — six sequential PRs realizing the capability-doc, heads-based sync, history-sync EOSE, and pkarr-discovery specs. `[active]`
+- [Relay upgrade bundle](plans/2026-05-28-relay-upgrade-bundle.md) — six sequential PRs realizing the capability-doc, heads-based sync, history-sync EOSE, and pkarr-discovery specs. Landed as #664. `[landed]`
 
 **Reports**
 
 - [Heads-sync owner-serve gate + gossip EOSE emission](reports/2026-05-30-heads-sync-owner-serve-and-eose-emission.md) — two PR4/PR5 E2E regressions root-caused: the serving gate excluded the owner (now honors the owner/admins' implicit `SyncProvider`), and the EOSE marker was worker-only and unobservable by gossip clients (now also emitted by the `SyncRequestV2` responder). `[landed]`
+- [Dependency-bump triage](reports/2026-06-03-dependency-bump-triage.md) — bincode 3 / rand 0.10 / hkdf 0.13 all correctly held: bincode is the canonical signed+hashed event encoding (format break), hkdf 0.13 needs pre-release `sha2` 0.11, rand 0.10 collides with `rand_core` 0.6 pinned by `x25519-dalek` 2 + `chacha20poly1305` 0.10. `[landed]`
 
 ### Identity, Crypto & Trust
 
