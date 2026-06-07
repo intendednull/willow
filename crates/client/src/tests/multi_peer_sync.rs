@@ -62,6 +62,7 @@ async fn replay_dag_into<N: willow_network::Network>(
         for event in events_for_dag {
             ds.managed.insert_and_apply(event).ok();
         }
+        ds.invalidate_sync_reply_cache();
     })
     .await;
     let state =

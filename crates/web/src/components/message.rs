@@ -236,7 +236,7 @@ pub fn MessageView(
     #[prop(optional, into)]
     on_open_thread: Option<Callback<DisplayMessage>>,
 ) -> impl IntoView {
-    let author_color = super::peer_color(&message.author_peer_id.to_string());
+    let author_color = super::peer_color(&message.author_peer_id);
     // Phase 2a Task 14 — spec §Copy / Deleted placeholder + empty-body
     // fallback: deleted rows render the fixed `this message was
     // withdrawn` string inside `.body.body--deleted` (italic `--ink-3`);
@@ -264,9 +264,9 @@ pub fn MessageView(
     let has_queue_note = queue_note != QueueNote::None;
     // Phase 2a Task 8: reserve the whisper surface. `message.whisper`
     // is gated always-false in the projection today (see
-    // `client/src/views.rs` TODO(whisper-mode.md)); once that phase
-    // lands the projection will flip it and the class + badge below
-    // light up automatically.
+    // `client/src/views.rs` TODO(#562)); once that phase lands the
+    // projection will flip it and the class + badge below light up
+    // automatically.
     let is_whisper = message.whisper;
 
     let reply_preview = message.reply_preview.clone();
@@ -274,13 +274,11 @@ pub fn MessageView(
     let show_edited = message.edited && !message.deleted;
     let author = message.author_display_name.clone();
     let body = message.body.clone();
-    let mut reactions: Vec<(String, usize)> = message
-        .reactions
-        .iter()
-        .map(|(emoji, authors)| (emoji.clone(), authors.len()))
-        .collect();
-    reactions.sort_by(|a, b| a.0.cmp(&b.0));
-    let has_reactions = !reactions.is_empty();
+    // `<ReactionStrip>` (phase 3c.3) sorts + counts internally from
+    // the projection-resolved `HashMap<emoji, reactor display names>`.
+    // We only need the truthy `has_reactions` gate here so the strip
+    // doesn't render an empty `.reactions-strip` div on every row.
+    let has_reactions = !message.reactions.is_empty();
 
     // Phase 2a Task 4: derive self-mention highlight from the
     // projection-populated `mentions` field. The existing `is_mention`
@@ -336,6 +334,10 @@ pub fn MessageView(
     // Signal controlling the dropdown menu visibility.
     let (show_dropdown, set_show_dropdown) = signal(false);
     let (show_react_row, set_show_react_row) = signal(false);
+    // Phase 3c.2: emoji picker open-state. The hover toolbar's smile
+    // button (and the dropdown's More-reactions row) flips this; the
+    // popover mounts below the row when open.
+    let (emoji_picker_open, set_emoji_picker_open) = signal(false);
 
     // Delete confirmation state.
     let (show_del_confirm, set_show_del_confirm) = signal(false);
@@ -385,6 +387,62 @@ pub fn MessageView(
         move || sheet_signal.set(Some(id.clone()))
     };
     let set_show_sheet_close = move || sheet_signal.set(None);
+
+    // Four-phase data-state lifecycle on the inner .mobile-action-sheet
+    // div. Driving property: transform — style.css declares
+    // `.mobile-action-sheet { transform: translateY(100%); transition:
+    // transform 0.3s cubic-bezier(...) }` and `.mobile-action-sheet.open
+    // { transform: translateY(0) }`.
+    //
+    // The lifecycle is mirrored from `show_sheet`. While the user is
+    // dragging the sheet down, the inline style sets `transition: none`
+    // (line ~1274 below); under that condition transitionend doesn't
+    // fire, so the lifecycle simply doesn't advance during drag — the
+    // sheet ends up in either Open or Closing depending on whether the
+    // drag triggered dismissal.
+    //
+    // The existing `mobile-action-sheet open` class binding is kept so
+    // the `.mobile-action-sheet.open` CSS selectors continue to match.
+    //
+    // See docs/specs/2026-04-27-event-based-waits-design.md
+    // §`data-state` attribute pattern.
+    let sheet_ref: NodeRef<leptos::html::Div> = NodeRef::new();
+    let sheet_lifecycle = RwSignal::new(if show_sheet.get_untracked() {
+        crate::components::lifecycle::LifecycleState::Open
+    } else {
+        crate::components::lifecycle::LifecycleState::Closed
+    });
+
+    Effect::new(move |prev: Option<bool>| {
+        use crate::components::lifecycle::{advance, is_zero_duration, LifecycleState};
+        let now_open = show_sheet.get();
+        if prev.is_none() || prev == Some(now_open) {
+            sheet_lifecycle.set(if now_open {
+                LifecycleState::Open
+            } else {
+                LifecycleState::Closed
+            });
+            return now_open;
+        }
+        sheet_lifecycle.set(if now_open {
+            LifecycleState::Opening
+        } else {
+            LifecycleState::Closing
+        });
+        if let Some(el) = sheet_ref.get_untracked() {
+            if is_zero_duration(el.as_ref()) {
+                sheet_lifecycle.set(advance(sheet_lifecycle.get_untracked()));
+            }
+        }
+        now_open
+    });
+
+    let on_sheet_transition_end = move |ev: web_sys::TransitionEvent| {
+        use crate::components::lifecycle::advance;
+        if ev.property_name() == "transform" {
+            sheet_lifecycle.update(|s| *s = advance(*s));
+        }
+    };
     let (long_press_active, set_long_press_active) = signal(false);
     // Swipe-down-to-dismiss state for the action sheet.
     let (sheet_drag_y, set_sheet_drag_y) = signal(0.0f64);
@@ -510,10 +568,14 @@ pub fn MessageView(
             is_dragging.set(true);
         }
         set_long_press_active.set(true);
-        // Start 500ms timer via web_sys.
+        // Start 500ms timer via web_sys. Use `once_into_js` so the
+        // closure transfers ownership to JS — once the timer fires (or
+        // `clear_timeout_with_handle` discards it on the cancel paths
+        // below), the JS GC reclaims it. `Closure::once(...).forget()`
+        // would leak per touchstart on mobile (issue #193).
         if let Some(window) = web_sys::window() {
             let open_sheet = set_show_sheet_open.clone();
-            let cb = wasm_bindgen::closure::Closure::once(move || {
+            let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
                 set_long_press_active.set(false);
                 open_sheet();
                 // Haptic feedback. Headless test browsers lack
@@ -525,13 +587,11 @@ pub fn MessageView(
                     }
                 }
             });
-            if let Ok(id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.as_ref().unchecked_ref(),
-                500,
-            ) {
+            if let Ok(id) = window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), 500)
+            {
                 lp_start.set(id);
             }
-            cb.forget();
         }
     };
 
@@ -768,6 +828,55 @@ pub fn MessageView(
                 // `--ink-3`. Byte-exact copy comes from the spec's
                 // "deleted placeholder" bullet.
                 view! { <div class=body_class>"this message was withdrawn"</div> }.into_any()
+            } else if let Some(attachment) = message.attachment.clone() {
+                // Phase 3b T7 — typed `EventKind::FileMessage` rendering.
+                // Replaces the legacy `[file:NAME:base64]` body-scrape
+                // path (still active in the next branch for back-compat)
+                // with the proper attachment surface picked by spec.
+                use crate::components::attachment::{
+                    pick, AttachmentFileCard, AttachmentImage, AttachmentKind,
+                    AttachmentVoiceNote,
+                };
+                let kind = pick(&attachment.mime_type, attachment.size_bytes);
+                let caption = if body_is_empty {
+                    None
+                } else {
+                    Some(message.body.clone())
+                };
+                let inner = match kind {
+                    AttachmentKind::Image => view! {
+                        <AttachmentImage
+                            hash=attachment.hash.clone()
+                            filename=attachment.filename.clone()
+                            size_bytes=attachment.size_bytes
+                            mime_type=attachment.mime_type.clone()
+                        />
+                    }
+                    .into_any(),
+                    AttachmentKind::FileCard => view! {
+                        <AttachmentFileCard
+                            hash=attachment.hash.clone()
+                            filename=attachment.filename.clone()
+                            size_bytes=attachment.size_bytes
+                        />
+                    }
+                    .into_any(),
+                    AttachmentKind::VoiceNote => view! {
+                        <AttachmentVoiceNote
+                            hash=attachment.hash.clone()
+                            filename=attachment.filename.clone()
+                            size_bytes=attachment.size_bytes
+                        />
+                    }
+                    .into_any(),
+                };
+                view! {
+                    <div class="message-embeds">
+                        {inner}
+                        {caption.map(|c| view! { <div class=body_class>{c}</div> })}
+                    </div>
+                }
+                .into_any()
             } else if body_is_empty {
                 // Phase 2a Task 14 — spec §Edge cases: empty /
                 // whitespace-only bodies (migration edge case) render
@@ -796,7 +905,8 @@ pub fn MessageView(
                 // members registry so `@handle` resolves in the row.
                 // The display-name → handle derivation mirrors
                 // `views::compute_messages_view` (see there for the
-                // `profile-card.md` TODO).
+                // profile-card plan TODO —
+                // `docs/plans/2026-04-21-ui-phase-2c-profile-card.md`).
                 use leptos::context::use_context;
                 let app_state = use_context::<crate::state::AppState>();
                 let local_peer_str = app_state
@@ -805,10 +915,10 @@ pub fn MessageView(
                     .unwrap_or_default();
                 let local_peer: Option<willow_identity::EndpointId> =
                     local_peer_str.parse().ok();
-                // TODO(profile-card.md): use real handles when profile
-                // data is plumbed. For now handle ≈ display-name
-                // lowercased with spaces → dots, matching the
-                // client-side projection.
+                // TODO(plan: docs/plans/2026-04-21-ui-phase-2c-profile-card.md):
+                // use real handles when profile data is plumbed. For
+                // now handle ≈ display-name lowercased with spaces →
+                // dots, matching the client-side projection.
                 let peers_vec: Vec<willow_client::mentions::PeerRef> = app_state
                     .as_ref()
                     .map(|a| {
@@ -914,7 +1024,7 @@ pub fn MessageView(
                                     let url_clone = url.clone();
                                     view! {
                                         <a href=url.clone() target="_blank" rel="noopener noreferrer" class="embed-link">
-                                            <img class="embed-image" src=url_clone alt="embedded image" loading="lazy" />
+                                            <img class="embed-image" src=url_clone alt="embedded image" loading="lazy" referrerpolicy="no-referrer" />
                                         </a>
                                     }
                                 }).collect::<Vec<_>>()}
@@ -984,7 +1094,6 @@ pub fn MessageView(
                 // `@media (max-width: 720px)` CSS rule; the long-press action
                 // sheet remains the mobile entry.
                 let react_cb_for_quick = on_react;
-                let msg_for_more_reactions = msg_for_react.clone();
                 Some(view! {
                     <div class="message-actions">
                         <div class="message-hover-toolbar" role="toolbar" aria-label="message actions">
@@ -1021,8 +1130,6 @@ pub fn MessageView(
                                 <span class="toolbar-divider" aria-hidden="true"></span>
                             })}
                             {has_react.then(|| {
-                                let msg_for_click = msg_for_more_reactions.clone();
-                                let _ = msg_for_click; // reserved for future emoji-picker route
                                 view! {
                                     <button
                                         class="toolbar-btn"
@@ -1030,14 +1137,12 @@ pub fn MessageView(
                                         aria-label="more reactions"
                                         on:click=move |ev| {
                                             ev.stop_propagation();
-                                            // Toggle the existing React row
-                                            // inside the dropdown, opening the
-                                            // dropdown if it's closed so the
-                                            // row is visible. `reactions-pins.md`
-                                            // will replace this with a full
-                                            // emoji picker.
-                                            set_show_dropdown.set(true);
-                                            set_show_react_row.update(|v| *v = !*v);
+                                            // Phase 3c.2: open the emoji picker
+                                            // popover instead of the legacy in-
+                                            // dropdown react row. The picker
+                                            // mounts below the row; on_select
+                                            // routes through `on_react`.
+                                            set_emoji_picker_open.update(|v| *v = !*v);
                                         }
                                     >
                                         {icons::icon_smile()}
@@ -1064,10 +1169,10 @@ pub fn MessageView(
                                 class="toolbar-btn"
                                 type="button"
                                 aria-label="whisper reply"
-                                // TODO(whisper-mode.md): permission-gated; no-op
-                                // until `WhisperStart` EventKind lands and the
-                                // local peer has permission to send a whisper
-                                // reply to this row's author.
+                                // TODO(#562): permission-gated; no-op until
+                                // `WhisperStart` EventKind lands and the local
+                                // peer has permission to send a whisper reply
+                                // to this row's author.
                                 on:click=move |ev| { ev.stop_propagation(); }
                             >
                                 {icons::icon_ear()}
@@ -1219,6 +1324,41 @@ pub fn MessageView(
                                 None
                             }
                         }}
+                        // Phase 3c.2 emoji picker. Mounts conditionally
+                        // inside `.message-actions` so its absolute
+                        // positioning lands relative to the row. The
+                        // smile button in the hover toolbar (above)
+                        // flips `emoji_picker_open`; on_select routes
+                        // through `on_react`. Recent shelf is empty in
+                        // v1 — the static categories cover the picker
+                        // contract until a follow-up plumbs
+                        // `client.recent_reactions(channel)` through
+                        // the row.
+                        {
+                            let react_cb_for_picker = on_react;
+                            let msg_for_picker = message.clone();
+                            let on_select = Callback::new(move |glyph: String| {
+                                if let Some(cb) = react_cb_for_picker {
+                                    cb.run((msg_for_picker.clone(), glyph));
+                                }
+                                set_emoji_picker_open.set(false);
+                            });
+                            let on_close = Callback::new(move |()| {
+                                set_emoji_picker_open.set(false);
+                            });
+                            let recent = crate::reaction_recency::use_recent_reactions();
+                            view! {
+                                <Show when=move || emoji_picker_open.get()>
+                                    <div class="message-emoji-picker-anchor">
+                                        <crate::components::emoji_picker::EmojiPicker
+                                            recent=recent
+                                            on_select=on_select
+                                            on_close=on_close
+                                        />
+                                    </div>
+                                </Show>
+                            }
+                        }
                     </div>
                 })
             } else {
@@ -1265,6 +1405,9 @@ pub fn MessageView(
                     ></div>
                     <div
                         class=move || if show_sheet.get() { "mobile-action-sheet open" } else { "mobile-action-sheet" }
+                        node_ref=sheet_ref
+                        data-state=move || sheet_lifecycle.get().as_str()
+                        on:transitionend=on_sheet_transition_end
                         style=move || {
                             let dy = sheet_drag_y.get();
                             if dy > 0.0 {
@@ -1279,9 +1422,9 @@ pub fn MessageView(
                         on:touchend=on_sheet_touchend
                     >
                         // Quick-emoji row — six hit targets from recency.
-                        // TODO(reactions-pins.md): swap `REACTION_EMOJI`
-                        // for the channel-scoped recency list once that
-                        // spec lands. Rendered first so the sheet opens
+                        // TODO(#564): swap `REACTION_EMOJI` for the
+                        // channel-scoped recency list once that spec
+                        // lands. Rendered first so the sheet opens
                         // with the common case one tap away.
                         {if has_react {
                             let cb = react_cb2;
@@ -1342,10 +1485,10 @@ pub fn MessageView(
                         // will route there instead.
                         {has_react.then(|| view! {
                             <button class="sheet-item" on:click=move |ev| {
-                                // TODO(reactions-pins.md): route to the
-                                // full emoji picker here. For now the
-                                // quick-emoji row above is the only
-                                // path, so we keep the sheet open.
+                                // TODO(#564): route to the full emoji
+                                // picker here. For now the quick-emoji
+                                // row above is the only path, so we
+                                // keep the sheet open.
                                 ev.stop_propagation();
                             }>"add reaction"</button>
                         })}
@@ -1407,24 +1550,31 @@ pub fn MessageView(
             } else { None }}
             {if has_reactions {
                 let react_cb = on_react_for_reactions;
+                let msg_for_strip = message.clone();
+                let raw_reactions = message.reactions.clone();
+                // Local display name from AppState — drives the
+                // `.reaction-pill--reacted` highlight on pills the
+                // viewer has clicked. Falls back to `None` (no
+                // highlight) when the AppState context is absent
+                // (e.g. unit-test mounts without the full shell).
+                let local_name: String = use_context::<crate::state::AppState>()
+                    .map(|app| app.server.display_name.get_untracked())
+                    .unwrap_or_default();
+                let on_react_curried = Callback::new(move |emoji: String| {
+                    if let Some(ref cb) = react_cb {
+                        cb.run((msg_for_strip.clone(), emoji));
+                    }
+                });
+                let on_open_picker = Callback::new(move |()| {
+                    set_emoji_picker_open.set(true);
+                });
                 Some(view! {
-                    <div class="reactions">
-                        {reactions.into_iter().map(|(emoji, count)| {
-                            let emoji_for_click = emoji.clone();
-                            let msg_clone = message.clone();
-                            let cb_clone = react_cb;
-                            view! {
-                                <button class="reaction" on:click=move |ev| {
-                                    ev.stop_propagation();
-                                    if let Some(ref cb) = cb_clone {
-                                        cb.run((msg_clone.clone(), emoji_for_click.clone()));
-                                    }
-                                }>
-                                    {emoji} " " {count.to_string()}
-                                </button>
-                            }
-                        }).collect::<Vec<_>>()}
-                    </div>
+                    <crate::components::reactions::ReactionStrip
+                        reactions=raw_reactions
+                        local_display_name=local_name
+                        on_react=on_react_curried
+                        on_open_picker=on_open_picker
+                    />
                 })
             } else {
                 None

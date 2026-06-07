@@ -1,7 +1,7 @@
 # Files and inline attachments — file cards, images, voice notes, upload
 
 **Parent:** [README.md](README.md)
-**Status:** draft
+**Status:** landed (e98ed26, 2026-05-08)
 **Dependencies:** [`foundation.md`](foundation.md),
 [`layout-primitives.md`](layout-primitives.md),
 [`message-row.md`](message-row.md),
@@ -205,28 +205,57 @@ easing. Drag overlay crossfades in under reduced motion.
 
 ## Acceptance criteria
 
-- [ ] Inline images render at `max-width: 380 / 280 px` with
+- [x] Inline images render at `max-width: 380 / 280 px` with
       `loading="lazy"` and caption `filename · size · e2e encrypted`.
-- [ ] Images above 4 MB degrade to a file card; files above 10 MB
+      *(`<AttachmentImage>` — phase 3b T5.)*
+- [x] Images above 4 MB degrade to a file card; files above 10 MB
       show the `large · downloads on click` warning badge.
-- [ ] File cards render with mime icon, filename, size, download
+      *(`attachment::pick` decision table + `<AttachmentFileCard>` —
+      phase 3b T3 + T4.)*
+- [x] File cards render with mime icon, filename, size, download
       IconBtn, and respect `max-width: 420px` desktop / `100%` mobile.
-- [ ] Voice notes render the waveform + play / pause + mm:ss timer
+      *(`<AttachmentFileCard>` — phase 3b T4.)*
+- [x] Voice notes render the waveform + play / pause + mm:ss timer
       card, and starting one pauses any other.
-- [ ] Upload dialog opens from the composer attach button with a
-      picker row, per-file progress + cancel, and the footer actions
-      in §Copy.
-- [ ] Drag-and-drop anywhere in the desktop window opens the upload
+      *(`<AttachmentVoiceNote>` + `VoiceNotePlayer` coordinator —
+      phase 3b T6. Waveform peaks come from `AudioContext.decodeAudioData`
+      with a flat baseline fallback if decoding fails; playback uses
+      a card-local `<audio>` element so the player works even when
+      the codec for waveform extraction isn't available.)*
+- [x] Upload dialog opens from the composer attach button with a
+      picker row, per-file rows + cancel, and the footer actions in
+      §Copy. *(`<UploadDialog>` + `UploadQueue` context — phase 3b T8.
+      v1 ships binary `uploading` / `done` / `failed` status; the
+      progress bar drops in once `iroh-blobs` exposes incremental
+      progress hooks.)*
+- [x] Drag-and-drop anywhere in the desktop window opens the upload
       dialog with dropped files enqueued; the overlay uses the copy
-      in §Copy.
-- [ ] Pasting files or an image into the composer routes them to the
-      upload dialog instead of inserting text.
-- [ ] Every interactive element has an ARIA label per §Accessibility.
+      in §Copy. *(`<DragOverlay>` + page-level drop listener — phase
+      3b T10. Browser-tier covers signal-driven mount/unmount;
+      Playwright spec `e2e/files-inline.spec.ts` covers the real
+      DataTransfer drop.)*
+- [x] Pasting files or an image into the composer routes them to the
+      upload dialog instead of inserting text. *(`on:paste` handler
+      on the composer textarea — phase 3b T12. Pasted images with no
+      upstream filename get `pasted-{YYYY-MM-DD-HH-mm-ss}.png`.)*
+- [x] Every interactive element has an ARIA label per §Accessibility.
+      *(`download {filename}` + `attach file` shipped in phase 3b;
+      `cancel upload of {filename}` + dialog `upload attachments` role
+      shipped in T8; the drag overlay is decorative
+      (`aria-hidden="true"`) per the spec table; voice-note labels
+      remain for T6.)*
 
 ## Open questions
 
-- **Image dimensions in the envelope.** To render a correct-ratio
-  placeholder while bytes stream, we need `width` and `height` in
-  file attachment metadata. Propose extending the messaging schema.
-- **Max file size.** 25 MB in v1. Revisit once we see real usage and
+- ~~**Image dimensions in the envelope.**~~ **Resolved (phase 3b T1).**
+  `Content::File` gained optional `width: Option<u32>` /
+  `height: Option<u32>` (`#[serde(default)]`, capped at
+  `MAX_DIMENSION_PX = 16384` with a render-clamp warning). The web
+  layer extracts dimensions via the browser `Image` API at upload
+  time and stamps them onto the wire; receivers use them to reserve
+  correct-aspect layout space while bytes stream.
+- **Max file size.** 25 MB in v1 (enforced in `<FileShareButton>`).
+  The blob transport itself can handle larger payloads — the cap is
+  a protect-from-accidents guard until the upload dialog (T8) lands
+  with real progress UI. Revisit once we see real usage and
   blob-transport cost.

@@ -1,6 +1,7 @@
 # Agentic Peer API — Implementation Plan
 
 **Date**: 2026-04-01
+**Status**: landed (commits `faeb988` Phases 1-3, `fee84c3` Phase 4) — `crates/agent/src/{main,server,tools,resources,auth,notifications,scopes}.rs` ship; multi-peer E2E harness wired.
 **Spec**: `docs/specs/2026-03-29-agentic-peer-api-design.md`
 
 ## Overview

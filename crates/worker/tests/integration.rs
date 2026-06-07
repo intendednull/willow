@@ -65,6 +65,7 @@ impl WorkerRole for TestReplayRole {
                 if heads.heads.is_empty() {
                     WorkerResponse::SyncBatch {
                         events: self.events.clone(),
+                        more: false,
                     }
                 } else {
                     let snapshot = Snapshot::new(self.state.clone(), self.dag.heads_summary());
@@ -151,7 +152,7 @@ async fn state_actor_with_replay_role_full_flow() {
         .await
         .unwrap();
     match resp {
-        WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 5),
+        WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 5),
         _ => panic!("expected SyncBatch"),
     }
 
@@ -314,7 +315,7 @@ async fn events_applied_then_queried_via_request() {
         .await
         .unwrap();
     match resp {
-        WorkerResponse::SyncBatch { events } => assert_eq!(events.len(), 5),
+        WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 5),
         _ => panic!("expected SyncBatch"),
     }
 
@@ -597,7 +598,7 @@ async fn server_ops_events_forwarded_to_state() {
     );
 
     let data = willow_common::pack_wire(
-        &willow_common::WireMessage::Event(event.clone()),
+        &willow_common::WireMessage::Event(Box::new(event.clone())),
         &sender_id,
     )
     .unwrap();
@@ -666,8 +667,11 @@ async fn pre_buffered_events_wait_for_state_ready_signal() {
     );
     let mut prev_hash = genesis.hash;
 
-    let genesis_data =
-        willow_common::pack_wire(&willow_common::WireMessage::Event(genesis), &sender_id).unwrap();
+    let genesis_data = willow_common::pack_wire(
+        &willow_common::WireMessage::Event(Box::new(genesis)),
+        &sender_id,
+    )
+    .unwrap();
     ops_tx
         .send(GossipEvent::Received(GossipMessage {
             content: bytes::Bytes::from(genesis_data),
@@ -692,8 +696,11 @@ async fn pre_buffered_events_wait_for_state_ready_signal() {
         );
         prev_hash = event.hash;
 
-        let data = willow_common::pack_wire(&willow_common::WireMessage::Event(event), &sender_id)
-            .unwrap();
+        let data = willow_common::pack_wire(
+            &willow_common::WireMessage::Event(Box::new(event)),
+            &sender_id,
+        )
+        .unwrap();
 
         ops_tx
             .send(GossipEvent::Received(GossipMessage {
@@ -773,8 +780,11 @@ async fn network_actor_drains_immediately_without_ready_signal() {
         },
         0,
     );
-    let data =
-        willow_common::pack_wire(&willow_common::WireMessage::Event(event), &sender_id).unwrap();
+    let data = willow_common::pack_wire(
+        &willow_common::WireMessage::Event(Box::new(event)),
+        &sender_id,
+    )
+    .unwrap();
     ops_tx
         .send(GossipEvent::Received(GossipMessage {
             content: bytes::Bytes::from(data),
@@ -996,7 +1006,7 @@ async fn sync_request_response_returns_known_events() {
         .unwrap();
 
     match resp {
-        willow_common::WorkerResponse::SyncBatch { events } => {
+        willow_common::WorkerResponse::SyncBatch { events, .. } => {
             assert_eq!(
                 events.len(),
                 3,
@@ -1125,7 +1135,7 @@ async fn two_workers_sync_state_via_gossip() {
             {
                 if rid == request_id && target_peer == requester_b_id {
                     match *payload {
-                        willow_common::WorkerResponse::SyncBatch { events } => {
+                        willow_common::WorkerResponse::SyncBatch { events, .. } => {
                             assert_eq!(events.len(), 2, "Worker A should send genesis + msg1");
                             let hashes: std::collections::HashSet<_> =
                                 events.iter().map(|e| e.hash).collect();
@@ -1202,6 +1212,393 @@ async fn two_workers_sync_state_via_gossip() {
                 "Worker B's StateActor should have buffered genesis + msg1"
             );
         }
+        _ => panic!("expected Replay"),
+    }
+
+    system.shutdown().await;
+}
+
+// ───── PR 5 Task 5.3: HistorySyncComplete broadcast on SERVER_OPS ──────────
+//
+// After a worker serves a `WorkerRequest::Sync`, it must broadcast exactly one
+// `WireMessage::HistorySyncComplete` on the SERVER_OPS topic (`_willow_server_ops`)
+// carrying the hash of the last served event (or `None` for an empty store) and
+// a per-run random `stream_generation`. It sends at most one marker per neighbor
+// per generation. The reply itself still rides the WORKERS topic; only the
+// marker is broadcast on SERVER_OPS where the joining client is subscribed.
+// See docs/specs/2026-04-24-history-sync-eose.md.
+
+/// Drain `events` for the next `WireMessage::HistorySyncComplete` broadcast,
+/// returning its `(last_event_hash, stream_generation, signer)` or `None` on
+/// timeout.
+async fn next_history_marker<E: TopicEvents>(
+    events: &mut E,
+    timeout: Duration,
+) -> Option<(Option<EventHash>, u64, willow_identity::EndpointId)> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        let event = match tokio::time::timeout(Duration::from_millis(100), events.next()).await {
+            Ok(Some(Ok(e))) => e,
+            _ => continue,
+        };
+        if let GossipEvent::Received(msg) = event {
+            if let Some((
+                willow_common::WireMessage::HistorySyncComplete {
+                    last_event_hash,
+                    stream_generation,
+                    ..
+                },
+                signer,
+            )) = willow_common::unpack_wire(&msg.content)
+            {
+                return Some((last_event_hash, stream_generation, signer));
+            }
+        }
+    }
+    None
+}
+
+/// Spawn Worker A's NetworkActor wired with both a WORKERS reply sender and a
+/// SERVER_OPS broadcast sender, inject a Sync request from `requester`, and
+/// assert that exactly one `HistorySyncComplete` is broadcast on SERVER_OPS,
+/// carrying the last served event hash and a stream generation, signed by A.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_broadcasts_history_sync_complete_on_server_ops() {
+    use willow_network::mem::{MemHub, MemNetwork};
+    use willow_network::Network;
+
+    let hub = MemHub::new();
+    let net_a = MemNetwork::new(&hub); // Worker A (serves sync)
+    let net_b = MemNetwork::new(&hub); // requester + SERVER_OPS observer
+
+    let workers_topic = willow_network::topic_id(willow_common::WORKERS_TOPIC);
+    let ops_topic = willow_network::topic_id(willow_common::SERVER_OPS_TOPIC);
+
+    // Worker A: WORKERS in/out + SERVER_OPS out.
+    let (workers_sender_a, workers_events_a) =
+        net_a.subscribe(workers_topic, vec![]).await.unwrap();
+    let (ops_sender_a, _ops_events_a) = net_a.subscribe(ops_topic, vec![]).await.unwrap();
+
+    // Requester B: WORKERS out + SERVER_OPS in (to observe the marker).
+    let (workers_sender_b, _workers_events_b) =
+        net_b.subscribe(workers_topic, vec![]).await.unwrap();
+    let (_ops_sender_b, mut ops_events_b) = net_b.subscribe(ops_topic, vec![]).await.unwrap();
+
+    let system = System::new();
+
+    // Worker A holds genesis + one message.
+    let mut role_a = TestReplayRole::new("srv-eose", 100);
+    let author = Identity::generate();
+    let genesis = Event::new(
+        &author,
+        1,
+        EventHash::ZERO,
+        vec![],
+        EventKind::CreateServer {
+            name: "srv-eose".to_string(),
+        },
+        0,
+    );
+    role_a.on_event(&genesis);
+    let msg1 = make_message(&author, 2, genesis.hash);
+    role_a.on_event(&msg1);
+
+    let state_a = system.spawn(StateActor {
+        role: Box::new(role_a),
+        ready: None,
+    });
+
+    let worker_a_identity = Identity::generate();
+    let worker_a_id = net_a.id();
+
+    let _network_a = system.spawn(
+        NetworkActor::new(
+            workers_events_a,
+            state_a.clone(),
+            worker_a_id,
+            workers_sender_a,
+            worker_a_identity.clone(),
+        )
+        .with_ops_sender(ops_sender_a),
+    );
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Requester B broadcasts a Sync request with empty heads.
+    let b_identity = Identity::generate();
+    let sync_req = willow_common::WorkerWireMessage::Request {
+        request_id: "req-eose-1".to_string(),
+        target_peer: net_b.id(),
+        payload: willow_common::WorkerRequest::Sync {
+            server_id: "srv-eose".to_string(),
+            heads: willow_state::HeadsSummary::default(),
+        },
+    };
+    let data = willow_common::pack_wire(&willow_common::WireMessage::Worker(sync_req), &b_identity)
+        .unwrap();
+    workers_sender_b
+        .broadcast(bytes::Bytes::from(data))
+        .await
+        .unwrap();
+
+    // Observe the marker on SERVER_OPS.
+    let (last_event_hash, _generation, signer) =
+        next_history_marker(&mut ops_events_b, Duration::from_secs(2))
+            .await
+            .expect(
+                "worker should broadcast a HistorySyncComplete on SERVER_OPS after serving Sync",
+            );
+
+    assert_eq!(
+        signer,
+        worker_a_identity.endpoint_id(),
+        "marker must be signed by the serving worker (provider derived from envelope signer)"
+    );
+    assert_eq!(
+        last_event_hash,
+        Some(msg1.hash),
+        "last_event_hash must be the hash of the last served event (msg1)"
+    );
+
+    system.shutdown().await;
+}
+
+/// A worker sends at most one marker per neighbor per generation: a second Sync
+/// from the same requester within the same run must not produce a second
+/// marker, but a fresh requester does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_dedups_history_marker_per_neighbor_per_generation() {
+    use willow_network::mem::{MemHub, MemNetwork};
+    use willow_network::Network;
+
+    let hub = MemHub::new();
+    let net_a = MemNetwork::new(&hub);
+    let net_b = MemNetwork::new(&hub);
+
+    let workers_topic = willow_network::topic_id(willow_common::WORKERS_TOPIC);
+    let ops_topic = willow_network::topic_id(willow_common::SERVER_OPS_TOPIC);
+
+    let (workers_sender_a, workers_events_a) =
+        net_a.subscribe(workers_topic, vec![]).await.unwrap();
+    let (ops_sender_a, _ops_events_a) = net_a.subscribe(ops_topic, vec![]).await.unwrap();
+    let (workers_sender_b, _workers_events_b) =
+        net_b.subscribe(workers_topic, vec![]).await.unwrap();
+    let (_ops_sender_b, mut ops_events_b) = net_b.subscribe(ops_topic, vec![]).await.unwrap();
+
+    let system = System::new();
+
+    let mut role_a = TestReplayRole::new("srv-dedup", 100);
+    let author = Identity::generate();
+    let genesis = Event::new(
+        &author,
+        1,
+        EventHash::ZERO,
+        vec![],
+        EventKind::CreateServer {
+            name: "srv-dedup".to_string(),
+        },
+        0,
+    );
+    role_a.on_event(&genesis);
+
+    let state_a = system.spawn(StateActor {
+        role: Box::new(role_a),
+        ready: None,
+    });
+
+    let worker_a_identity = Identity::generate();
+    let _network_a = system.spawn(
+        NetworkActor::new(
+            workers_events_a,
+            state_a.clone(),
+            net_a.id(),
+            workers_sender_a,
+            worker_a_identity.clone(),
+        )
+        .with_ops_sender(ops_sender_a),
+    );
+
+    // A third, genuinely-distinct neighbor for the "fresh neighbor" leg. The
+    // dedup key is the gossip-layer sender (the mesh neighbor that delivered
+    // the request), so a fresh neighbor must be a different network, not merely
+    // a different wire-signer reusing net_b's transport.
+    let net_c = MemNetwork::new(&hub);
+    let (workers_sender_c, _workers_events_c) =
+        net_c.subscribe(workers_topic, vec![]).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The SAME neighbor (net_b) sends two Sync requests.
+    let b_identity = Identity::generate();
+    let send_sync = |request_id: &str| {
+        let req = willow_common::WorkerWireMessage::Request {
+            request_id: request_id.to_string(),
+            target_peer: net_b.id(),
+            payload: willow_common::WorkerRequest::Sync {
+                server_id: "srv-dedup".to_string(),
+                heads: willow_state::HeadsSummary::default(),
+            },
+        };
+        willow_common::pack_wire(&willow_common::WireMessage::Worker(req), &b_identity).unwrap()
+    };
+
+    workers_sender_b
+        .broadcast(bytes::Bytes::from(send_sync("req-1")))
+        .await
+        .unwrap();
+
+    let (_, gen1, _) = next_history_marker(&mut ops_events_b, Duration::from_secs(2))
+        .await
+        .expect("first Sync should yield a marker");
+
+    // Second Sync from the SAME neighbor → no new marker for this generation.
+    workers_sender_b
+        .broadcast(bytes::Bytes::from(send_sync("req-2")))
+        .await
+        .unwrap();
+
+    let second = next_history_marker(&mut ops_events_b, Duration::from_millis(500)).await;
+    assert!(
+        second.is_none(),
+        "a repeat Sync from the same neighbor in the same generation must not re-emit a marker"
+    );
+
+    // A fresh neighbor (different mesh sender) DOES get a marker, with the SAME
+    // per-run stream_generation.
+    let c_identity = Identity::generate();
+    let req_c = willow_common::WorkerWireMessage::Request {
+        request_id: "req-c".to_string(),
+        target_peer: net_c.id(),
+        payload: willow_common::WorkerRequest::Sync {
+            server_id: "srv-dedup".to_string(),
+            heads: willow_state::HeadsSummary::default(),
+        },
+    };
+    let data_c =
+        willow_common::pack_wire(&willow_common::WireMessage::Worker(req_c), &c_identity).unwrap();
+    workers_sender_c
+        .broadcast(bytes::Bytes::from(data_c))
+        .await
+        .unwrap();
+
+    let (_, gen_c, _) = next_history_marker(&mut ops_events_b, Duration::from_secs(2))
+        .await
+        .expect("a fresh neighbor should still get a marker");
+    assert_eq!(
+        gen_c, gen1,
+        "stream_generation is per-run, identical across neighbors within the same worker run"
+    );
+
+    system.shutdown().await;
+}
+
+/// Self-echo filter (risk note): SERVER_OPS was ingest-only for workers. Now
+/// that the worker broadcasts markers there, the real gossip mesh echoes the
+/// worker's own frames back. The receive path must drop self-authored frames so
+/// a worker never ingests its own broadcast into a loop. We assert that a frame
+/// whose `sender == local_peer_id` is dropped (not forwarded to the role).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_filters_self_authored_server_ops_frames() {
+    let system = System::new();
+
+    let state_addr = system.spawn(StateActor {
+        role: Box::new(TestReplayRole::new("srv-self", 100)),
+        ready: None,
+    });
+
+    let (_workers_tx, workers_rx) = tokio::sync::mpsc::channel::<GossipEvent>(16);
+    let (ops_tx, ops_rx) = tokio::sync::mpsc::channel::<GossipEvent>(16);
+
+    let worker_id = Identity::generate();
+    let peer_id = worker_id.endpoint_id();
+
+    let _network = system.spawn(
+        NetworkActor::new(
+            MockTopicEvents { rx: workers_rx },
+            state_addr.clone(),
+            peer_id,
+            MockTopicHandle,
+            worker_id.clone(),
+        )
+        .with_ops_events(MockTopicEvents { rx: ops_rx }),
+    );
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // A genesis event authored by the worker itself, delivered on SERVER_OPS
+    // with sender == the worker's own peer_id (the self-echo case).
+    let self_event = Event::new(
+        &worker_id,
+        1,
+        EventHash::ZERO,
+        vec![],
+        EventKind::CreateServer {
+            name: "srv-self".to_string(),
+        },
+        0,
+    );
+    let self_data = willow_common::pack_wire(
+        &willow_common::WireMessage::Event(Box::new(self_event)),
+        &worker_id,
+    )
+    .unwrap();
+    ops_tx
+        .send(GossipEvent::Received(GossipMessage {
+            content: bytes::Bytes::from(self_data),
+            sender: peer_id, // self-authored echo
+        }))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The self-authored frame must NOT have been ingested.
+    let info = state_addr.ask(GetRoleInfoMsg).await.unwrap();
+    match info {
+        WorkerRoleInfo::Replay {
+            events_buffered, ..
+        } => assert_eq!(
+            events_buffered, 0,
+            "self-authored SERVER_OPS frames must be dropped, not ingested"
+        ),
+        _ => panic!("expected Replay"),
+    }
+
+    // Sanity: a frame from a DIFFERENT sender is still ingested.
+    let other = Identity::generate();
+    let other_event = Event::new(
+        &other,
+        1,
+        EventHash::ZERO,
+        vec![],
+        EventKind::CreateServer {
+            name: "srv-self".to_string(),
+        },
+        0,
+    );
+    let other_data = willow_common::pack_wire(
+        &willow_common::WireMessage::Event(Box::new(other_event)),
+        &other,
+    )
+    .unwrap();
+    ops_tx
+        .send(GossipEvent::Received(GossipMessage {
+            content: bytes::Bytes::from(other_data),
+            sender: other.endpoint_id(),
+        }))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let info = state_addr.ask(GetRoleInfoMsg).await.unwrap();
+    match info {
+        WorkerRoleInfo::Replay {
+            events_buffered, ..
+        } => assert_eq!(
+            events_buffered, 1,
+            "a frame from another peer must still be ingested"
+        ),
         _ => panic!("expected Replay"),
     }
 

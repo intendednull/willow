@@ -5,6 +5,21 @@
 > `required_permission()` table. Permissions are checked *before* an
 > event is created — rejected events never enter the DAG.
 
+## Prior Art
+
+The authority model draws on capability-based security, signed-log integrity, and decentralized moderation systems:
+
+| System | Relevance to Willow's authority model |
+|---|---|
+| **Matrix** `m.room.power_levels` + state resolution v2 | Closest analog: a room's authority lives in a signed state event, and every peer derives the same accept/reject decision by replaying state. Willow diverges by using fine-grained named capabilities and a separate admin/vote path rather than numeric power-level thresholds. |
+| **Nostr NIP-29** (relay-based groups) | Group admin roles and moderation actions (add/remove member, edit metadata) expressed as signed events. Willow keeps the signed-event moderation idea but enforces authority purely by DAG replay, not by a trusted relay arbitrating membership. |
+| **Object-capability model** (Miller, *Robust Composition*, 2006) | Foundation for the capability-grant model: authority is an unforgeable, delegable token rather than an ACL check at the resource. Willow's `GrantPermission` events are signed capability grants flowing from the owner/admin root. |
+| **Macaroons** (Birgisson, Politz, Erlingsson, Taly, Vrable & Lentczner, NDSS 2014) | Decentralized, attenuable authorization via chained caveats verifiable without contacting the issuer. Mirrors Willow's offline, replay-verifiable grants; Willow uses per-event Ed25519 signatures and a DAG instead of HMAC caveat chains. |
+| **SPKI/SDSI Certificate Theory** (RFC 2693, Ellison et al., 1999) | Authorization-certificate delegation chains where a key, not a name, is the principal and authority is traced back to a root through signed delegations — directly parallel to Willow tracing every permission back to the owner key via signed `GrantPermission` events. |
+| **TUF — The Update Framework** | Role separation with delegation and threshold signing; admin/owner authority is structurally distinct from content-signing authority. Inspires Willow's separation of structurally-managed admin status (via `ProposedAction` + vote) from grantable fine-grained permissions. |
+| **Certificate Transparency** (RFC 6962, Laurie, Langley & Kasper, 2013) | Append-only signed Merkle log as a tamper-evident, independently-verifiable record of authority changes. Willow's signed event DAG plays the same role: authorization history is auditable and cannot be silently rewritten. |
+| **Git signed commits / Merkle-DAG** | Tamper-evident authored history where each commit is signed and content-addressed into a DAG. Willow adopts the per-author signed, hash-linked DAG so authority decisions are reproducible from the immutable event chain. |
+
 ## Single source of truth
 
 `willow-state` owns the canonical representation of a server: the
@@ -76,7 +91,8 @@ cases where a remote event is rejected:
 | **Governance (vote)** | `Propose`, `Vote` | `is_admin()` — only admins may propose or vote. Actions auto-apply when vote threshold is met. |
 | **Admin-only** | `GrantPermission`, `RevokePermission`, `RenameServer`, `SetServerDescription` | `is_admin()` — any single admin can execute these directly. |
 | **Permission-gated** | `Message`, `EditMessage`, `DeleteMessage`, `Reaction` → `SendMessages`; `CreateChannel`, `DeleteChannel`, `RenameChannel`, `RotateChannelKey` → `ManageChannels`; `CreateRole`, `DeleteRole`, `SetPermission`, `AssignRole` → `ManageRoles` | `has_permission()` — admins pass implicitly; non-admins need an explicit grant. |
-| **Unrestricted** | `SetProfile`, `UpdateProfile`, `PinMessage`, `UnpinMessage`, `MuteChannel`, `MuteGrove` | No check — any member can execute. |
+| **Member-only (server state)** | `SetProfile`, `UpdateProfile`, `PinMessage`, `UnpinMessage` | `state.members.contains_key(&author)` — any current member can execute. `required_permission()` returns `None`, so the membership gate lives in each handler in `apply_mutation` (defense-in-depth, see issue #177). Note: this is "any current member" — distinct from "any signer" with no gate at all. |
+| **Per-identity preference (no gate)** | `MuteChannel`, `MuteGrove` | No check — these are personal preferences, not shared server state. Preferences persist across kicks. |
 | **Genesis** | `CreateServer` | No-op on replay; the genesis author becomes the sole initial admin. |
 
 Admin status is tracked in `ServerState.admins` and is **not** a variant
@@ -102,10 +118,23 @@ comment so reviewers notice when a new variant is missing:
   admin block
 - `RenameServer`, `SetServerDescription` — admin-only, checked in the
   admin block
-- `SetProfile` — intentionally unrestricted
-- `UpdateProfile` — intentionally unrestricted (any member; self-authorship enforced structurally)
-- `PinMessage`, `UnpinMessage` — intentionally unrestricted
+- `SetProfile` — any current member; membership gate enforced in
+  `apply_mutation` (not in `required_permission()`). See issue #177.
+- `UpdateProfile` — any current member; membership gate enforced in
+  `apply_mutation`. Self-authorship is enforced structurally (only the
+  author's own profile is mutated). See issue #177.
+- `PinMessage`, `UnpinMessage` — any current member; membership gate
+  enforced in `apply_mutation` (not in `required_permission()`). See
+  issue #177.
 - `MuteChannel`, `MuteGrove` — per-identity preference, never gated
+  (preferences are not shared server state and survive a kick)
+
+**"Intentionally unrestricted" still requires membership.** The
+membership gate (`state.members.contains_key(&event.author)`) lives in
+the per-handler block inside `apply_mutation`, not in
+`required_permission()`. This is defense-in-depth: even if a future
+refactor changes the permission table, the handler-local gate keeps
+non-members from mutating server state.
 
 If a variant is not in this list and not in a `required_permission()`
 arm, it is a bug.

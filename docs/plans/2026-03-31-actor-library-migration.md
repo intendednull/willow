@@ -1,6 +1,7 @@
 # Actor Library Migration Plan
 
 **Date**: 2026-03-31
+**Status**: landed (commit `c862ff4`) — `state_actors.rs`, `views.rs`, `persistence_actor.rs`, `mutations.rs` shipped; legacy init types de-exported.
 **Spec**: `docs/specs/2026-03-31-reactive-client-state-design.md`
 
 ## Overview

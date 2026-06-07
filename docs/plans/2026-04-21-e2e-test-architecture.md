@@ -1,5 +1,7 @@
 # E2E Test Architecture Implementation Plan
 
+**Status:** landed (commit `8d58232`) — `crates/client/src/tests/{trust_flow,multi_peer_sync}.rs` migrated from Playwright; `e2e/README.md` documents the tier rules; `just check-all` recipe wired; `e2e/basic-flow.spec.ts` deleted as redundant with the Rust-tier coverage.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Push every test to the lowest tier that can cover it (Rust state / client, wasm-pack browser, Playwright) so the full test suite runs as fast as possible while keeping coverage.

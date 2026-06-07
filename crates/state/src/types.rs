@@ -11,6 +11,29 @@ use willow_identity::EndpointId;
 
 use crate::hash::EventHash;
 
+/// Metadata captured at the moment a message is pinned.
+///
+/// Surfaced by the pinned-panel UI to render the `pinned by {name} ·
+/// {when}` footer (spec
+/// `docs/specs/2026-04-19-ui-design/reactions-pins.md` §Pinned panel
+/// contents, line 123). Populated by the `PinMessage` apply branch in
+/// `materialize::apply_event` from the source event's `author` and
+/// `timestamp_hint_ms` so the metadata travels with the materialized
+/// state and the renderer never has to walk the DAG.
+///
+/// See `docs/specs/2026-05-21-pinned-message-metadata-design.md` for
+/// the schema rationale + the rejected alternatives (derive-from-DAG
+/// and parallel `pin_metadata` index).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinMetadata {
+    /// Peer id of the user who emitted the `PinMessage` event.
+    pub pinner: EndpointId,
+    /// Wall-clock timestamp hint in milliseconds, copied from the
+    /// `PinMessage` event's `timestamp_hint_ms`. Display only — never
+    /// used for ordering inside the state machine.
+    pub pinned_at_ms: u64,
+}
+
 /// Channel kind — text chat or voice.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChannelKind {
@@ -30,9 +53,13 @@ pub struct Channel {
     pub id: String,
     /// Display name (e.g. "general").
     pub name: String,
-    /// Hashes of pinned messages in this channel.
+    /// Pinned messages in this channel keyed by message hash. The
+    /// value carries the pinner identity + pin time so the pinned-panel
+    /// UI can render the `pinned by {name} · {when}` footer without
+    /// walking the DAG (see
+    /// `docs/specs/2026-05-21-pinned-message-metadata-design.md`).
     #[serde(default)]
-    pub pinned_messages: BTreeSet<EventHash>,
+    pub pinned_messages: BTreeMap<EventHash, PinMetadata>,
     /// Text or voice.
     #[serde(default)]
     pub kind: ChannelKind,
@@ -57,8 +84,8 @@ pub struct Role {
     pub id: String,
     /// Human-readable name (e.g. "Moderator").
     pub name: String,
-    /// The set of permission strings this role grants.
-    pub permissions: BTreeSet<String>,
+    /// The set of typed permissions this role grants.
+    pub permissions: BTreeSet<crate::event::Permission>,
 }
 
 /// A peer's membership record within a server.
@@ -72,6 +99,47 @@ pub struct Member {
     pub display_name: Option<String>,
 }
 
+/// A file attachment carried by a chat message.
+///
+/// Mirrors `willow_messaging::Content::File` for the materialize branch
+/// — `willow-state` doesn't depend on `willow-messaging` (the dep flows
+/// the other way) so we keep a parallel type rather than a re-export.
+/// Field-for-field equivalent so the projection in `willow-client::views`
+/// can copy directly.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/files-inline.md`.
+/// Plan: `docs/plans/2026-05-08-ui-phase-3b-files-inline.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileAttachment {
+    /// Content-addressed blob hash; receivers fetch via the iroh blob
+    /// store. The hash is the authoritative source for both bytes and
+    /// size; the declared `size_bytes` field is sender-asserted only.
+    pub hash: String,
+    /// Original filename. Bounded at
+    /// `crate::event::MAX_ATTACHMENT_FILENAME_BYTES` in apply.
+    pub filename: String,
+    /// MIME type. Bounded at `crate::event::MAX_ATTACHMENT_MIME_BYTES`.
+    pub mime_type: String,
+    /// Sender-declared size in bytes. **Attacker-declared.**
+    pub size_bytes: u64,
+    /// Image width in pixels when known. Bounded at
+    /// [`FileAttachment::MAX_DIMENSION_PX`] in apply.
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Image height in pixels when known. Bounded at
+    /// [`FileAttachment::MAX_DIMENSION_PX`] in apply.
+    #[serde(default)]
+    pub height: Option<u32>,
+}
+
+impl FileAttachment {
+    /// Maximum allowed pixel dimension. Aligned with
+    /// `willow_messaging::MAX_DIMENSION_PX`. Sub-cap values are still
+    /// attacker-declared — see the messaging crate's doc for the
+    /// renderer-side mitigation requirement.
+    pub const MAX_DIMENSION_PX: u32 = 16_384;
+}
+
 /// A single chat message with metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -81,7 +149,9 @@ pub struct ChatMessage {
     pub channel_id: String,
     /// Author's endpoint ID.
     pub author: EndpointId,
-    /// Message body text.
+    /// Message body text. For [`crate::event::EventKind::FileMessage`]
+    /// this is the optional caption (often empty); the attachment
+    /// metadata lives in [`Self::attachment`].
     pub body: String,
     /// Wall-clock timestamp hint in milliseconds (display only).
     pub timestamp_ms: u64,
@@ -95,6 +165,12 @@ pub struct ChatMessage {
     pub reactions: BTreeMap<String, BTreeSet<EndpointId>>,
     /// If this is a reply, the EventHash of the parent message.
     pub reply_to: Option<EventHash>,
+    /// `Some(_)` for messages produced by
+    /// [`crate::event::EventKind::FileMessage`]; `None` for plain text
+    /// messages. `#[serde(default)]` so events serialized before this
+    /// field existed still deserialize cleanly into `None`.
+    #[serde(default)]
+    pub attachment: Option<FileAttachment>,
 }
 
 /// A peer's display profile.

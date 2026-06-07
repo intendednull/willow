@@ -36,7 +36,7 @@ pub fn JoinPage() -> impl IntoView {
                     break;
                 }
                 if let Some(t) = token.get_untracked() {
-                    handle_retry.send_join_request(&t.link_id);
+                    handle_retry.send_join_request(&t.link_id, t.inviter_peer_id);
                 }
                 backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF);
             }
@@ -56,7 +56,7 @@ pub fn JoinPage() -> impl IntoView {
                 write.ui.set_join_status.set("connecting".to_string());
                 // Send initial JoinRequest.
                 if let Some(t) = t {
-                    h2.send_join_request(&t.link_id);
+                    h2.send_join_request(&t.link_id, t.inviter_peer_id);
                 }
             });
         }
@@ -95,14 +95,30 @@ pub fn JoinPage() -> impl IntoView {
                         placeholder="Enter your name..."
                         prop:value=move || name.get()
                         on:input=move |ev| set_name.set(event_target_value(&ev))
-                        disabled=move || status.get() == "connecting"
+                        disabled=move || {
+                            let s = status.get();
+                            s == "connecting" || s == "resolving"
+                        }
                     />
                 </div>
 
                 {move || {
                     let s = status.get();
                     let server = token.get().map(|t| t.server_name.clone()).unwrap_or_default();
-                    if s == "connecting" {
+                    if s == "resolving" {
+                        // Layer-1 pkarr/DHT resolution of the link's bootstrap
+                        // endpoint IDs is in flight (latency is seconds). Surface
+                        // progress so the join page isn't a frozen button while
+                        // the addressing lookup runs.
+                        view! {
+                            <button class="btn btn-primary join-card-btn connecting" disabled>
+                                "Finding the server..."
+                            </button>
+                            <p class="join-card-hint">
+                                "Locating the server on the network."
+                            </p>
+                        }.into_any()
+                    } else if s == "connecting" {
                         view! {
                             <button class="btn btn-primary join-card-btn connecting" disabled>
                                 "Connecting..."

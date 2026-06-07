@@ -56,8 +56,12 @@ impl SpeakingDetector {
     /// The `AudioContext` is created immediately (caller must ensure a user
     /// gesture has already occurred so the browser allows it).
     pub fn new(on_change: impl Fn(HashSet<String>) + 'static) -> Result<Self, String> {
-        let audio_context =
-            AudioContext::new().map_err(|e| format!("AudioContext::new failed: {e:?}"))?;
+        let audio_context = AudioContext::new().map_err(|e| {
+            format!(
+                "AudioContext::new failed: {}",
+                e.as_string().unwrap_or_else(|| format!("{e:?}"))
+            )
+        })?;
         // Resume the context in case it was created in a suspended state.
         let _ = audio_context.resume();
         Ok(Self {
@@ -283,17 +287,24 @@ impl VoiceManager {
         self.local_stream = Some(stream);
     }
 
-    /// Build an `RTCConfiguration` with a public STUN server.
+    /// Build an `RTCConfiguration` honouring the configured STUN URL list.
+    ///
+    /// See [`resolve_stun_urls`] for the privacy-first default (empty list)
+    /// and the `window.__WILLOW_STUN_URLS` override knob.
     fn rtc_config() -> RtcConfiguration {
-        let config = RtcConfiguration::new();
-        let ice_servers = js_sys::Array::new();
-        let server = RtcIceServer::new();
-        let urls = js_sys::Array::new();
-        urls.push(&"stun:stun.l.google.com:19302".into());
-        server.set_urls(&urls);
-        ice_servers.push(&server);
-        config.set_ice_servers(&ice_servers);
-        config
+        build_rtc_config(&resolve_stun_urls())
+    }
+
+    /// Test-only accessor for the resolved `RTCConfiguration`.
+    ///
+    /// Browser tests live in a separate compilation unit (the
+    /// `wasm-bindgen-test` integration harness in `crates/web/tests/`) and
+    /// cannot see the private `rtc_config`. A thin `pub` wrapper exposes
+    /// just enough surface for those tests without leaking ICE-config
+    /// construction into the public API.
+    #[doc(hidden)]
+    pub fn rtc_config_for_test() -> RtcConfiguration {
+        Self::rtc_config()
     }
 
     /// Add local audio tracks (and video track if sharing) to a peer connection.
@@ -818,4 +829,85 @@ impl VoiceManager {
         }
         self.local_stream = None;
     }
+}
+
+/// Resolve the list of STUN server URLs to use for WebRTC ICE gathering.
+///
+/// # Privacy-first default
+///
+/// Returns an **empty list** by default. WebRTC will then rely on host
+/// candidates plus whatever relay path the iroh layer provides — no
+/// third-party STUN server learns the user's IP address.
+///
+/// Hardcoding `stun:stun.l.google.com:19302` (the previous behaviour) leaked
+/// every voice-call participant's public IP to Google. See issue #179.
+///
+/// # Override
+///
+/// Deployments that need NAT traversal via STUN can set the
+/// `window.__WILLOW_STUN_URLS` global to an array of STUN URLs *before* the
+/// WASM module boots, e.g. in `init.js`:
+///
+/// ```js
+/// // Opt back into Google's public STUN server (leaks your IP to Google):
+/// window.__WILLOW_STUN_URLS = ['stun:stun.l.google.com:19302'];
+///
+/// // Or point at a self-hosted STUN server:
+/// window.__WILLOW_STUN_URLS = ['stun:stun.example.com:3478'];
+/// ```
+///
+/// Values that are not a JS array, or entries that are not strings, are
+/// silently ignored.
+///
+/// # Follow-up
+///
+/// - Medium term: ship a self-hosted STUN server alongside the relay.
+/// - Long term: use the iroh relay path for ICE traversal directly so STUN
+///   becomes unnecessary.
+pub fn resolve_stun_urls() -> Vec<String> {
+    let Some(window) = web_sys::window() else {
+        return Vec::new();
+    };
+    let raw = match js_sys::Reflect::get(
+        &window,
+        &wasm_bindgen::JsValue::from_str("__WILLOW_STUN_URLS"),
+    ) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    if raw.is_undefined() || raw.is_null() {
+        return Vec::new();
+    }
+    let Ok(array) = raw.dyn_into::<js_sys::Array>() else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(array.length() as usize);
+    for i in 0..array.length() {
+        if let Some(s) = array.get(i).as_string() {
+            if !s.is_empty() {
+                out.push(s);
+            }
+        }
+    }
+    out
+}
+
+/// Build an `RTCConfiguration` from a resolved list of STUN URLs.
+///
+/// An empty `urls` list yields a config with **no** `iceServers` entries —
+/// the privacy-first default. See [`resolve_stun_urls`] for rationale.
+fn build_rtc_config(urls: &[String]) -> RtcConfiguration {
+    let config = RtcConfiguration::new();
+    let ice_servers = js_sys::Array::new();
+    if !urls.is_empty() {
+        let server = RtcIceServer::new();
+        let url_array = js_sys::Array::new();
+        for u in urls {
+            url_array.push(&wasm_bindgen::JsValue::from_str(u));
+        }
+        server.set_urls(&url_array);
+        ice_servers.push(&server);
+    }
+    config.set_ice_servers(&ice_servers);
+    config
 }

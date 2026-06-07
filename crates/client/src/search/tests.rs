@@ -940,3 +940,263 @@ mod query_tests {
         assert_eq!(q.raw, "Hello");
     }
 }
+
+mod from_display_message_tests {
+    //! `IndexableMessage::from_display_message` derives the operator
+    //! flags (`has_image`, `has_file`, `has_link`) from a
+    //! [`DisplayMessage`]. Per `docs/specs/2026-04-19-ui-design/local-search.md`
+    //! §Operators, the index must populate these so `has:image` /
+    //! `has:file` / `has:link` queries actually match — see issue
+    //! #355.
+    use super::super::index::IndexableMessage;
+    use crate::state::{DisplayMessage, QueueNote};
+    use std::collections::HashMap;
+    use willow_identity::Identity;
+
+    fn dm(id: &str, body: &str) -> DisplayMessage {
+        DisplayMessage {
+            id: id.into(),
+            channel_id: "c1".into(),
+            author_peer_id: Identity::generate().endpoint_id(),
+            author_display_name: "Mira".into(),
+            body: body.into(),
+            is_local: false,
+            timestamp_ms: 100,
+            reactions: HashMap::new(),
+            edited: false,
+            deleted: false,
+            reply_to: None,
+            reply_preview: None,
+            mentions: Vec::new(),
+            pinned: false,
+            pinned_metadata: None,
+            whisper: false,
+            queue_note: QueueNote::None,
+            attachment: None,
+        }
+    }
+
+    #[test]
+    fn inline_image_attachment_sets_has_image() {
+        // `[file:NAME:b64]` where NAME has an image extension renders
+        // inline as an image embed in the web UI; the index must
+        // mirror that classification so `has:image` matches.
+        let body = format!(
+            "[file:photo.png:{}]",
+            crate::base64::encode(b"\x89PNG\r\n\x1a\n")
+        );
+        let m = dm("m1", &body);
+        let ix = IndexableMessage::from_display_message(&m, "general", None, None);
+        assert!(ix.has_image, "image attachment must set has_image");
+        assert!(!ix.has_file, "image attachment must not set has_file");
+    }
+
+    #[test]
+    fn inline_non_image_attachment_sets_has_file() {
+        let body = format!("[file:notes.txt:{}]", crate::base64::encode(b"hello"));
+        let m = dm("m2", &body);
+        let ix = IndexableMessage::from_display_message(&m, "general", None, None);
+        assert!(ix.has_file, "non-image attachment must set has_file");
+        assert!(!ix.has_image, "non-image attachment must not set has_image");
+    }
+
+    #[test]
+    fn image_url_in_body_sets_has_image() {
+        // Bare URL pointing at an image extension also lights up
+        // `has:image` — mirrors the UI's `is_image_url` rule.
+        let m = dm("m3", "look at https://example.com/cat.jpg");
+        let ix = IndexableMessage::from_display_message(&m, "general", None, None);
+        assert!(ix.has_image, "image URL must set has_image");
+        assert!(ix.has_link, "URL must set has_link");
+    }
+
+    #[test]
+    fn plain_url_sets_has_link_only() {
+        let m = dm("m4", "see https://willow.im/docs");
+        let ix = IndexableMessage::from_display_message(&m, "general", None, None);
+        assert!(ix.has_link);
+        assert!(!ix.has_image);
+        assert!(!ix.has_file);
+    }
+
+    #[test]
+    fn plain_text_sets_no_flags() {
+        let m = dm("m5", "hello world");
+        let ix = IndexableMessage::from_display_message(&m, "general", None, None);
+        assert!(!ix.has_image);
+        assert!(!ix.has_file);
+        assert!(!ix.has_link);
+    }
+
+    #[test]
+    fn grove_and_letter_id_passed_through() {
+        let m = dm("m6", "hi");
+        let ix = IndexableMessage::from_display_message(
+            &m,
+            "general",
+            Some("g0".into()),
+            Some("L1".into()),
+        );
+        assert_eq!(ix.grove_id.as_deref(), Some("g0"));
+        assert_eq!(ix.letter_id.as_deref(), Some("L1"));
+    }
+}
+
+/// Bootstrap + incremental hooks (issue #354). Verifies that the
+/// hydrate / index / reindex helpers feed the index correctly without
+/// invoking the destructive `Rebuild` path.
+mod bootstrap_tests {
+    use super::super::*;
+    use crate::test_client;
+    use willow_actor::System;
+    use willow_state::EventHash;
+
+    /// `hydrate_index` walks every channel and seeds the index with
+    /// every non-deleted message. Cross-channel content survives — the
+    /// regression in issue #354 was that the prior signal-driven path
+    /// only ever held the active channel's messages.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hydrate_indexes_all_channels() {
+        let (client, _broker) = test_client();
+
+        client.send_message("general", "alpha hello").await.unwrap();
+        client.create_channel("dev").await.unwrap();
+        // create_channel is async — wait for the channel to land before
+        // sending into it.
+        for _ in 0..50 {
+            if client.channels().await.iter().any(|n| n == "dev") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        client.send_message("dev", "beta progress").await.unwrap();
+        // Let the message events apply.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let sys = System::new();
+        let search = SearchIndexHandle::new_in_memory(&sys.handle());
+        bootstrap::hydrate_index(&client, &search, Some("g0".into())).await;
+
+        // Both channels' content lands in the same index.
+        let general_hits = search
+            .query(&parse_query("alpha"), &SearchScope::AllGrovesAndLetters)
+            .await;
+        assert_eq!(general_hits.len(), 1, "alpha must be indexed");
+        let dev_hits = search
+            .query(&parse_query("beta"), &SearchScope::AllGrovesAndLetters)
+            .await;
+        assert_eq!(
+            dev_hits.len(),
+            1,
+            "beta from a non-active channel must be indexed"
+        );
+    }
+
+    /// `hydrate_index` is idempotent — `SearchIndex::insert` short-
+    /// circuits on a known `message_id`, so re-running on the same
+    /// state must not double-count.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hydrate_is_idempotent() {
+        let (client, _broker) = test_client();
+
+        client.send_message("general", "ping").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let sys = System::new();
+        let search = SearchIndexHandle::new_in_memory(&sys.handle());
+        bootstrap::hydrate_index(&client, &search, None).await;
+        let after_first = search.message_count().await;
+        bootstrap::hydrate_index(&client, &search, None).await;
+        let after_second = search.message_count().await;
+        assert_eq!(after_first, after_second, "second hydrate must be no-op");
+    }
+
+    /// `index_message` inserts one message by id — the incremental
+    /// hook the indexer task calls on `ClientEvent::MessageReceived`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn index_message_inserts_by_id() {
+        let (client, _broker) = test_client();
+
+        client.send_message("general", "fresh news").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let snap = client.state_snapshot().await;
+        let (channel_id, _) = snap
+            .channels
+            .iter()
+            .find(|(_, c)| c.name == "general")
+            .expect("general channel must exist");
+        let msg = snap
+            .messages
+            .iter()
+            .find(|m| m.body == "fresh news")
+            .expect("message must be in state");
+        let message_id = msg.id.to_string();
+
+        let sys = System::new();
+        let search = SearchIndexHandle::new_in_memory(&sys.handle());
+        // Index is empty up front — only the incremental hook runs.
+        assert_eq!(search.message_count().await, 0);
+        bootstrap::index_message(&client, &search, channel_id, &message_id, None).await;
+        assert_eq!(search.message_count().await, 1);
+
+        let hits = search
+            .query(&parse_query("fresh"), &SearchScope::AllGrovesAndLetters)
+            .await;
+        assert_eq!(hits.len(), 1);
+    }
+
+    /// `reindex_message` removes-then-reinserts so an edited body
+    /// replaces the old posting. Without the explicit remove,
+    /// `SearchIndex::insert` would short-circuit on the existing
+    /// `message_id` and the new body would never land.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reindex_replaces_edited_body() {
+        let (client, _broker) = test_client();
+
+        client.send_message("general", "old body").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let snap = client.state_snapshot().await;
+        let (channel_id, _) = snap
+            .channels
+            .iter()
+            .find(|(_, c)| c.name == "general")
+            .expect("general channel must exist");
+        let msg = snap
+            .messages
+            .iter()
+            .find(|m| m.body == "old body")
+            .expect("message must be in state");
+        let message_id = msg.id.to_string();
+        let event_hash: EventHash = msg.id;
+
+        let sys = System::new();
+        let search = SearchIndexHandle::new_in_memory(&sys.handle());
+        bootstrap::index_message(&client, &search, channel_id, &message_id, None).await;
+        let pre = search
+            .query(&parse_query("old"), &SearchScope::AllGrovesAndLetters)
+            .await;
+        assert_eq!(pre.len(), 1, "pre-edit body must be queryable");
+
+        // Edit the message and let the event apply.
+        client
+            .edit_message("general", &event_hash, "shiny new body")
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        bootstrap::reindex_message(&client, &search, channel_id, &message_id, None).await;
+        let stale = search
+            .query(&parse_query("old"), &SearchScope::AllGrovesAndLetters)
+            .await;
+        assert!(
+            stale.is_empty(),
+            "old body must no longer match after reindex"
+        );
+        let fresh = search
+            .query(&parse_query("shiny"), &SearchScope::AllGrovesAndLetters)
+            .await;
+        assert_eq!(fresh.len(), 1, "new body must match after reindex");
+    }
+}

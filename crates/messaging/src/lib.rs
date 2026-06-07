@@ -92,6 +92,105 @@ impl std::fmt::Display for ChannelId {
 
 // ───── Content types ─────────────────────────────────────────────────────────
 
+/// Maximum allowed length, in bytes, for a [`Content::File`] filename.
+///
+/// Matches POSIX `NAME_MAX` (255). Peer-supplied filenames longer than
+/// this are rejected by [`Content::validate`].
+pub const MAX_FILENAME_BYTES: usize = 255;
+
+/// Maximum allowed length, in bytes, for a [`Content::File`] MIME type.
+///
+/// RFC 6838 §4.2 caps the registered `type/subtype` form at 127+127
+/// characters; we use 255 as a conservative POSIX-aligned bound that
+/// covers all realistic media types plus parameters. Peer-supplied
+/// MIME types longer than this are rejected by [`Content::validate`].
+pub const MAX_MIME_BYTES: usize = 255;
+
+/// Maximum allowed pixel dimension for a [`Content::File`] image.
+///
+/// 16384 px ≈ the largest texture size most browsers / GPUs accept,
+/// and well above any realistic photo. Exceeding the cap is treated
+/// as a peer crafting an aspect-ratio bomb: a tiny file declaring
+/// huge dimensions to force the renderer to reserve gigantic layout
+/// space. Peer-supplied dimensions above this are rejected by
+/// [`Content::validate`].
+///
+/// **Sub-cap values are still attacker-declared.** A peer can declare
+/// 16383 × 16383 (≈ 268 MP, ≈ 1 GB RGBA at 4 bytes / pixel) without
+/// hitting the cap. Renderers MUST NOT pass these values directly to
+/// allocation APIs (`canvas.width = …`, `Vec::with_capacity`, GPU
+/// texture creation, …) — clamp to a viewport-relative safe bound at
+/// the render layer first. The schema cap only protects against the
+/// extreme abuse case (e.g. 100 000 × 100 000); the realistic abuse
+/// vector lives entirely below it.
+pub const MAX_DIMENSION_PX: u32 = 16_384;
+
+/// Maximum allowed length, in bytes, for [`SealedContent::ciphertext`].
+///
+/// `SealedContent::ciphertext` is opaque before AEAD verification, so a
+/// peer can broadcast an arbitrarily large blob and force receivers to
+/// allocate it during deserialise and during decryption before any
+/// authentication failure surfaces. Capping the wire length closes that
+/// pre-decrypt DoS surface.
+///
+/// 64 KiB comfortably exceeds any realistic chat payload (text bodies,
+/// reactions, replies, edits, system messages) plus the 16-byte
+/// ChaCha20-Poly1305 auth tag, while bounding worst-case allocations
+/// from a single message at a level that's cheap to absorb. Peer-supplied
+/// `Content::Encrypted` values whose `ciphertext` exceeds this bound are
+/// rejected by [`Content::validate`].
+pub const MAX_SEALED_CIPHERTEXT_BYTES: usize = 64 * 1024;
+
+/// Errors returned by [`Content::validate`] / [`Message::validate`] when a
+/// peer-supplied payload exceeds the structural bounds enforced by this
+/// crate.
+///
+/// These checks guard against unbounded `String` fields in `Content::File`
+/// being abused to inflate gossip payloads or memory footprint after a
+/// message has already cleared signature verification. The `Content` enum
+/// is decoded by `bincode` before any structural check runs, so callers
+/// receiving peer-supplied `Content` MUST invoke `validate()` on the
+/// decoded value before trusting any of its fields.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum MessageValidationError {
+    /// `Content::File::filename` exceeded [`MAX_FILENAME_BYTES`].
+    #[error("filename too long: {actual} bytes (max {max})")]
+    FilenameTooLong {
+        /// Observed length in bytes.
+        actual: usize,
+        /// Configured maximum.
+        max: usize,
+    },
+
+    /// `Content::File::mime_type` exceeded [`MAX_MIME_BYTES`].
+    #[error("mime_type too long: {actual} bytes (max {max})")]
+    MimeTypeTooLong {
+        /// Observed length in bytes.
+        actual: usize,
+        /// Configured maximum.
+        max: usize,
+    },
+
+    /// `Content::File::width` or `height` exceeded [`MAX_DIMENSION_PX`].
+    #[error("image dimension too large: {actual}px (max {max}px)")]
+    DimensionTooLarge {
+        /// Observed pixel value.
+        actual: u32,
+        /// Configured maximum.
+        max: u32,
+    },
+
+    /// `Content::Encrypted` carried a `SealedContent::ciphertext` that
+    /// exceeded [`MAX_SEALED_CIPHERTEXT_BYTES`].
+    #[error("sealed ciphertext too long: {actual} bytes (max {max})")]
+    SealedCiphertextTooLong {
+        /// Observed length in bytes.
+        actual: usize,
+        /// Configured maximum.
+        max: usize,
+    },
+}
+
 /// The payload inside a [`Message`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Content {
@@ -105,12 +204,40 @@ pub enum Content {
     File {
         /// Content-addressed hash of the file data.
         hash: String,
-        /// Original filename.
+        /// Original filename. Bounded to [`MAX_FILENAME_BYTES`] by
+        /// [`Content::validate`]; values exceeding the cap are rejected
+        /// at the inbound boundary.
         filename: String,
-        /// MIME type (e.g. `image/png`).
+        /// MIME type (e.g. `image/png`). Bounded to [`MAX_MIME_BYTES`]
+        /// by [`Content::validate`]; values exceeding the cap are
+        /// rejected at the inbound boundary.
         mime_type: String,
-        /// File size in bytes.
+        /// File size in bytes, as declared by the sender.
+        ///
+        /// **Attacker-declared.** UI MAY display this for the user but
+        /// MUST NOT use it for preallocation (`Vec::with_capacity`,
+        /// `reserve`, etc.), allocation hints, or trust decisions. The
+        /// authoritative size is whatever the content-addressed `hash`
+        /// resolves to once the file bytes are actually fetched.
         size_bytes: u64,
+        /// Image width in pixels, when known. Used by the renderer to
+        /// reserve correct-ratio layout space while bytes stream over
+        /// the blob transport. `None` for non-images and for image
+        /// attachments produced before this field existed (those keep
+        /// rendering with the browser's natural sizing).
+        ///
+        /// Bounded to [`MAX_DIMENSION_PX`] by [`Content::validate`] —
+        /// peer-declared dimensions above the cap are rejected at the
+        /// inbound boundary so an attacker can't craft a 1-byte file
+        /// with declared 100000×100000 dimensions to bomb the layout.
+        #[serde(default)]
+        width: Option<u32>,
+        /// Image height in pixels, when known. See [`width`] for the
+        /// rationale and bounds.
+        ///
+        /// [`width`]: Self::File::width
+        #[serde(default)]
+        height: Option<u32>,
     },
 
     /// An emoji reaction to another message.
@@ -153,6 +280,82 @@ pub enum Content {
     /// encrypted with the channel's symmetric key. Only channel members
     /// with the key can decrypt this.
     Encrypted(SealedContent),
+}
+
+impl Content {
+    /// Validate structural bounds on peer-supplied content.
+    ///
+    /// `Content` is a wire enum decoded with `bincode` before any
+    /// structural check runs, so callers handling peer-supplied values
+    /// MUST invoke this method after decoding and before trusting the
+    /// fields. Bounded fields:
+    ///
+    /// - [`Content::File::filename`] (≤ [`MAX_FILENAME_BYTES`])
+    /// - [`Content::File::mime_type`] (≤ [`MAX_MIME_BYTES`])
+    /// - [`Content::File::width`] / `height` (≤ [`MAX_DIMENSION_PX`])
+    /// - [`SealedContent::ciphertext`] inside [`Content::Encrypted`]
+    ///   (≤ [`MAX_SEALED_CIPHERTEXT_BYTES`])
+    ///
+    /// Other variants always validate successfully.
+    ///
+    /// The plaintext inside `Content::Encrypted` is opaque until the
+    /// channel key is applied; callers should re-invoke `validate()`
+    /// on the decrypted `Content` before trusting its inner fields.
+    pub fn validate(&self) -> Result<(), MessageValidationError> {
+        match self {
+            Content::File {
+                filename,
+                mime_type,
+                width,
+                height,
+                ..
+            } => {
+                if let Some(w) = *width {
+                    if w > MAX_DIMENSION_PX {
+                        return Err(MessageValidationError::DimensionTooLarge {
+                            actual: w,
+                            max: MAX_DIMENSION_PX,
+                        });
+                    }
+                }
+                if let Some(h) = *height {
+                    if h > MAX_DIMENSION_PX {
+                        return Err(MessageValidationError::DimensionTooLarge {
+                            actual: h,
+                            max: MAX_DIMENSION_PX,
+                        });
+                    }
+                }
+                if filename.len() > MAX_FILENAME_BYTES {
+                    return Err(MessageValidationError::FilenameTooLong {
+                        actual: filename.len(),
+                        max: MAX_FILENAME_BYTES,
+                    });
+                }
+                if mime_type.len() > MAX_MIME_BYTES {
+                    return Err(MessageValidationError::MimeTypeTooLong {
+                        actual: mime_type.len(),
+                        max: MAX_MIME_BYTES,
+                    });
+                }
+            }
+            Content::Encrypted(sealed) => {
+                if sealed.ciphertext.len() > MAX_SEALED_CIPHERTEXT_BYTES {
+                    return Err(MessageValidationError::SealedCiphertextTooLong {
+                        actual: sealed.ciphertext.len(),
+                        max: MAX_SEALED_CIPHERTEXT_BYTES,
+                    });
+                }
+            }
+            Content::Text { .. }
+            | Content::Reaction { .. }
+            | Content::Reply { .. }
+            | Content::Edit { .. }
+            | Content::Delete { .. }
+            | Content::System { .. } => {}
+        }
+        Ok(())
+    }
 }
 
 /// The encrypted form of a [`Content`] value.
@@ -258,7 +461,21 @@ impl Message {
         }
     }
 
-    /// Create a file-sharing message.
+    /// Validate structural bounds on this message's payload.
+    ///
+    /// Convenience wrapper around [`Content::validate`]; see that
+    /// method's docs for the contract. Callers receiving a peer-supplied
+    /// [`Message`] over the wire MUST invoke this before trusting any
+    /// fields of the inner [`Content`].
+    pub fn validate(&self) -> Result<(), MessageValidationError> {
+        self.content.validate()
+    }
+
+    /// Create a file-sharing message without image dimensions.
+    ///
+    /// Use [`Message::file_with_dimensions`] when sending an image —
+    /// the renderer needs `width` / `height` to reserve correct-ratio
+    /// layout space while bytes stream over the blob transport.
     pub fn file(
         channel_id: ChannelId,
         author: EndpointId,
@@ -266,6 +483,30 @@ impl Message {
         filename: impl Into<String>,
         mime_type: impl Into<String>,
         size_bytes: u64,
+        hlc: &mut hlc::HLC,
+    ) -> Self {
+        Self::file_with_dimensions(
+            channel_id, author, hash, filename, mime_type, size_bytes, None, None, hlc,
+        )
+    }
+
+    /// Create a file-sharing message with optional image dimensions.
+    ///
+    /// `width` / `height` are `Some(_)` for image attachments whose
+    /// dimensions are known at send time (the web layer extracts them
+    /// via the browser `Image` API before calling this constructor)
+    /// and `None` otherwise. Receivers use the values to reserve
+    /// correct-ratio layout space while bytes stream.
+    #[allow(clippy::too_many_arguments)]
+    pub fn file_with_dimensions(
+        channel_id: ChannelId,
+        author: EndpointId,
+        hash: impl Into<String>,
+        filename: impl Into<String>,
+        mime_type: impl Into<String>,
+        size_bytes: u64,
+        width: Option<u32>,
+        height: Option<u32>,
         hlc: &mut hlc::HLC,
     ) -> Self {
         Self {
@@ -277,6 +518,8 @@ impl Message {
                 filename: filename.into(),
                 mime_type: mime_type.into(),
                 size_bytes,
+                width,
+                height,
             },
             created_at: Utc::now(),
             hlc: hlc.now(),
@@ -380,10 +623,14 @@ mod tests {
                 ref filename,
                 ref mime_type,
                 size_bytes,
+                width,
+                height,
             } if hash == "abc123hash"
                 && filename == "photo.jpg"
                 && mime_type == "image/jpeg"
                 && size_bytes == 1024
+                && width.is_none()
+                && height.is_none()
         ));
     }
 
@@ -534,5 +781,252 @@ mod tests {
             ratchet_counter: 0,
         };
         assert_eq!(sealed.ratchet_counter, 0);
+    }
+
+    // ── validate() bounds ───────────────────────────────────────────────────
+
+    fn file_content(filename: &str, mime_type: &str) -> Content {
+        Content::File {
+            hash: "deadbeef".into(),
+            filename: filename.into(),
+            mime_type: mime_type.into(),
+            size_bytes: 0,
+            width: None,
+            height: None,
+        }
+    }
+
+    #[test]
+    fn validate_rejects_oversized_filename() {
+        let too_long = "a".repeat(MAX_FILENAME_BYTES + 1);
+        let content = file_content(&too_long, "image/png");
+        assert_eq!(
+            content.validate(),
+            Err(MessageValidationError::FilenameTooLong {
+                actual: MAX_FILENAME_BYTES + 1,
+                max: MAX_FILENAME_BYTES,
+            })
+        );
+    }
+
+    #[test]
+    fn validate_rejects_oversized_mime_type() {
+        let too_long = "a".repeat(MAX_MIME_BYTES + 1);
+        let content = file_content("ok.txt", &too_long);
+        assert_eq!(
+            content.validate(),
+            Err(MessageValidationError::MimeTypeTooLong {
+                actual: MAX_MIME_BYTES + 1,
+                max: MAX_MIME_BYTES,
+            })
+        );
+    }
+
+    #[test]
+    fn validate_accepts_filename_at_boundary() {
+        let at_cap = "a".repeat(MAX_FILENAME_BYTES);
+        let mime_at_cap = "a".repeat(MAX_MIME_BYTES);
+        let content = file_content(&at_cap, &mime_at_cap);
+        assert!(content.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_empty_filename_and_mime() {
+        let content = file_content("", "");
+        assert!(content.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_is_noop_for_non_file_variants() {
+        let cases = [
+            Content::Text {
+                body: "x".repeat(1024),
+            },
+            Content::Reaction {
+                target: MessageId::new(),
+                emoji: "👍".into(),
+            },
+            Content::Reply {
+                parent: MessageId::new(),
+                body: "ok".into(),
+            },
+            Content::Edit {
+                target: MessageId::new(),
+                new_body: "edited".into(),
+            },
+            Content::Delete {
+                target: MessageId::new(),
+            },
+            Content::System {
+                description: "joined".into(),
+            },
+            Content::Encrypted(SealedContent {
+                ciphertext: vec![1, 2, 3],
+                nonce: [0u8; 12],
+                key_epoch: 0,
+                ratchet_counter: 0,
+            }),
+        ];
+        for content in &cases {
+            assert!(content.validate().is_ok(), "expected ok for {content:?}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_oversized_sealed_ciphertext() {
+        let content = Content::Encrypted(SealedContent {
+            ciphertext: vec![0u8; MAX_SEALED_CIPHERTEXT_BYTES + 1],
+            nonce: [0u8; 12],
+            key_epoch: 0,
+            ratchet_counter: 0,
+        });
+        assert_eq!(
+            content.validate(),
+            Err(MessageValidationError::SealedCiphertextTooLong {
+                actual: MAX_SEALED_CIPHERTEXT_BYTES + 1,
+                max: MAX_SEALED_CIPHERTEXT_BYTES,
+            })
+        );
+    }
+
+    #[test]
+    fn validate_accepts_sealed_ciphertext_at_boundary() {
+        let content = Content::Encrypted(SealedContent {
+            ciphertext: vec![0u8; MAX_SEALED_CIPHERTEXT_BYTES],
+            nonce: [0u8; 12],
+            key_epoch: 0,
+            ratchet_counter: 0,
+        });
+        assert!(content.validate().is_ok());
+    }
+
+    #[test]
+    fn message_validate_delegates_to_content() {
+        let mut hlc = hlc::HLC::new();
+        let peer = Identity::generate().endpoint_id();
+        let channel = ChannelId::new();
+        let too_long = "a".repeat(MAX_FILENAME_BYTES + 1);
+
+        let msg = Message::file(channel, peer, "hash", too_long, "image/png", 42, &mut hlc);
+        assert!(matches!(
+            msg.validate(),
+            Err(MessageValidationError::FilenameTooLong { .. })
+        ));
+    }
+
+    // ── Content::File width / height (phase 3b) ─────────────────────────────
+
+    #[test]
+    fn content_file_round_trips_with_dimensions() {
+        // Image attachment with known dimensions — sender extracts width
+        // and height from the browser's Image API and stamps them on the
+        // wire so receivers can reserve correct-ratio layout space while
+        // bytes stream over the blob transport.
+        let mut hlc = hlc::HLC::new();
+        let peer = Identity::generate().endpoint_id();
+        let channel = ChannelId::new();
+
+        let msg = Message::file_with_dimensions(
+            channel,
+            peer,
+            "hash",
+            "photo.jpg",
+            "image/jpeg",
+            2_048,
+            Some(1920),
+            Some(1080),
+            &mut hlc,
+        );
+        let bytes = willow_transport::pack(&msg).unwrap();
+        let decoded: Message = willow_transport::unpack(&bytes).unwrap();
+        assert_eq!(decoded.content, msg.content);
+        assert!(matches!(
+            decoded.content,
+            Content::File {
+                width: Some(1920),
+                height: Some(1080),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn content_file_round_trips_without_dimensions() {
+        // Non-image attachments (PDFs, archives, anything we can't
+        // measure with the browser's Image API) ship with `width` and
+        // `height` set to `None`. Verify the round-trip preserves that
+        // — receivers fall back to the file-card variant which doesn't
+        // need dimensions.
+        let mut hlc = hlc::HLC::new();
+        let peer = Identity::generate().endpoint_id();
+        let channel = ChannelId::new();
+
+        let msg = Message::file(
+            channel,
+            peer,
+            "deadbeef",
+            "doc.pdf",
+            "application/pdf",
+            999,
+            &mut hlc,
+        );
+        let bytes = willow_transport::pack(&msg).unwrap();
+        let decoded: Message = willow_transport::unpack(&bytes).unwrap();
+        assert!(matches!(
+            decoded.content,
+            Content::File {
+                width: None,
+                height: None,
+                ..
+            }
+        ));
+        assert_eq!(decoded.content, msg.content);
+    }
+
+    #[test]
+    fn content_validate_rejects_oversize_dimensions() {
+        // Peer-declared dimensions above the 16384px cap are rejected
+        // at the inbound boundary so an attacker can't craft a 1-byte
+        // file with declared 100000×100000 dimensions to bomb the
+        // renderer's reserved layout space.
+        let oversize_width = Content::File {
+            hash: "h".into(),
+            filename: "x.png".into(),
+            mime_type: "image/png".into(),
+            size_bytes: 1,
+            width: Some(MAX_DIMENSION_PX + 1),
+            height: Some(100),
+        };
+        assert!(matches!(
+            oversize_width.validate(),
+            Err(MessageValidationError::DimensionTooLarge {
+                actual,
+                max
+            }) if actual == MAX_DIMENSION_PX + 1 && max == MAX_DIMENSION_PX
+        ));
+
+        let oversize_height = Content::File {
+            hash: "h".into(),
+            filename: "x.png".into(),
+            mime_type: "image/png".into(),
+            size_bytes: 1,
+            width: Some(100),
+            height: Some(u32::MAX),
+        };
+        assert!(matches!(
+            oversize_height.validate(),
+            Err(MessageValidationError::DimensionTooLarge { .. })
+        ));
+
+        // At the boundary is fine.
+        let at_boundary = Content::File {
+            hash: "h".into(),
+            filename: "x.png".into(),
+            mime_type: "image/png".into(),
+            size_bytes: 1,
+            width: Some(MAX_DIMENSION_PX),
+            height: Some(MAX_DIMENSION_PX),
+        };
+        assert!(at_boundary.validate().is_ok());
     }
 }

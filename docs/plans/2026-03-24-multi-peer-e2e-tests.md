@@ -1,5 +1,7 @@
 # Multi-Peer E2E Browser Tests Implementation Plan
 
+**Status:** landed (commits `eeb8329` initial multi-peer/permissions/mobile specs + `f715387` code-review followup) — `e2e/{multi-peer-sync,permissions,multi-peer-mobile}.spec.ts` shipped; `just test-e2e-sync` / `test-e2e-perms` recipes wired; legacy `e2e/{two-peer,state-sync}.spec.ts` deleted in favor of the new fixtures.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Comprehensive Playwright E2E tests for multi-peer state sync, permissions, and mobile interactions — running across all 4 browser projects (Desktop Chrome, Mobile Chrome, Desktop Firefox, Mobile Firefox).

@@ -418,6 +418,14 @@ impl<N: Network> WillowToolRouter<N> {
                 let data = base64_decode(&p.data).map_err(|e| {
                     ErrorData::invalid_params(format!("invalid base64 data: {e}"), None)
                 })?;
+                // Legacy inline-base64 path. Kept routed through the
+                // deprecated `share_file_inline` so existing MCP
+                // integrations don't break; a follow-up will migrate
+                // the agent surface to `upload_attachment` +
+                // `send_attachment_message` once the receive-side
+                // projection of `EventKind::FileMessage` is wired
+                // through the agent's view of `DisplayMessage`.
+                #[allow(deprecated)]
                 match self
                     .client
                     .share_file_inline(&p.channel, &p.filename, &data)
@@ -549,9 +557,18 @@ impl<N: Network> WillowToolRouter<N> {
             }
             "set_permission" => {
                 let p: SetPermissionParams = parse_args(&args)?;
+                let perm = willow_state::Permission::from_name(&p.permission).ok_or_else(|| {
+                    ErrorData::invalid_params(
+                        format!(
+                            "unknown permission '{}'; valid: SyncProvider, ManageChannels, ManageRoles, SendMessages, CreateInvite",
+                            p.permission
+                        ),
+                        None,
+                    )
+                })?;
                 match self
                     .client
-                    .set_permission(&p.role_id, &p.permission, p.granted)
+                    .set_permission(&p.role_id, perm, p.granted)
                     .await
                 {
                     Ok(()) => success_json(serde_json::json!({"success": true})),

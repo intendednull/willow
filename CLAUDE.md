@@ -11,6 +11,7 @@ Quality + longevity beat speed + convenience.
 - **Choose right solution, not easy one.** Ask: which approach makes most sense long-term, causes least future confusion, lasts? Pick that.
 - **No hacky workarounds, no shortcuts.** If obvious fix is band-aid, keep digging for real fix.
 - **Root-cause every bug.** No patching symptoms. No disabling failing tests. No swallowing errors. Find why, fix why.
+- **A failing test is a question, not a chore.** When a test starts failing, the bug is the default suspect — not the test. Diagnose what changed in the code under test before touching the test. Only update the test if (a) the spec/intent genuinely changed and you've updated the spec to match, or (b) the test was always wrong (asserting a false invariant) and you can articulate why. *Never* relax an assertion, swap a real interaction for a synthetic one, or rewrite a helper to dodge a regression — that hides the bug from the next person who runs the suite. If the change in behavior is intentional, fix the production code or update the spec, then update the test to match the new spec.
 - **Scope creep OK when warranted, not speculative.** Doing it right means touching more files / refactoring abstraction — do it. Don't add features, abstractions, error handling task didn't ask for.
 - **Answer not obvious? Stop, design.** Two+ reasonable approaches? Brief note in `docs/specs/YYYY-MM-DD-<name>-design.md` before coding. Plan in `docs/plans/YYYY-MM-DD-<name>.md`. Cheap up front, expensive later. **Specs in `docs/specs/`, plans in `docs/plans/`.** No `docs/superpowers/`.
 - **Surface tradeoffs explicit.** Picking between approaches, name runner-up + why rejected. Commit body or PR description. Future-you needs reasoning, not just result.
@@ -23,11 +24,11 @@ Quality + longevity beat speed + convenience.
 
 ```
 docs/
-├── plans/              — Implementation plans for features (YYYY-MM-DD-<name>.md)
-├── specs/              — Design specs and technical specifications (YYYY-MM-DD-<name>-design.md)
-├── design/             — Long-form design documents (UX specs, etc.)
-├── reference-designs/  — Exploratory UI / design references
-└── reports/            — Ad-hoc audit and investigation reports
+├── README.md           — Master index of specs, plans, and reports (start here)
+├── specs/              — Target state — what we are building toward (YYYY-MM-DD-<name>-design.md)
+├── plans/              — Migration steps — how we get to the target (YYYY-MM-DD-<name>.md)
+├── reports/            — One-shot audits and investigations
+└── reference-designs/  — Archived design bundles (immutable)
 crates/
 ├── state/       — Pure event-sourced state machine, zero I/O (willow-state)
 ├── client/      — UI-agnostic client library wrapping state + networking (willow-client)
@@ -121,7 +122,7 @@ just clean          # cargo clean + remove crates/web/dist
 
 | Service | Address | Description |
 |---------|---------|-------------|
-| Relay | `localhost:9090` (TCP), `localhost:9091` (WS) | Bridges peers |
+| Relay | `localhost:3340` | iroh relay HTTP + bootstrap |
 | Replay node | connects via relay | In-memory state sync (max 1000 events/server) |
 | Storage node | connects via relay | Archival SQLite storage |
 | Web UI | `http://localhost:8080` | Leptos app via `trunk serve` |
@@ -289,7 +290,7 @@ Full discussion: `docs/specs/2026-04-21-e2e-test-architecture-design.md`.
 - **Documentation**: Every public type + function has doc comment. Module-level `//!` docs explain purpose + provide examples.
 - **Testing**: Every crate has unit tests. Use `#[cfg(test)] mod tests` at bottom of each file.
 - **Serialization**: All wire types derive `Serialize + Deserialize`. Round-trip tests validate compatibility.
-- **Specs & Plans**: Design specs in `docs/specs/` named `YYYY-MM-DD-<feature-name>-design.md`. Plans in `docs/plans/` named `YYYY-MM-DD-<feature-name>.md`.
+- **Docs entry point**: `docs/README.md` is the master index of specs and plans, grouped by feature area. Read it before adding any new spec or plan, or before searching for an existing one. The `organizing-willow-docs` skill mirrors the conventions for on-demand loading. Cemented in `docs/specs/2026-05-07-docs-organization-design.md`.
 
 ## Architecture Notes
 
@@ -342,7 +343,7 @@ All shared state derived from per-author Merkle DAG of signed events. `willow-st
 - **EventDag** (`crates/state/src/dag.rs`): in-memory store of all known events, indexed by `EventHash`. `EventDag::insert` validates signature, genesis, `prev`/`deps` linkage. No explicit "merge" — DAG converges as events arrive.
 - **ServerState** (`crates/state/src/server.rs`): materialized state derived by walking the DAG.
 - **`materialize::apply_incremental(state, event)`**: ONLY public mutation entry point. Pure. Internally calls `apply_event` + `required_permission` for authority checks.
-- **Permission model**: Owner = root of trust. Fine-grained permissions (SyncProvider, ManageChannels, ManageRoles, KickMembers, SendMessages, CreateInvite, Administrator) granted via `GrantPermission` events.
+- **Permission model**: Owner = root of trust. Fine-grained permissions (SyncProvider, ManageChannels, ManageRoles, SendMessages, CreateInvite) granted via `GrantPermission` events. Admin status is structurally separate — managed exclusively through `ProposedAction` + vote path, never via `GrantPermission`. Kicks are an admin-only `ProposedAction` (no granular "can kick" permission).
 - **Sync** (`crates/state/src/sync.rs`): `HeadsSummary` = compact per-author DAG state for efficient sync; `PendingBuffer` holds events arriving before their `prev` chain predecessors.
 
 ### Trust Model

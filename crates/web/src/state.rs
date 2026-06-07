@@ -73,19 +73,30 @@ pub struct ParsedJoinToken {
     /// Original base64 for re-encoding.
     pub raw: String,
     pub link_id: String,
+    /// Endpoint ID of the inviter who minted this link. Required for
+    /// the SEC-A-07 signer-binding check on `JoinResponse` /
+    /// `JoinDenied` (issue #309) — must be plumbed through to
+    /// `send_join_request`.
+    pub inviter_peer_id: willow_identity::EndpointId,
     pub server_name: String,
     pub inviter_name: String,
+    /// Bootstrap `SyncProvider` endpoint IDs the inviter shipped in the share
+    /// link (outbox-relay-discovery spec, Layer 1). The join flow resolves
+    /// these via pkarr first and falls back to `DEFAULT_RELAY_URL`'s bootstrap
+    /// node when empty. Self-certifying, so a tampered list fails to connect
+    /// rather than forging state.
+    pub bootstrap_endpoint_ids: Vec<willow_identity::EndpointId>,
 }
 
 // ── Read signals (provided via context) ──────────────────────────────
 
 #[derive(Clone, Copy)]
 pub struct AppState {
-    pub chat: ChatState,
+    pub chat: ChatSignals,
     pub network: NetworkState,
-    pub server: ServerState,
+    pub server: ServerSignals,
     pub ui: UiState,
-    pub voice: VoiceState,
+    pub voice: VoiceSignals,
     pub trust: TrustState,
     pub presence: PresenceUiState,
     /// Local-search UI state (phase 2e — `local-search.md`).
@@ -124,6 +135,13 @@ pub struct SearchUiState {
     /// True while a 120 ms debounce timer is outstanding — UI dims the
     /// stale results row by 15 % per spec §Performance envelope.
     pub debouncing: ReadSignal<bool>,
+    /// Index of the keyboard-active result row in the flat (in-display-
+    /// order) results vector. Drives `aria-selected` per row and
+    /// `aria-activedescendant` on the search input. Reset to `0` when
+    /// the result set or scope changes. When `results` is empty, the
+    /// value is meaningless and consumers must not render
+    /// `aria-activedescendant`.
+    pub active_index: ReadSignal<usize>,
 }
 
 /// Tightened connection state companion to `NetworkState::connection_status`.
@@ -217,7 +235,7 @@ pub struct TrustState {
 }
 
 #[derive(Clone, Copy)]
-pub struct ChatState {
+pub struct ChatSignals {
     pub messages: ReadSignal<Vec<DisplayMessage>>,
     pub current_channel: ReadSignal<String>,
     pub channels: ReadSignal<Vec<String>>,
@@ -242,7 +260,7 @@ pub struct NetworkState {
 }
 
 #[derive(Clone, Copy)]
-pub struct ServerState {
+pub struct ServerSignals {
     pub servers: ReadSignal<Vec<(String, String)>>,
     pub active_server_id: ReadSignal<String>,
     pub active_server_name: ReadSignal<String>,
@@ -260,6 +278,13 @@ pub struct ServerState {
     pub ephemeral_meta: ReadSignal<EphemeralMetaList>,
     /// Peer IDs that have the SyncProvider permission.
     pub sync_provider_ids: ReadSignal<HashSet<String>>,
+    /// `true` when the local peer holds `Permission::ManageChannels`
+    /// (or is the implicit-all-permissions admin/owner). Phase 3c.3
+    /// gates the row `P` keyboard binding + the pinned-panel unpin
+    /// button on this signal per spec
+    /// `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+    /// §Permission + action.
+    pub local_can_manage_channels: ReadSignal<bool>,
     /// Peer IDs that have the Administrator permission.
     pub admin_ids: ReadSignal<HashSet<String>>,
 }
@@ -274,7 +299,6 @@ pub struct UiState {
     pub show_call_page: ReadSignal<bool>,
     pub show_palette: ReadSignal<bool>,
     pub call_layout: ReadSignal<CallLayout>,
-    #[allow(dead_code)]
     pub settings_tab: ReadSignal<SettingsTab>,
     pub join_token: ReadSignal<Option<ParsedJoinToken>>,
     /// "", "connecting", or "denied:<reason>".
@@ -282,12 +306,11 @@ pub struct UiState {
 }
 
 #[derive(Clone, Copy)]
-pub struct VoiceState {
+pub struct VoiceSignals {
     pub voice_channel: ReadSignal<Option<String>>,
     pub voice_muted: ReadSignal<bool>,
     pub voice_deafened: ReadSignal<bool>,
     /// Participants per voice channel.
-    #[allow(dead_code)]
     pub voice_participants_map: ReadSignal<HashMap<String, Vec<String>>>,
     pub voice_channel_name: ReadSignal<String>,
     pub video_source: ReadSignal<Option<VideoSource>>,
@@ -323,6 +346,7 @@ pub struct SearchUiWriteSignals {
     pub set_status: WriteSignal<SearchIndexBuildStatus>,
     pub set_recents: WriteSignal<Vec<RecentQuery>>,
     pub set_debouncing: WriteSignal<bool>,
+    pub set_active_index: WriteSignal<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -352,9 +376,7 @@ pub struct ChatWriteSignals {
     pub set_channels: WriteSignal<Vec<String>>,
     pub set_replying_to: WriteSignal<Option<DisplayMessage>>,
     pub set_editing: WriteSignal<Option<DisplayMessage>>,
-    #[allow(dead_code)]
     pub set_pinned_messages: WriteSignal<Vec<DisplayMessage>>,
-    #[allow(dead_code)]
     pub set_pin_labels: WriteSignal<HashMap<String, String>>,
     pub set_channel_views: WriteSignal<HashMap<String, ChannelViewState>>,
 }
@@ -395,6 +417,7 @@ pub struct ServerWriteSignals {
     pub set_ephemeral_meta: WriteSignal<EphemeralMetaList>,
     pub set_sync_provider_ids: WriteSignal<HashSet<String>>,
     pub set_admin_ids: WriteSignal<HashSet<String>>,
+    pub set_local_can_manage_channels: WriteSignal<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -498,6 +521,7 @@ pub fn create_signals() -> InitialSignals {
     let (ephemeral_meta, set_ephemeral_meta) = signal(EphemeralMetaList::new());
     let (sync_provider_ids, set_sync_provider_ids) = signal(HashSet::<String>::new());
     let (admin_ids, set_admin_ids) = signal(HashSet::<String>::new());
+    let (local_can_manage_channels, set_local_can_manage_channels) = signal(false);
 
     // UI panel signals (purely local — never derived)
     let (show_settings, set_show_settings) = signal(false);
@@ -561,6 +585,7 @@ pub fn create_signals() -> InitialSignals {
     let (search_status, set_search_status) = signal(SearchIndexBuildStatus::default());
     let (search_recents, set_search_recents) = signal(Vec::<RecentQuery>::new());
     let (search_debouncing, set_search_debouncing) = signal(false);
+    let (search_active_index, set_search_active_index) = signal(0usize);
 
     // Persist scope on every change so the user's preference survives
     // a reload. Run on wasm only — native tests don't mount this state.
@@ -585,7 +610,7 @@ pub fn create_signals() -> InitialSignals {
     let (profile_open, set_profile_open) = signal(Option::<crate::profile::ProfileState>::None);
 
     let app_state = AppState {
-        chat: ChatState {
+        chat: ChatSignals {
             messages,
             current_channel,
             channels,
@@ -603,7 +628,7 @@ pub fn create_signals() -> InitialSignals {
             connection_state,
             loading,
         },
-        server: ServerState {
+        server: ServerSignals {
             servers,
             active_server_id,
             active_server_name,
@@ -616,6 +641,7 @@ pub fn create_signals() -> InitialSignals {
             ephemeral_meta,
             sync_provider_ids,
             admin_ids,
+            local_can_manage_channels,
         },
         ui: UiState {
             show_settings,
@@ -630,7 +656,7 @@ pub fn create_signals() -> InitialSignals {
             join_token,
             join_status,
         },
-        voice: VoiceState {
+        voice: VoiceSignals {
             voice_channel,
             voice_muted,
             voice_deafened,
@@ -660,6 +686,7 @@ pub fn create_signals() -> InitialSignals {
             status: search_status,
             recents: search_recents,
             debouncing: search_debouncing,
+            active_index: search_active_index,
         },
         queue: QueueUiState {
             view: queue_view,
@@ -702,6 +729,7 @@ pub fn create_signals() -> InitialSignals {
             set_ephemeral_meta,
             set_sync_provider_ids,
             set_admin_ids,
+            set_local_can_manage_channels,
         },
         ui: UiWriteSignals {
             set_show_settings,
@@ -746,6 +774,7 @@ pub fn create_signals() -> InitialSignals {
             set_status: set_search_status,
             set_recents: set_search_recents,
             set_debouncing: set_search_debouncing,
+            set_active_index: set_search_active_index,
         },
         queue: QueueWriteSignals {
             set_view: set_queue_view,
@@ -851,8 +880,7 @@ pub fn wire_derived_signals<N: willow_network::Network>(
         es.roles
             .iter()
             .map(|(id, role)| {
-                let perms: Vec<String> =
-                    role.permissions.iter().map(|p| format!("{p:?}")).collect();
+                let perms: Vec<String> = role.permissions.iter().map(|p| p.to_string()).collect();
                 (id.clone(), role.name.clone(), perms)
             })
             .collect::<Vec<_>>()
@@ -893,6 +921,23 @@ pub fn wire_derived_signals<N: willow_network::Network>(
             .collect::<std::collections::HashSet<String>>()
     });
     leptos::prelude::Effect::new(move || write.server.set_admin_ids.set(admin_ids.get()));
+
+    // Phase 3c.3 — gate the row `P` keybinding + the pinned-panel
+    // unpin button on `Permission::ManageChannels`. Admins implicitly
+    // have all permissions; explicit grants flow through
+    // `peer_permissions`.
+    let local_can_manage = derived_signal(&views.event_state, system, move |es| {
+        es.has_permission(
+            &local_pid,
+            &willow_client::willow_state::Permission::ManageChannels,
+        )
+    });
+    leptos::prelude::Effect::new(move || {
+        write
+            .server
+            .set_local_can_manage_channels
+            .set(local_can_manage.get())
+    });
 
     let channel_kinds = derived_signal(&views.event_state, system, |es| {
         es.channels

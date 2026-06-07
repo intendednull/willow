@@ -1,3 +1,4 @@
+/* eslint-disable no-restricted-syntax -- migration tracked at https://github.com/intendednull/willow/issues/458 */
 import { test, expect } from '@playwright/test';
 import {
   freshStart,
@@ -29,8 +30,11 @@ test.describe('Mobile UX', () => {
     // Add a reaction (handles both desktop and mobile).
     await reactToMessage(page, 'react to me');
 
-    // Reaction should be visible.
-    const reaction = page.locator('.shell-mobile .reaction').first();
+    // Reaction should be visible. Phase 3c.3 renamed the production
+    // pill class from `.reaction` to `.reaction-pill` (BEM block per
+    // `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+    // §Reaction strip).
+    const reaction = page.locator('.shell-mobile .reaction-pill').first();
     await expect(reaction).toBeVisible();
 
     // Tap the reaction (should toggle — this was bug #2).

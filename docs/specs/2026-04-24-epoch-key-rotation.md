@@ -54,6 +54,25 @@ membership-changing state events: `Propose { KickMember } + Vote`,
   policy grants new members the current epoch key only. See the
   "Joining" section.
 
+## Prior Art
+
+This design sits in the lineage of group key-management protocols. Willow adopts
+their epoch / removal-rekey ideas while staying deliberately flatter and
+event-sourced — rekey is a signed DAG event, not a tree operation or a session
+handshake.
+
+| System | Relevance to this design |
+|---|---|
+| **MLS — Messaging Layer Security** (RFC 9420, IETF, 2023) | The reference model for epoch-based group rekey: every membership change advances an epoch and derives a fresh group secret, yielding post-compromise security + forward secrecy (full FS — MLS deletes epoch secrets as the key schedule advances; Willow's own guarantee is only *weak* FS, since it depends on members voluntarily deleting old epoch keys — see Threat model). Willow borrows the epoch concept and the "new member sees only the current epoch" rule (MLS-style post-join confidentiality), but drives epochs from signed DAG membership events instead of MLS Commit messages, and uses a flat per-member key wrap instead of a ratchet tree. |
+| **TreeKEM** (the ratchet-tree group key agreement inside MLS, RFC 9420 §7 "Ratchet Tree Operations"; "TreeKEM" is the community name, not an RFC term) | Logarithmic-cost group rekey via a binary ratchet tree. Explicitly *rejected* here (Non-Goals): Willow channels are small, so a flat `HKDF` rekey wrapped per remaining member is simpler than maintaining a tree; we accept the O(members) rewrap cost. |
+| **HPKE — Hybrid Public Key Encryption** (RFC 9180, IRTF CFRG, 2022) | Standard KEM+KDF+AEAD construction for sealing a fresh symmetric key to each recipient's public key. Conceptually what Willow's per-member epoch-key wrap (`encrypt_channel_key_for`: ephemeral X25519 + HKDF + ChaCha20-Poly1305) does by hand; cited as the formal antecedent for the per-recipient wrapping step rather than a dependency. |
+| **HKDF** (RFC 5869, Krawczyk & Eronen, 2010) | Extract-and-Expand KDF used verbatim for epoch derivation: `prk = Extract(salt, ikm = epoch_key[N] ‖ trigger_hash)`, then `Expand` to the next key and to a public `epoch_key_id`. Willow follows the RFC's salt / IKM / info separation and adds a new explicit versioned salt to domain-separate v2 epoch rotations from the legacy scheme. |
+| **Signal Double Ratchet** (Perrin & Marlinspike, Signal specification, 2016) | Canonical source of the forward-secrecy / post-compromise-security definitions this spec targets, via its symmetric (FS) + DH (PCS) ratchets. Willow adopts the *security goals* (PCS, weak FS) but explicitly declines the *mechanism* — per-message double-ratcheting is out of scope; rotation happens only at membership epoch boundaries. |
+| **On Post-Compromise Security** (Cohn-Gordon, Cremers & Garratt, IEEE CSF 2016) | First formal definition of the PCS property the rotation is built to deliver: a key compromised before a rekey must not decrypt traffic after it. Willow's "membership event ⇒ new epoch key removed members can't derive" is precisely a PCS healing step keyed on membership rather than time. |
+| **Sender Keys** (Signal "Sender Keys"; WhatsApp Security Whitepaper; also used by Matrix) | Server-fanout group encryption where each sender hash-ratchets its own key; on member *removal* the sender-key session is cleared and keys regenerated. Willow shares the trigger (removal → mandatory rekey) but differs in granularity: Sender Keys ratchet per message for FS within a session, whereas Willow rotates the whole channel key only at epoch boundaries. |
+| **Matrix Megolm** (Matrix group ratchet, spec.matrix.org) | Symmetric hash ratchet for large rooms giving forward secrecy, but it must start a *new session* on membership change to regain backward secrecy. Validates Willow's choice to make membership changes the rekey trigger; Willow differs by deriving the next key deterministically from `prev_key ‖ trigger_hash` rather than distributing a fresh random session. |
+| **Marmot / NIP-EE — MLS over Nostr** (NIP-EE "E2EE Messaging using MLS", superseded by the Marmot Protocol, `marmot-protocol/marmot`) | Closest ecosystem peer: runs MLS group key management over a gossip-style relay transport, as Willow runs epoch rekey over iroh gossip. The spec's intro cites its uptake friction as motivation. Willow diverges by reusing its own signed-event DAG for ordering/authority instead of layering full MLS on top, and adopts NIP-EE's "MLS signing key MUST differ from the identity key" guidance as a deferred follow-up. |
+
 ## Epoch definition
 
 An `Epoch` is `(channel_id, epoch_number: u32)`. The width matches the

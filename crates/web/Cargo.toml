@@ -12,7 +12,7 @@ willow-crypto = { path = "../crypto" }
 willow-identity = { path = "../identity" }
 willow-network = { path = "../network" }
 willow-state = { path = "../state" }
-leptos = { version = "0.7", features = ["csr"] }
+leptos = { version = "0.8", features = ["csr"] }
 tracing = { workspace = true }
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = [
@@ -20,8 +20,9 @@ web-sys = { version = "0.3", features = [
     "HtmlTextAreaElement", "HtmlCollection", "NodeList",
     "KeyboardEvent", "KeyboardEventInit",
     "EventTarget", "InputEvent", "InputEventInit",
-    "MouseEvent", "DomTokenList",
+    "MouseEvent", "DomTokenList", "DragEvent", "DataTransfer", "DataTransferItem", "DataTransferItemList",
     "Blob", "File", "FileList", "FileReader", "Url",
+    "ClipboardEvent", "ClipboardEventInit",
     "Clipboard", "Navigator", "CssStyleDeclaration", "HtmlDocument",
     "TouchEvent", "TouchList", "Touch",
     "RtcPeerConnection", "RtcSessionDescriptionInit", "RtcSdpType",
@@ -32,6 +33,7 @@ web-sys = { version = "0.3", features = [
     "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition",
     "DisplayMediaStreamConstraints",
     "AudioContext", "BaseAudioContext", "AudioNode",
+    "AudioBuffer",
     "AnalyserNode", "MediaStreamAudioSourceNode",
     "RtcSignalingState", "RtcRtpTransceiver",
     "Response", "Headers",
@@ -42,6 +44,7 @@ web-sys = { version = "0.3", features = [
     "CustomEvent", "CustomEventInit",
     "History", "DomRect",
     "Notification", "NotificationPermission",
+    "TransitionEvent", "TransitionEventInit",
 ] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
@@ -52,7 +55,12 @@ futures = { workspace = true }
 gloo-timers = { version = "0.4", features = ["futures"] }
 serde = { workspace = true }
 serde_json = "1"
+serde-wasm-bindgen = { version = "0.6", optional = true }
 blake3 = { workspace = true }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+
+[features]
+default = []
+test-hooks = ["dep:serde-wasm-bindgen", "willow-client/test-hooks"]

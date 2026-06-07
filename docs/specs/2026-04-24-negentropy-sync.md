@@ -59,9 +59,9 @@ serialized over the wire by the worker protocol. The novelty is:
 
 The DAG already enforces per-author monotonicity — every author's
 chain is a strictly increasing sequence enforced in
-[`crates/state/src/dag.rs:146-158`][dag-seq-check] (`expected_seq =
+[`crates/state/src/dag.rs:197-205`][dag-seq-check] (`expected_seq =
 self.latest_seq(&event.author) + 1`). Combined with the prev-hash
-check at lines 161–172, this makes streaming `seq > known_max` in
+check at lines 207–218, this makes streaming `seq > known_max` in
 ascending order delivers a contiguous chain with no gaps and no
 duplicates, so **no fingerprint negotiation is required**.
 
@@ -82,6 +82,21 @@ This unlocks:
 [heads-summary]: ../../crates/state/src/sync.rs
 [dag]: ../../crates/state/src/dag.rs
 [dag-seq-check]: ../../crates/state/src/dag.rs
+
+## Prior Art
+
+This design sits in the well-trodden space of anti-entropy and append-only-log replication. The load-bearing decision — stream each author's `seq > known_max` rather than negotiate fingerprints — borrows the cursor model proven by per-feed log systems and deliberately declines the set-reconciliation model proven by unordered-event systems. Each row pairs an external work with what Willow borrows or how it diverges.
+
+| System / protocol | Relevance to Willow's heads-based delta sync |
+|---|---|
+| **Negentropy / Range-Based Set Reconciliation** — Nostr **NIP-77** (negentropy + NIP-77 by Doug Hoyte / Log Periodic; underlying RBSR algorithm by Aljoscha Meyer; `rust-nostr/negentropy`) | The approach v1 explicitly rejects, demoted to Appendix A. RBSR recursively partitions a totally-ordered ID/timestamp space, exchanges per-range fingerprints, and descends only where they mismatch — built for *unordered* event sets, costing ~log(n) round trips. Willow's per-author `seq`+`prev`-hash monotonicity (`dag.rs:197-218`) removes the need: the responder streams `seq > known_max` ascending for a gap-free, dup-free chain in one round trip. Negentropy is retained only as a fallback for pathological cross-author interior-gap divergence. |
+| **Nostr EOSE — "end of stored events"** (`["EOSE", <subscription_id>]`, defined in **NIP-01**) | Antecedent of Willow's `SyncBatchV2 { more: false }` terminator and the `HistorySyncComplete` signal (this spec's "Termination + EOSE," via spec #214). Both cleanly separate "historical backfill drained" from "live stream continues," giving the receiver a definitive end-of-stream marker rather than a guess. (Note: EOSE lives in base NIP-01, not NIP-15 — NIP-15 is the Nostr Marketplace.) |
+| **Secure Scuttlebutt** (per-feed append-only signed hash chains; `createHistoryStream(feed, seq)`; later EBT replication) | Direct lineage for Willow's per-author `AuthorHead{seq,hash}` cursor and `BTreeMap<EndpointId, AuthorHead>` heads vector. SSB's "give me everything after sequence N on this feed" is the conceptual twin of `events_since`, and its sequence numbers exist for the same anti-tamper reason. Willow diverges by carrying a head *hash* alongside seq so `compare_chains` detects forks for free on every exchange. |
+| **Epidemic Broadcast Trees (Plumtree)** (Leitão, Pereira & Rodrigues, SRDS 2007) | The gossip-dissemination substrate Willow's live path rides on (iroh-gossip is a Plumtree-family eager-push / lazy-pull overlay). Willow borrows the same insight that pull-based recovery handles gaps the eager push missed — but replaces SSB-EBT's per-message lazy-push notes with a single `HeadsSummary` reconciliation pass, since the DAG already records per-author position. |
+| **Git smart transfer / pack protocol** (`have`/`want` ref negotiation, then packfile streaming) | Structurally Willow's `HeadsSummary` exchange followed by batched `SyncBatchV2` streaming. The contrast is the load-bearing one: Git negotiates over an *unordered* commit DAG (hence multi-round `have`/`want`), whereas Willow's per-author total order lets the responder skip negotiation entirely and emit a single ascending stream. |
+| **Automerge sync protocol** (heads + Bloom-filter-over-change-hashes have/need negotiation; Kleppmann, 2020 — arXiv 2012.00472) | The probabilistic-fingerprint counterpoint to Willow's exact cursor. Automerge tolerates an unordered change-hash DAG, so it sends a compact Bloom filter and may need multiple rounds to resolve false positives. Willow's monotone per-author chain is precisely the precondition that lets it drop probabilistic negotiation for deterministic, single-pass `seq`-range streaming. |
+| **Matrix Client-Server sync** (`/sync` opaque `since`/`next_batch` token; `/messages` `prev_batch` backfill) | Opaque incremental-cursor sync plus a separate historical-backfill path mirrors Willow's `HeadsSummary` delta + optional `SyncFilter` (`since_ms`, `channels`, `authors`). Matrix's `limited: true` "timeline truncated, paginate for more" maps directly onto Willow's `more: true` continuation flag; both bound a single exchange and let bytes scale with the diff, not `|history|`. |
+| **Merkle-tree anti-entropy vs. version vectors** (Dynamo/Cassandra/Riak read-repair) | Frames the spec's central fork in the road: Merkle/range fingerprinting (Negentropy's family) for unordered sets vs. monotonic cursors / version vectors for ordered logs. Willow's per-author monotonicity invariant places it firmly in the cursor camp, so its `BTreeMap<EndpointId, AuthorHead>` behaves as a compact per-author version vector rather than a Merkle fingerprint tree. |
 
 ## Algorithm
 
@@ -118,7 +133,7 @@ within the gossip transport's 64 KiB limit (see
 [Termination + EOSE](#termination--eose).
 
 Per-author monotonicity (DAG invariant at
-[`crates/state/src/dag.rs:146-158`][dag-seq-check]) guarantees that
+[`crates/state/src/dag.rs:197-218`][dag-seq-check]) guarantees that
 streaming `seq > known_max` in ascending order delivers a contiguous
 chain with no gaps and no duplicates, so **no sort key negotiation is
 required**. Authority events (e.g. `GrantPermission`, `CreateChannel`)
@@ -152,6 +167,13 @@ Two design choices to call out explicitly:
    the transport-level envelope shape is unchanged. Hoisting to a
    dedicated `MessageType::Sync` slot is a future option once the
    worker and client paths are demonstrably interchangeable.
+
+   > **Resolved 2026-05-28** (plan `2026-05-28-relay-upgrade-bundle.md`):
+   > **no new `MessageType` slot is allocated in this bundle.** A code
+   > comment in `crates/transport/src/lib.rs` reserves slot 7 =
+   > `HistorySyncComplete`/EOSE (see `2026-04-24-history-sync-eose.md`)
+   > and slot 8 = `Sync` for a *future* promotion, so the two specs
+   > cannot collide on a number. Neither is allocated now.
 
 2. **Reuse `HeadsSummary` directly, do not invent a new
    `HashMap<EndpointId, u64>` shape.** `HeadsSummary` already carries
@@ -508,6 +530,14 @@ possible reconciliations, to be picked when #214 lands:
 This spec deliberately does not redefine `HistorySyncComplete`; it
 only triggers it. Pick A or B in the EOSE spec PR.
 
+> **Resolved 2026-05-28** (plan `2026-05-28-relay-upgrade-bundle.md`):
+> **Option B (additive).** A new `ClientEvent::HistorySynced { topic,
+> provider, still_pending }` is introduced (EOSE PR); `SyncCompleted`
+> is kept unchanged as session-wide per-batch progress. The two
+> answer different questions, and additive avoids a silent behavior
+> change to existing `SyncCompleted` consumers. See
+> `2026-04-24-history-sync-eose.md`.
+
 [client-events]: ../../crates/client/src/events.rs
 
 [dag-insert]: ../../crates/state/src/dag.rs
@@ -615,6 +645,20 @@ upgraded," matching the status quo.
   the gate is **proposed by this spec** as part of the cutover; peers
   without `SyncProvider` MAY initiate but MUST refuse to serve once
   the gate lands.
+
+  > **Resolved 2026-05-30** (PR #664): the serving gate honors the
+  > owner/admins' **implicit** `SyncProvider`. The gossip `SyncRequestV2`
+  > responder gates on `ServerState::is_sync_provider` (i.e.
+  > `has_permission(SyncProvider)`), **not** `has_explicit_permission`.
+  > Under the authority model the owner is the root of all permissions and
+  > admins inherit every permission, so the owner — the canonical source of
+  > her own server's state — serves a joining member, and any explicit
+  > grant-holder serves too. A regular member without the grant still
+  > refuses, so the gate stays meaningful. Rationale: an explicit-only gate
+  > made a 2-peer server (where nobody holds an explicit grant) **unsyncable**
+  > — the owner refused to backfill the joiner, who then timed out. Honoring
+  > the owner is required for the P2P member-to-member backfill model.
+  > See `docs/reports/2026-05-30-heads-sync-owner-serve-and-eose-emission.md`.
 
 [permission-enum]: ../../crates/state/src/event.rs
 

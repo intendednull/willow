@@ -1,7 +1,7 @@
 # Reactions and pins — emoji reactions, picker, pinned panel
 
 **Parent:** [README.md](README.md)
-**Status:** draft
+**Status:** landed (phase 3c PR #634 foundation + 3c.2 PR #635 picker wireup + 3c.3 PR #637 initial close-out + cascade close-out PRs #643 visibility wiring, #644 pinned-by footer + `PinMetadata`, #646 plan/spec/index close-out, #647 same-channel react-recency refresh, #648 DOM coverage tests)
 **Dependencies:** [`foundation.md`](foundation.md),
 [`layout-primitives.md`](layout-primitives.md),
 [`message-row.md`](message-row.md)
@@ -121,7 +121,11 @@ The pinned panel is the right-rail / overlay slot:
 - Each entry: mini message card — avatar (24 px), display name (body
   weight 500), timestamp (`--ink-3`, 11 px), body preview (2 lines
   max, ellipsis), optional `pinned by {name} · {when}` footer row
-  (`--ink-3`, 10 px, mono `when`).
+  (`--ink-3`, 10 px, mono `when`). The footer is omitted when the
+  pinner's `PinMetadata` has not yet materialized for this peer
+  (rare; resolves on the next profile sync). Schema for
+  `PinMetadata` lives in
+  [`../2026-05-21-pinned-message-metadata-design.md`](../2026-05-21-pinned-message-metadata-design.md).
 - Entry actions (right-aligned on hover / always on mobile): `jump to`
   (scrolls the channel list to the parent message and flashes it via
   the same 180 ms `willow-pop-in` as reply-jump), `unpin`
@@ -208,23 +212,36 @@ Color is never the sole signifier.
 
 ## Acceptance criteria
 
-- [ ] Reaction pills render with count; click toggles the local
+- [x] Reaction pills render with count; click toggles the local
       user's reaction; hover shows reactor list (desktop); add-chip
       appears on row hover (desktop); mobile adds via the action
-      sheet.
-- [ ] Quick-reaction list feeds both the desktop hover toolbar and
+      sheet. *(`<ReactionStrip>` + `reactor_tooltip` + `<AddReactionChip>`
+      — phase 3c.3.)*
+- [x] Quick-reaction list feeds both the desktop hover toolbar and
       the mobile action sheet; defaults to `👍 ❤️ 🍃 💚 👀` until a
-      channel-scoped recency list supersedes it.
-- [ ] Emoji picker opens at 320 × 360, with search, categories,
+      channel-scoped recency list supersedes it. *(LRU on `ChatMeta`
+      + `ReactionRecency` context — phase 3c + 3c.3.)*
+- [x] Emoji picker opens at 320 × 360, with search, categories,
       and recents; arrow keys + `Enter` insert; `Escape` closes.
-- [ ] Pin action is greyed for users without `ManageChannels`, with
+      *(`<EmojiPicker>` — phase 3c + 3c.2 callsite wiring.)*
+- [x] Pin action is greyed for users without `ManageChannels`, with
       the tooltip in §Copy; permitted users can pin and unpin from
       both the desktop overflow menu and the mobile action sheet.
-- [ ] Header pin IconBtn shows a superscript count when > 0 and tints
-      amber; click opens the pinned panel.
-- [ ] Pinned panel lists pinned messages newest-first, jump-to scrolls
-      and flashes the parent, unpin honours the permission check.
-- [ ] Every interactive element has an ARIA label per §Accessibility.
+      *(`local_can_manage_channels` + per-entry unpin — phase 3c + 3c.3.)*
+- [x] Header pin IconBtn shows a superscript count when > 0 and tints
+      amber; click opens the pinned panel. *(`<MainPaneHeader>` +
+      `pinned_count` prop — phase 3c.)*
+- [x] Pinned panel lists pinned messages newest-first, each entry
+      shows a `pinned by {name} · {when}` footer (omitted only when
+      pinner metadata is not yet materialized), jump-to scrolls and
+      flashes the parent, unpin honours the permission check.
+      *(`<PinnedPanel>` rewrite — phase 3c; footer + `PinMetadata`
+      state-schema change — phase 3c close-out.)*
+- [x] Every interactive element has an ARIA label per §Accessibility.
+      *(`add reaction`, `download {filename}`, `react with {emoji}`,
+      `{emoji} reacted by {count} — toggle your reaction`,
+      `pinned messages ({count})`, `jump to pinned message`,
+      `unpin message`, `close pinned panel` — phase 3c + 3c.3.)*
 
 ## Open questions
 

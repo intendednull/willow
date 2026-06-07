@@ -16,6 +16,59 @@ use std::sync::Arc;
 
 use willow_identity::EndpointId;
 
+use crate::state::DisplayMessage;
+
+/// File extensions that classify a body / attachment as an image for
+/// the `has:image` operator. Mirrors the web UI's `IMAGE_EXTENSIONS`
+/// list in `crates/web/src/components/message.rs` — keep in sync if
+/// either one grows.
+const IMAGE_EXTENSIONS: &[&str] = &[
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
+];
+
+/// Strip an inline-file body of the form `[file:NAME:BASE64]` and
+/// return `NAME`. Returns `None` for plain bodies.
+///
+/// The web UI sends inline file attachments via this body shape (see
+/// `crates/client/src/actions.rs::share_file_inline`), so the indexer
+/// classifies attachments by sniffing the body without needing a
+/// separate attachments field on `DisplayMessage`.
+fn inline_file_name(body: &str) -> Option<&str> {
+    let inner = body.strip_prefix("[file:")?.strip_suffix(']')?;
+    let colon = inner.find(':')?;
+    Some(&inner[..colon])
+}
+
+/// True if `name` ends with an image-file extension (case-insensitive).
+fn is_image_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    IMAGE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+}
+
+/// True if `body` contains a URL whose path ends in an image
+/// extension. Cheap scan — proper URL parsing happens in the message
+/// row renderer; this mirror only needs to be precise enough for the
+/// `has:image` operator.
+fn body_has_image_url(body: &str) -> bool {
+    for prefix in ["http://", "https://"] {
+        let mut rest = body;
+        while let Some(idx) = rest.find(prefix) {
+            let url_start = idx;
+            let after = &rest[url_start..];
+            let url_end = after
+                .find(|c: char| c.is_whitespace() || c == '>' || c == ')' || c == ']')
+                .unwrap_or(after.len());
+            let url = &after[..url_end];
+            let path = url.split('?').next().unwrap_or(url);
+            if is_image_name(path) {
+                return true;
+            }
+            rest = &after[url_end..];
+        }
+    }
+    false
+}
+
 /// One message ready to be indexed.
 ///
 /// All the metadata the executor needs to apply scope + operator
@@ -49,6 +102,58 @@ pub struct IndexableMessage {
     pub has_file: bool,
     /// `has:link` operator target (body contains a URL).
     pub has_link: bool,
+}
+
+impl IndexableMessage {
+    /// Build an [`IndexableMessage`] from a [`DisplayMessage`], with
+    /// the operator-flag fields (`has_image`, `has_file`, `has_link`)
+    /// derived from the body so the search executor's `has:image` /
+    /// `has:file` / `has:link` filters actually match.
+    ///
+    /// Per `docs/specs/2026-04-19-ui-design/local-search.md` §Operators:
+    /// the index is the source of truth for `has:` filtering.
+    /// Classification rules:
+    ///
+    /// - Inline `[file:NAME:b64]` bodies (sent by
+    ///   `share_file_inline`) → `has_image` if `NAME` has an image
+    ///   extension, else `has_file`.
+    /// - Bare URLs whose path ends in an image extension →
+    ///   `has_image` (`https://example.com/cat.jpg`).
+    /// - Any `http://` or `https://` substring → `has_link`.
+    ///
+    /// `letter_id` is plumbed through verbatim — the caller resolves
+    /// it from the active letter context (or passes `None` for
+    /// grove-channel messages). See issue #355 for the missing
+    /// plumbing context.
+    pub fn from_display_message(
+        m: &DisplayMessage,
+        channel_name: &str,
+        grove_id: Option<String>,
+        letter_id: Option<String>,
+    ) -> Self {
+        let inline_name = inline_file_name(&m.body);
+        let has_inline_image = inline_name.is_some_and(is_image_name);
+        let has_inline_file = inline_name.is_some() && !has_inline_image;
+        let has_image = has_inline_image || body_has_image_url(&m.body);
+        let has_file = has_inline_file;
+        let has_link = m.body.contains("http://") || m.body.contains("https://");
+
+        Self {
+            message_id: m.id.clone(),
+            channel_id: m.channel_id.clone(),
+            channel_name: channel_name.to_string(),
+            grove_id,
+            letter_id,
+            author_peer_id: m.author_peer_id,
+            author_handle: m.author_display_name.to_lowercase(),
+            author_display_name: m.author_display_name.clone(),
+            timestamp_ms: m.timestamp_ms,
+            body: m.body.clone(),
+            has_image,
+            has_file,
+            has_link,
+        }
+    }
 }
 
 /// One row stored in the inverted index. Cheaply cloned into

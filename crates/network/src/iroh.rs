@@ -249,6 +249,26 @@ impl IrohNetwork {
         // pulling in DNS/relay defaults.
         let mut builder = Endpoint::builder(presets::Minimal).secret_key(config.secret_key);
 
+        // Enable pkarr/Mainline-DHT address lookup so any peer that knows an
+        // `EndpointId` can resolve it to current addresses via a signed DNS
+        // packet on the BitTorrent mainline DHT — no durable address encoding
+        // required (see docs/specs/2026-04-24-outbox-relay-discovery.md, Layer
+        // 1). `DhtAddressLookup::builder()` returns a builder whose
+        // `into_address_lookup` injects the endpoint's secret key, so this node
+        // both publishes and resolves; `AddrFilter::relay_only` (the default)
+        // avoids leaking raw IPs to the public DHT.
+        //
+        // Native-only: the underlying `mainline` crate is a UDP DHT that does
+        // not build for wasm32, and the `address-lookup-pkarr-dht` feature is
+        // gated to the native target in Cargo.toml. The configured
+        // `Config::relay_url` remains the fallback connection path: when DHT
+        // resolution fails, peers still reach this node via the relay; an error
+        // surfaces only if both pkarr and the relay are unavailable.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            builder = builder.address_lookup(iroh::address_lookup::DhtAddressLookup::builder());
+        }
+
         // Configure relay mode and seed bootstrap peer addresses.
         if let Some(relay_url) = &config.relay_url {
             let relay_map =
@@ -486,6 +506,42 @@ impl Network for IrohNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// pkarr DHT discovery must be wired onto the endpoint builder so a peer
+    /// can resolve an `EndpointId` to addresses over the BitTorrent mainline
+    /// DHT, without a pre-seeded relay / `MemoryLookup`.
+    ///
+    /// `Endpoint::builder(presets::Minimal)` installs zero address-lookup
+    /// services. `iroh_gossip::Gossip::spawn` then registers exactly one
+    /// internal `GossipAddressLookup` on the shared endpoint, so a build that
+    /// does *not* add pkarr reports a service count of 1. Wiring the pkarr
+    /// `DhtAddressLookup` adds a second service. Asserting `len() >= 2` pins
+    /// that our explicit discovery service is present without coupling to the
+    /// concrete `AddressLookup` type names iroh keeps private.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn endpoint_has_pkarr_dht_discovery_configured() {
+        let identity = willow_identity::Identity::generate();
+        let config = Config {
+            secret_key: identity.secret_key().clone(),
+            relay_url: None,
+            bootstrap_peers: vec![],
+            mdns: false,
+        };
+        let network = IrohNetwork::new(config).await.unwrap();
+
+        let services = network
+            .endpoint
+            .address_lookup()
+            .expect("endpoint open at test time");
+        assert!(
+            services.len() >= 2,
+            "expected the gossip address-lookup plus the pkarr DHT service to \
+             be configured on the endpoint, found {} service(s)",
+            services.len()
+        );
+
+        network.shutdown().await.unwrap();
+    }
 
     #[tokio::test]
     async fn blob_store_round_trip() {

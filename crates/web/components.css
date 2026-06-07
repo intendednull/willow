@@ -1872,3 +1872,22 @@ html[data-shell="mobile"]  .shell-mobile  { display: flex; }
     overflow: hidden;
 }
 
+/* ── Composer (Phase 3a, T5 shell) ───────────────────────────────────
+ * See style.css for the full ruleset; mirrored here so the wasm-pack
+ * test harness — which only injects components.css — observes the
+ * computed `line-height` the autogrow effect reads. T9+ tighten styles
+ * per spec. */
+
+.composer__textarea {
+    font-size: 14px;
+    line-height: 1.45em;
+    min-height: 1.45em;
+    resize: none;
+    border: 0;
+    outline: none;
+    background: transparent;
+    width: 100%;
+    overflow-y: auto;
+    font-family: inherit;
+}
+

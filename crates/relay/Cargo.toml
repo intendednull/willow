@@ -13,6 +13,7 @@ path = "src/main.rs"
 willow-identity = { path = "../identity" }
 willow-network = { path = "../network" }
 willow-common = { path = "../common" }
+willow-transport = { path = "../transport" }
 
 iroh = { workspace = true }
 iroh-base = { workspace = true }
@@ -23,12 +24,18 @@ tokio = { workspace = true, features = ["full"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
+hex = "0.4"
+serde_json = "1"
 
 [dev-dependencies]
 willow-network = { path = "../network", features = ["test-utils"] }
 willow-identity = { path = "../identity" }
 willow-common = { path = "../common" }
+willow-state = { path = "../state" }
+willow-transport = { path = "../transport" }
 bytes = { workspace = true }
+hex = "0.4"
+serde_json = "1"
 tokio = { workspace = true, features = ["full"] }
 

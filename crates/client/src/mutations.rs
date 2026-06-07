@@ -100,6 +100,9 @@ impl<N: willow_network::Network> ClientMutations<N> {
             ds.managed
                 .insert_and_apply(genesis)
                 .expect("genesis event must insert successfully");
+            // SyncRequest-reply cache must be invalidated on every
+            // successful insertion path; see GEN-08 / issue #268.
+            ds.invalidate_sync_reply_cache();
             ds.managed.state().clone()
         })
         .await;
@@ -118,9 +121,16 @@ impl<N: willow_network::Network> ClientMutations<N> {
         let dag = self.dag.clone();
         util::with_timeout("build_event", async move {
             willow_actor::state::mutate(&dag, move |ds| {
-                ds.managed
+                let result = ds
+                    .managed
                     .create_and_insert(&identity, kind, ts)
-                    .map_err(|e| anyhow::anyhow!("DAG insert failed: {e:?}"))
+                    .map_err(|e| anyhow::anyhow!("DAG insert failed: {e:?}"));
+                if result.is_ok() {
+                    // SyncRequest-reply cache must be invalidated on every
+                    // successful insertion path; see GEN-08 / issue #268.
+                    ds.invalidate_sync_reply_cache();
+                }
+                result
             })
             .await
         })
@@ -204,8 +214,10 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
     /// Broadcast a signed event to peers via the server ops topic.
     pub(crate) fn broadcast_event(&self, event: &willow_state::Event) {
-        if let Some(data) = ops::pack_wire(&ops::WireMessage::Event(event.clone()), &self.identity)
-        {
+        if let Some(data) = ops::pack_wire(
+            &ops::WireMessage::Event(Box::new(event.clone())),
+            &self.identity,
+        ) {
             self.broadcast_on_topic(ops::SERVER_OPS_TOPIC, data);
         }
     }
@@ -250,6 +262,50 @@ impl<N: willow_network::Network> ClientMutations<N> {
                 channel_id,
                 body: body.to_string(),
                 reply_to: None,
+            })
+            .await?;
+        self.apply_event(&event).await;
+        self.broadcast_event(&event);
+        Ok(())
+    }
+
+    /// Send a file-attachment message.
+    ///
+    /// Constructs an [`EventKind::FileMessage`] from the supplied
+    /// metadata + caption. The blob bytes themselves are uploaded
+    /// separately via [`crate::ClientHandle::upload_attachment`]; this
+    /// method just publishes the metadata event so receivers learn the
+    /// hash and can fetch from the blob store.
+    ///
+    /// `width` / `height` are `Some(_)` for image attachments whose
+    /// pixel dimensions were extracted at upload time; receivers use
+    /// them to reserve correct-aspect layout space while bytes stream.
+    /// Both should be `None` for non-images.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_file_message(
+        &self,
+        channel: &str,
+        hash: &str,
+        filename: &str,
+        mime_type: &str,
+        size_bytes: u64,
+        width: Option<u32>,
+        height: Option<u32>,
+        caption: &str,
+        reply_to: Option<EventHash>,
+    ) -> anyhow::Result<()> {
+        let channel_id = self.resolve_channel_id(channel).await?;
+        let event = self
+            .build_event(EventKind::FileMessage {
+                channel_id,
+                hash: hash.to_string(),
+                filename: filename.to_string(),
+                mime_type: mime_type.to_string(),
+                size_bytes,
+                width,
+                height,
+                body: caption.to_string(),
+                reply_to,
             })
             .await?;
         self.apply_event(&event).await;
@@ -757,7 +813,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
     pub async fn update_profile(&self, peer_id: EndpointId, display_name: String) {
         let name = display_name.clone();
         willow_actor::state::mutate(&self.profiles, move |p| {
-            p.names.insert(peer_id, name);
+            p.insert_name(peer_id, name);
         })
         .await;
         self.event_broker
@@ -772,7 +828,7 @@ impl<N: willow_network::Network> ClientMutations<N> {
     pub async fn record_typing(&self, peer_id: EndpointId, channel: String) {
         let now = util::current_time_ms();
         willow_actor::state::mutate(&self.network, move |n| {
-            n.typing_peers.insert(peer_id, (channel, now));
+            n.insert_typing(peer_id, channel, now);
         })
         .await;
         // Also ensure peer is tracked.
@@ -908,7 +964,12 @@ impl<N: willow_network::Network> ClientMutations<N> {
 pub(crate) fn derive_client_events(event: &willow_state::Event) -> Vec<ClientEvent> {
     let mut out = Vec::new();
     match &event.kind {
-        EventKind::Message { channel_id, .. } => {
+        EventKind::Message { channel_id, .. } | EventKind::FileMessage { channel_id, .. } => {
+            // Both text + file messages produce a `MessageReceived`
+            // notification on the client event bus. Without the
+            // `FileMessage` arm here, attachments would land silently:
+            // the message-store would update but no toast / unread
+            // badge / channel-list reactivity would fire.
             out.push(ClientEvent::MessageReceived {
                 channel: channel_id.clone(),
                 message_id: event.hash.to_string(),
@@ -935,7 +996,7 @@ pub(crate) fn derive_client_events(event: &willow_state::Event) -> Vec<ClientEve
         EventKind::Propose { action } => {
             out.push(ClientEvent::ProposalCreated {
                 proposal_hash: event.hash.to_string(),
-                action_description: format!("{action:?}"),
+                action_description: format!("{action}"),
             });
         }
         EventKind::Vote { proposal, accept } => {

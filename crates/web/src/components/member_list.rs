@@ -309,7 +309,7 @@ pub fn MemberList(
                                 class="member-name member-name-btn"
                                 type="button"
                                 aria-label=format!("{} — open profile", name)
-                                style=format!("color: {}", super::peer_color(&pid))
+                                style=format!("color: {}", super::peer_color_from_str(&pid))
                                 on:click=on_open_profile
                             >
                                 {name.clone()}
@@ -381,11 +381,13 @@ pub fn MemberList(
                                                         pid.chars().take(6).collect();
                                                     let name = format!("side-{short}");
                                                     wasm_bindgen_futures::spawn_local(async move {
-                                                        let _ = h.create_ephemeral_channel(
+                                                        if let Err(e) = h.create_ephemeral_channel(
                                                             &name,
                                                             willow_state::EphemeralKind::Channel,
                                                             willow_state::DEFAULT_CHANNEL_THRESHOLD_MS,
-                                                        ).await;
+                                                        ).await {
+                                                            tracing::warn!(?e, "create_ephemeral_channel failed");
+                                                        }
                                                     });
                                                 }
                                             >

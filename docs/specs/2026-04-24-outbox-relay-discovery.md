@@ -59,6 +59,21 @@ discovery services configured. The failure modes:
 These are real problems, but the solutions already exist in our
 dependency graph. We just need to compose them.
 
+## Prior Art
+
+This design sits at the intersection of three discovery lineages — DHT-published self-certifying addresses, HTTPS capability delegation, and signed-grant trust. Each row notes what Willow borrowed and, where relevant, why it diverged from the rejected `RelayList` event approach.
+
+| System | Relevance to this design |
+|---|---|
+| **Nostr NIP-65** — "Relay List Metadata", replaceable `kind:10002` (formerly the "gossip"/"outbox" model) | The rejected design's direct inspiration: a replaceable per-author outbox event listing a user's relays. Willow declines it — replaceable-event semantics don't fit the single-pass `apply_event` state machine — and recovers the same capability by composing pkarr + a well-known doc + the existing `SyncProvider` grant. |
+| **pkarr** — "Public Key Addressable Resource Records" (Pubky / Nuhvi), as wired into **iroh global node discovery** | Layer 1. Signed DNS packets keyed by the node's public key, published to the Mainline DHT, give dial-by-EndpointId with no durable address encoding and automatic relay migration. Adopted directly via iroh; the single configured `relay_url` is only a DHT-unreachable fallback. |
+| **BEP 44** — "Storing arbitrary data in the DHT" (Norberg & Siloti; mutable & immutable items) | The substrate pkarr publishes onto. Ed25519-signed, sequence-numbered *mutable items* are what let a key's record be updated in place under a stable DHT target — the mechanism behind "relay migration is automatic." Inherited transitively via pkarr, not reimplemented. |
+| **Matrix Server-Server API** — `/.well-known/matrix/server` delegation cascade | Layer 2's model. PR #215's `/.well-known/willow` capability document, served over HTTPS, mirrors Matrix's well-known delegation rather than signing worker roles into the DAG. Willow borrows the cascade shape; capabilities stay out-of-band, off the event log. |
+| **RFC 8615** — "Well-Known Uniform Resource Identifiers (URIs)" (obsoletes RFC 5785) | Standardizes the `/.well-known/` path convention the Layer-2 capability document relies on. Willow follows the registry convention for its `willow` well-known path rather than inventing an ad-hoc discovery endpoint. |
+| **Secure Scuttlebutt — Pubs → Rooms** | Cautionary lineage. SSB's always-on Pubs became de-facto centralization points and were complemented by feed-less tunneling Rooms, introduced specifically to fix public-invite onboarding overload (Rooms are positioned alongside Pubs, not as a replacement). Motivates anchoring trust in an explicit per-server set of `SyncProvider` grants (Layer 3) rather than any ambient relay registry, and dropping "anti-centralization" as a protocol-level claim. |
+| **ActivityPub / Mastodon** — W3C ActivityPub + WebFinger actor discovery (RFC 7033) | Federated-discovery reference and centralization record (mastodon.social gravity). Reinforces that HTTPS-host-based capability discovery (Layer 2) is convenient but tends toward instance concentration — a tradeoff Willow accepts for capabilities while keeping *trust* in signed DAG grants, not host identity. |
+| **did:plc** — Bluesky's "Public Ledger of Credentials" DID method | Precedent for key→metadata indirection: a stable public-key identifier resolved to mutable service/endpoint metadata. Parallels pkarr's EndpointId→address-record resolution; Willow picks the DHT-self-certifying variant over a hosted directory to avoid a central resolver. |
+
 ## Architecture: three independent layers
 
 | Layer | Mechanism | Source of truth |
@@ -317,6 +332,21 @@ event kind. What remains:
    (which today is a single URL), or fail fast and surface the error
    to the user? The behaviour matters for share-link UX and is
    genuinely unsettled.
+
+> **Resolved 2026-05-28** (plan `2026-05-28-relay-upgrade-bundle.md`):
+> - **Q1 (sign `bootstrap_endpoint_ids`?)** → **deferred**. An
+>   `EndpointId` is self-certifying (it *is* the public key), so a
+>   tampered bootstrap list causes connection failure, not state
+>   forgery. Whole-token signing is a separable enhancement.
+> - **Q2 (pkarr fallback policy)** → fall back to `Config::relay_url`
+>   (the single configured relay) for relay-mediated dialing; surface
+>   an error only if **both** pkarr and the configured relay fail.
+> - **Client fetch/verify** (`fetch_relay_info`) is **defined once** by
+>   the capability-doc consumer work (plan PR 6, reusing PR 1's
+>   `verify_capability_doc`) and **reused** here for worker ranking —
+>   not redefined. iroh already ships `features =
+>   ["discovery-pkarr-dht"]`, so enabling pkarr is builder wiring, not
+>   a Cargo feature change.
 
 These are the only questions worth keeping open. Replaceable-event
 semantics, multi-device writes to the same author chain, anti-

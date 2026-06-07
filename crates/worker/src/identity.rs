@@ -27,7 +27,7 @@ pub fn load_or_generate(path: &str) -> Result<Identity> {
 /// identify workers when granting permissions.
 pub fn print_peer_id(path: &str) -> Result<()> {
     let identity = load_or_generate(path)?;
-    println!("{}", identity.endpoint_id());
+    tracing::info!(endpoint_id = %identity.endpoint_id(), "worker identity loaded");
     Ok(())
 }
 

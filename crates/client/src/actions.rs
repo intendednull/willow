@@ -1,3 +1,20 @@
+//! UI-facing action methods on [`ClientHandle`].
+//!
+//! Most entry points in this module are thin pass-throughs that forward
+//! their arguments to the corresponding method on
+//! [`crate::mutations::ClientMutations`]. Their behaviour is exercised
+//! through the mutation handle directly in `tests/multi_peer_sync.rs`,
+//! `tests/trust_flow.rs`, `tests/ephemeral.rs`, and the inline `tests`
+//! module at the bottom of `lib.rs`. State-machine-level invariants are
+//! covered by `crates/state/src/tests.rs`.
+//!
+//! Methods that do non-trivial translation work *before* delegating —
+//! validation (`share_file_inline`), ID minting (`create_voice_channel`),
+//! direct event assembly with no mutation-handle helper
+//! (`set_permission`, `assign_role`), or derived-view composition
+//! (`pinned_message_ids`, `pinned_messages`, `is_pinned`) — are covered
+//! at the client tier in `tests/actions.rs`.
+
 use super::*;
 
 impl<N: willow_network::Network> ClientHandle<N> {
@@ -16,6 +33,19 @@ impl<N: willow_network::Network> ClientHandle<N> {
             .await
     }
 
+    /// Legacy inline base64 file-share path (256 KB cap).
+    ///
+    /// **Deprecated.** Use [`Self::upload_attachment`] +
+    /// [`Self::send_attachment_message`] instead — those route through
+    /// the iroh blob store and the typed
+    /// [`willow_state::EventKind::FileMessage`] variant rather than
+    /// shoving base64 into a text-message body. The legacy method
+    /// stays so historical messages still render and pre-3b client
+    /// code keeps compiling.
+    #[deprecated(
+        since = "0.1.1",
+        note = "use upload_attachment + send_attachment_message"
+    )]
     pub async fn share_file_inline(
         &self,
         channel: &str,
@@ -29,6 +59,79 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let encoded = base64::encode(data);
         let body = format!("[file:{}:{}]", filename, encoded);
         self.send_message(channel, &body).await
+    }
+
+    /// Fetch attachment bytes by hash from the blob store.
+    ///
+    /// Returns `Ok(Some(bytes))` when the local blob store has the
+    /// content, `Ok(None)` when the hash is unknown, and `Err(_)` on
+    /// transport failures (e.g. the network has not been started).
+    /// Used by `<AttachmentFileCard>` and `<AttachmentImage>` on the
+    /// receive side; pair with [`Self::upload_attachment`] +
+    /// [`Self::send_attachment_message`] on the send side.
+    pub async fn fetch_blob(
+        &self,
+        hash: willow_network::BlobHash,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        let network = self
+            .network
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("network not connected"))?;
+        crate::files::download_file(network.blobs(), hash).await
+    }
+
+    /// Upload bytes to the blob store and return the content hash + size.
+    ///
+    /// The blob store dedupes by hash, so re-uploading the same bytes
+    /// returns the same `BlobHash` without re-storing. The hash is
+    /// content-addressed; the returned size is the byte length of the
+    /// supplied buffer (authoritative, not sender-asserted).
+    ///
+    /// Errors if the network has not been started — call
+    /// [`Self::connect`] first.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/files-inline.md`.
+    pub async fn upload_attachment(
+        &self,
+        data: Vec<u8>,
+    ) -> anyhow::Result<(willow_network::BlobHash, u64)> {
+        let network = self
+            .network
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("network not connected"))?;
+        let size = data.len() as u64;
+        let hash = crate::files::share_file(network.blobs(), data).await?;
+        Ok((hash, size))
+    }
+
+    /// Publish an [`EventKind::FileMessage`] referencing an
+    /// already-uploaded blob hash.
+    ///
+    /// Pair with [`Self::upload_attachment`]: upload the bytes, then
+    /// pass the returned hash here along with the user-facing
+    /// metadata (filename, mime, optional dimensions, optional
+    /// caption). Receivers subscribe to the channel topic, see the
+    /// event, and fetch the bytes via the blob store.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_attachment_message(
+        &self,
+        channel: &str,
+        hash: &willow_network::BlobHash,
+        filename: &str,
+        mime_type: &str,
+        size_bytes: u64,
+        width: Option<u32>,
+        height: Option<u32>,
+        caption: &str,
+        reply_to: Option<willow_state::EventHash>,
+    ) -> anyhow::Result<()> {
+        let hash_hex = blob_hash_to_hex(hash);
+        self.mutation_handle
+            .send_file_message(
+                channel, &hash_hex, filename, mime_type, size_bytes, width, height, caption,
+                reply_to,
+            )
+            .await
     }
 
     pub async fn edit_message(
@@ -52,11 +155,37 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
     pub async fn react(
         &self,
-        _channel: &str,
+        channel: &str,
         message_id: &willow_state::EventHash,
         emoji: &str,
     ) -> anyhow::Result<()> {
-        self.mutation_handle.react(message_id, emoji).await
+        self.mutation_handle.react(message_id, emoji).await?;
+        // Note the reaction in the per-channel recency LRU so the
+        // emoji picker's "recent" category and the row hover toolbar's
+        // quick-react row update on the next read. Per phase-3c
+        // §Quick reactions: "Override [the default] with the five most
+        // recent reactions used in this channel".
+        let channel = channel.to_string();
+        let emoji = emoji.to_string();
+        willow_actor::state::mutate(&self.chat_meta_addr, move |cm| {
+            cm.note_reaction(&channel, &emoji);
+        })
+        .await;
+        Ok(())
+    }
+
+    /// Most-recent 5 reactions in `channel` (MRU-first), falling back
+    /// to the spec default `👍 ❤️ 🍃 💚 👀` for slots not yet filled
+    /// by a real reaction in that channel.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+    /// §Quick reactions.
+    pub async fn recent_reactions(&self, channel: &str) -> Vec<String> {
+        let channel = channel.to_string();
+        willow_actor::state::select(&self.chat_meta_addr, move |cm| {
+            cm.recent_reactions(&channel)
+        })
+        .await
     }
 
     pub async fn pin_message(
@@ -89,8 +218,12 @@ impl<N: willow_network::Network> ClientHandle<N> {
             es.channels
                 .get(&channel_id)
                 .map(|ch| {
+                    // `pinned_messages` is keyed by message hash; the
+                    // metadata value (pinner + pin time) is consumed
+                    // by the pinned-panel projection in `views.rs` and
+                    // ignored here.
                     let mut ids: Vec<willow_state::EventHash> =
-                        ch.pinned_messages.iter().cloned().collect();
+                        ch.pinned_messages.keys().copied().collect();
                     ids.sort();
                     ids
                 })
@@ -196,11 +329,10 @@ impl<N: willow_network::Network> ClientHandle<N> {
     pub async fn set_permission(
         &self,
         role_id: &str,
-        permission: &str,
+        permission: willow_state::Permission,
         granted: bool,
     ) -> anyhow::Result<()> {
         let role_id = role_id.to_string();
-        let permission = permission.to_string();
         let event = self
             .mutation_handle
             .build_event(willow_state::EventKind::SetPermission {
@@ -244,5 +376,69 @@ impl<N: willow_network::Network> ClientHandle<N> {
     /// Toggle per-identity mute for the active grove (phase 1f).
     pub async fn mutate_grove_mute(&self, muted: bool) -> anyhow::Result<()> {
         self.mutation_handle.mutate_grove_mute(muted).await
+    }
+}
+
+/// Render a [`willow_network::BlobHash`] as a 64-char lowercase hex
+/// string for stamping onto a wire event.
+///
+/// `BlobHash` is a transparent `[u8; 32]` (BLAKE3 digest). The wire
+/// event ([`willow_state::EventKind::FileMessage::hash`]) carries it
+/// as a `String` because `willow-state` does not depend on
+/// `willow-network`. Hex encoding keeps the value safely round-trippable
+/// across that crate boundary; the receiver decodes back via
+/// [`hex_to_blob_hash`] before calling `BlobStore::get`.
+pub fn blob_hash_to_hex(hash: &willow_network::BlobHash) -> String {
+    let mut s = String::with_capacity(64);
+    for byte in hash.as_bytes() {
+        s.push_str(&format!("{byte:02x}"));
+    }
+    s
+}
+
+/// Inverse of [`blob_hash_to_hex`]. Returns `None` on malformed input
+/// (non-hex characters or wrong length).
+///
+/// Re-exported from `crate::lib` so downstream crates (e.g. the web
+/// renderer) can decode the wire-event hash before calling
+/// [`willow_network::BlobStore::get`].
+pub fn hex_to_blob_hash(hex: &str) -> Option<willow_network::BlobHash> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        let byte_str = hex.get(i * 2..i * 2 + 2)?;
+        *byte = u8::from_str_radix(byte_str, 16).ok()?;
+    }
+    Some(willow_network::BlobHash::from_bytes(bytes))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod blob_hash_hex_tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_via_hex() {
+        let hash = willow_network::BlobHash::new(b"hello world");
+        let hex = blob_hash_to_hex(&hash);
+        assert_eq!(hex.len(), 64, "BLAKE3 → 64 hex chars");
+        let back = hex_to_blob_hash(&hex).expect("round-trip must decode");
+        assert_eq!(back, hash);
+    }
+
+    #[test]
+    fn rejects_wrong_length() {
+        assert!(hex_to_blob_hash("abc").is_none());
+        assert!(hex_to_blob_hash(&"a".repeat(63)).is_none());
+        assert!(hex_to_blob_hash(&"a".repeat(65)).is_none());
+    }
+
+    #[test]
+    fn rejects_non_hex_chars() {
+        assert!(hex_to_blob_hash(&"z".repeat(64)).is_none());
+        let mut bad = "0".repeat(63);
+        bad.push('Z');
+        assert!(hex_to_blob_hash(&bad).is_none());
     }
 }

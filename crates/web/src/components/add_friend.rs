@@ -72,14 +72,17 @@ pub(crate) fn announce(msg: &str) {
     region.set_text_content(Some(""));
     let msg = msg.to_string();
     let region_clone = region.clone();
-    let cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+    // One-shot 20ms timer fires per `announce()` call (per trust
+    // action). `once_into_js` hands the closure to JS so GC reclaims
+    // it after the callback runs — `.forget()` would leak per
+    // announcement (issue #193).
+    let cb = wasm_bindgen::closure::Closure::once_into_js(move || {
         region_clone.set_text_content(Some(&msg));
     });
     if let Some(win) = web_sys::window() {
-        win.set_timeout_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), 20)
+        win.set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), 20)
             .ok();
     }
-    cb.forget();
 }
 
 /// Root-mounted compare-fingerprints dialog. Renders when the

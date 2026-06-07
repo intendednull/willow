@@ -20,8 +20,37 @@ use willow_client::{SearchIndexBuildStatus, SearchResult, SearchScope};
 use super::row::ResultRow;
 use crate::state::AppState;
 
+/// Compute the cumulative flat-index offset of every group in
+/// `groups`. Returns a vector of the same length whose `i`th entry is
+/// the count of rows that appear *before* group `i` in the rendered
+/// listbox. Combined with the row's intra-group index, this yields the
+/// row's global flat index — the unit `active_index` is expressed in.
+fn group_offsets(groups: &[(String, Vec<SearchResult>)]) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(groups.len());
+    let mut running = 0usize;
+    for (_, items) in groups {
+        offsets.push(running);
+        running += items.len();
+    }
+    offsets
+}
+
+/// Flatten grouped results into the order rows appear in the listbox.
+/// `active_index` indexes into this vector, so keyboard navigation in
+/// `<SearchInput>` and `aria-selected` rendering here agree on what
+/// "row N" means.
+pub(super) fn flat_ordered(rows: &[SearchResult], scope: &SearchScope) -> Vec<SearchResult> {
+    group_results(rows, scope)
+        .into_iter()
+        .flat_map(|(_, items)| items)
+        .collect()
+}
+
 /// Group results per the spec's scope-dependent rules.
-fn group_results(rows: &[SearchResult], scope: &SearchScope) -> Vec<(String, Vec<SearchResult>)> {
+pub(super) fn group_results(
+    rows: &[SearchResult],
+    scope: &SearchScope,
+) -> Vec<(String, Vec<SearchResult>)> {
     match scope {
         SearchScope::ThisChannel(_) | SearchScope::ThisLetter(_) => {
             vec![(String::new(), rows.to_vec())]
@@ -69,12 +98,15 @@ pub fn ResultsList(
 
     let groups =
         Memo::new(move |_| group_results(&state.search.results.get(), &state.search.scope.get()));
+    let active_index = state.search.active_index;
 
     let sections = move || {
-        groups
-            .get()
+        let groups_now = groups.get();
+        let offsets = group_offsets(&groups_now);
+        groups_now
             .into_iter()
-            .map(|(label, items)| {
+            .enumerate()
+            .map(|(group_idx, (label, items))| {
                 let header = if label.is_empty() {
                     None
                 } else {
@@ -87,13 +119,20 @@ pub fn ResultsList(
                         </div>
                     })
                 };
+                let base = offsets[group_idx];
                 let rows: Vec<AnyView> = items
                     .into_iter()
-                    .map(|r| {
+                    .enumerate()
+                    .map(|(intra, r)| {
+                        // Flat (in-display-order) index of this row.
+                        // The `active_index` signal is expressed in the
+                        // same units so a row's `selected` derives from
+                        // a single equality check.
+                        let flat = base + intra;
                         view! {
                             <ResultRow
                                 result=r
-                                selected=Signal::derive(|| false)
+                                selected=Signal::derive(move || active_index.get() == flat)
                                 on_select=on_select
                             />
                         }

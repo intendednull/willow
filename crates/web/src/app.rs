@@ -6,9 +6,9 @@ use send_wrapper::SendWrapper;
 use willow_client::{ClientConfig, ClientEvent, ClientHandle, DisplayMessage, VoiceSignalPayload};
 
 use crate::components::{
-    AddServerPanel, CallPage, ChannelSidebar, ChatInput, CommandPalette, FileShareButton,
-    GroveRail, JoinPage, MainPaneHeader, MessageList, MobileShell, ReadOnlyBanner, RightRail,
-    RightRailWhich, SettingsPanel, ToastStackView, WelcomeScreen,
+    AddServerPanel, CallPage, ChannelSidebar, CommandPalette, Composer, GroveRail, JoinPage,
+    MainPaneHeader, MessageList, MobileShell, ReadOnlyBanner, RightRail, RightRailWhich,
+    SettingsPanel, ToastStack, ToastStackView, UploadDialog, WelcomeScreen,
 };
 use crate::event_processing::process_event_batch;
 use crate::handlers;
@@ -43,14 +43,6 @@ fn detect_platform() -> &'static str {
     } else {
         "web"
     }
-}
-
-#[allow(dead_code)]
-pub fn toggle_theme() {
-    js_sys::eval(
-        r#"var h=document.documentElement;var c=h.getAttribute('data-theme')||'dark';var n=c==='dark'?'light':'dark';h.setAttribute('data-theme',n);localStorage.setItem('willow-theme',n);"#,
-    )
-    .ok();
 }
 
 /// How many milliseconds to wait before clearing the loading state automatically.
@@ -120,6 +112,56 @@ async fn fetch_bootstrap_id(relay_url: &str) -> Option<willow_identity::Endpoint
     text.trim().parse::<willow_identity::EndpointId>().ok()
 }
 
+/// Resolve the bootstrap `EndpointId`s the join flow should seed into the iroh
+/// `Config::bootstrap_peers`, following the outbox-relay-discovery spec's
+/// joining flow: the share link's `bootstrap_endpoint_ids` (Layer 1, pkarr) come
+/// **first** (preferred), and the configured relay's `/bootstrap-id` node is
+/// **always appended as a fallback candidate** so the client connects to the
+/// first responsive endpoint and never ends up with *only* an undiallable peer
+/// (spec steps 2-3; pinned decision Q2: the relay stays the fallback, surface an
+/// error only if both pkarr and the relay fail).
+///
+/// On wasm the client cannot query the BitTorrent mainline DHT itself (the
+/// `mainline` crate is native-only — see `crates/network/src/iroh.rs`), so
+/// "resolve via pkarr" means seeding these IDs so the wasm client reaches them
+/// through the relay's `MemoryLookup` while the native peers (relay + workers)
+/// publish/resolve the same IDs over the DHT.
+///
+/// Ordering matters: an unreachable preferred bootstrap (e.g. a stale or
+/// tampered `bootstrap_endpoint_id`) is simply skipped by iroh's dialing while
+/// the appended relay node still carries the mesh — that is exactly the
+/// "first bootstrap unreachable → fall through" path the e2e test exercises.
+/// The relay node is de-duplicated so a token that already names it does not
+/// seed it twice.
+///
+/// The relay fallback is injected as `relay_fetch` so the preference ordering —
+/// the load-bearing part — is unit-testable without a browser, mirroring the
+/// transport injection in `willow_client::fetch_relay_info`.
+async fn resolve_bootstrap_peers<F, Fut>(
+    token_bootstrap_ids: &[willow_identity::EndpointId],
+    relay_fetch: F,
+) -> Vec<willow_identity::EndpointId>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Option<willow_identity::EndpointId>>,
+{
+    // Layer 1 preference: the inviter's `SyncProvider` bootstrap IDs lead. iroh
+    // resolves each via pkarr on the native side; on wasm they are reached
+    // relay-mediated through the seeded `MemoryLookup`.
+    let mut peers: Vec<willow_identity::EndpointId> = token_bootstrap_ids.to_vec();
+
+    // Always append the configured relay's bootstrap node as a fallback
+    // candidate (de-duplicated) so there is a known-good path even when every
+    // preferred bootstrap is unreachable.
+    if let Some(relay_node) = relay_fetch().await {
+        if !peers.contains(&relay_node) {
+            peers.push(relay_node);
+        }
+    }
+
+    peers
+}
+
 fn new_client() -> WebClientHandle {
     let relay_url = resolve_relay_url();
     let config = ClientConfig {
@@ -161,11 +203,85 @@ pub fn App() -> impl IntoView {
     let handle_inner = (*handle).clone().with_trust_store(trust_store.clone());
     let handle: WebClientHandle = SendWrapper::new(handle_inner);
 
+    #[cfg(feature = "test-hooks")]
+    {
+        let inner_for_hooks = (*handle).clone();
+        let hooks = crate::test_hooks::WillowTestHooks::new(&inner_for_hooks);
+        if let Some(window) = web_sys::window() {
+            let _ = js_sys::Reflect::set(
+                &window,
+                &"__willow".into(),
+                &wasm_bindgen::JsValue::from(hooks),
+            );
+        }
+        // Subscribe synchronously: any ClientEvent published after this
+        // call is guaranteed to land in the dispatcher (broker mailbox is
+        // FIFO). An async subscribe would create a window between mount
+        // and confirmation in which boot-time events would be lost.
+        let rx = willow_client::event_receiver::EventReceiver::subscribe_now(
+            inner_for_hooks.event_broker(),
+            inner_for_hooks.system(),
+        );
+        let state_addr = inner_for_hooks.event_state_addr_clone();
+        let dispatcher = crate::test_hooks::install_push_dispatcher(rx, state_addr);
+        // Leak: dispatcher must live for app lifetime; in wasm32 the
+        // process IS the app, so leaking is fine.
+        std::mem::forget(dispatcher);
+    }
+
     // Provide context so child components can access the handle and state.
     provide_context(handle.clone());
     provide_context(app_state);
     provide_context(write);
     provide_context(trust_store.clone());
+
+    // Phase 3b — `<UploadDialog>` queue context. Provided once at
+    // the shell so the composer attach button (which flips
+    // `queue.open`), the dialog itself (which renders + drives the
+    // queue), and any future drag-overlay or paste handler all see
+    // the same `UploadQueue`.
+    provide_context(crate::upload_state::UploadQueue::new());
+
+    // Phase 3b T6 — single-instance voice-note player. Each
+    // `<AttachmentVoiceNote>` reads this from context to coordinate
+    // "starting one pauses any other" per spec §Voice note.
+    provide_context(crate::voice_note_player::VoiceNotePlayer::new());
+
+    // Phase 3c.3 — per-channel reaction recency. Drives the picker's
+    // "recent" shelf in both the composer's emoji button and the
+    // row's "more reactions" toolbar. The Resource re-keys when
+    // (a) the active channel changes, or (b) `react_tick` is bumped
+    // by `bump_recency_tick()` after a successful `react()` call.
+    // The tick path is what makes a freshly-clicked emoji appear at
+    // the top of the picker without waiting for a channel switch.
+    {
+        let react_tick = RwSignal::new(0u32);
+        provide_context(crate::reaction_recency::RecencyRefreshTick(react_tick));
+
+        let recent_handle = handle.clone();
+        let current_channel_for_recency = app_state.chat.current_channel;
+        let recent_resource = LocalResource::new(move || {
+            // Read the tick so the resource subscribes to it; the
+            // value itself is unused — only the change matters.
+            let _ = react_tick.get();
+            let handle = recent_handle.clone();
+            let channel = current_channel_for_recency.get();
+            async move { handle.recent_reactions(&channel).await }
+        });
+        let recent_signal: leptos::prelude::Signal<Vec<String>> =
+            leptos::prelude::Signal::derive(move || {
+                recent_resource
+                    .get()
+                    .map(|v| v.to_vec())
+                    .unwrap_or_else(|| {
+                        crate::reaction_recency::REACTION_RECENCY_DEFAULT
+                            .iter()
+                            .map(|s| (*s).to_string())
+                            .collect()
+                    })
+            });
+        provide_context(crate::reaction_recency::ReactionRecency(recent_signal));
+    }
 
     // Local-search index handle (phase 2e). Session-scoped, in-memory,
     // dual-target. The UI hydrates it from `messages_sig` once the
@@ -293,29 +409,18 @@ pub fn App() -> impl IntoView {
 
     // Wire the service-worker bridge — the `willow-push` window event
     // fires whenever the SW forwards a focused-client push payload.
-    // Reads the payload out of `window.__willowLastPush` (stashed by
-    // `main.rs::wire_service_worker_bridge`) and routes it through the
-    // Notifier.
+    // Pulls the validated payload from `service_worker_bridge` (a
+    // module-local cell, not a global window property — issue #244)
+    // and routes it through the Notifier.
     {
         use wasm_bindgen::closure::Closure;
         use wasm_bindgen::JsCast;
         let notifier = notifier.clone();
         let closure = Closure::<dyn Fn(web_sys::Event)>::new(move |_ev: web_sys::Event| {
-            let Some(window) = web_sys::window() else {
+            let Some(payload) = crate::service_worker_bridge::take_last_push() else {
                 return;
             };
-            let payload = js_sys::Reflect::get(
-                &window,
-                &wasm_bindgen::JsValue::from_str("__willowLastPush"),
-            )
-            .ok();
-            let Some(payload) = payload else {
-                return;
-            };
-            let cat = js_sys::Reflect::get(&payload, &"cat".into())
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_else(|| "msg".to_string());
+            let cat = payload.cat;
             let cat_enum = match cat.as_str() {
                 "mention" => crate::notifications::Category::Mention,
                 "letter" => crate::notifications::Category::Letter,
@@ -333,8 +438,10 @@ pub fn App() -> impl IntoView {
             });
         });
         if let Some(window) = web_sys::window() {
-            let _ = window
-                .add_event_listener_with_callback("willow-push", closure.as_ref().unchecked_ref());
+            let _ = window.add_event_listener_with_callback(
+                crate::service_worker_bridge::PUSH_EVENT,
+                closure.as_ref().unchecked_ref(),
+            );
         }
         closure.forget();
     }
@@ -357,69 +464,96 @@ pub fn App() -> impl IntoView {
     // Alt+↑ / Alt+↓ grove switch, `/` focus + ⌘F scope-flip for search).
     crate::keybindings::install(app_state, write);
 
-    // Hydrate the search index from the messages signal. Runs on every
-    // message-list change; the index itself dedups by message_id so
-    // repeated rebuilds are idempotent.
+    // Spawn the search indexer. One long-lived task hydrates the index
+    // from existing state on entry, then keeps it fresh by subscribing
+    // to `ClientEvent`s and routing message lifecycle events into the
+    // index incrementally. Replaces the prior signal-driven full
+    // `Rebuild` Effect (issue #354) — that destroyed + rebuilt every
+    // posting on every send/receive/edit AND only fed in the current
+    // channel's messages, so switching channels wiped the index for
+    // the previous channel.
     //
-    // Per `local-search.md` §Build behaviour: incremental on arrival,
-    // lazy on historical scan. We do a simple full rebuild here in v1
-    // since the in-memory backend is fast enough for typical corpora
-    // (< 10k messages). A future phase can switch to incremental insert
-    // via `ClientEvent::MessageReceived`.
+    // Bootstrap timing: `ClientHandle::new` synchronously materializes
+    // anything in `crate::storage`, so by the time we reach this point
+    // the on-disk corpus is already in the state actor. Live events
+    // arriving before the bootstrap walk completes are picked up by
+    // the subscriber loop below; `SearchIndex::insert` is idempotent
+    // on `message_id` so a doubled hit is a no-op.
+    //
+    // Letter scope (`letter_id`) stays `None` — the active-letter
+    // signal isn't yet wired into this path; tracked as the follow-up
+    // referenced from issue #355.
     {
-        let messages_sig = app_state.chat.messages;
-        let current_channel_sig = app_state.chat.current_channel;
-        let peer_id_sig = app_state.network.peer_id;
-        let active_server_sig = app_state.server.active_server_id;
+        let handle = handle.clone();
         let search = search_index.clone();
-        let write_local = write;
-        Effect::new(move |_| {
-            let msgs = messages_sig.get();
-            let current_ch = current_channel_sig.get();
-            let grove_id = active_server_sig.get();
-            let local_peer = peer_id_sig.get();
+        let active_server_sig = app_state.server.active_server_id;
+        let set_status = write.search.set_status;
+        wasm_bindgen_futures::spawn_local(async move {
+            let grove_id = {
+                let g = active_server_sig.get_untracked();
+                if g.is_empty() {
+                    None
+                } else {
+                    Some(g)
+                }
+            };
 
-            let indexable: Vec<willow_client::IndexableMessage> = msgs
-                .into_iter()
-                .map(|m| {
-                    let author_peer_id = m.author_peer_id;
-                    // Lightweight link detection — `has:link` operator
-                    // key. Proper URL parsing lives in message-row
-                    // rendering; this is the cheap version.
-                    let has_link = m.body.contains("http://") || m.body.contains("https://");
-                    willow_client::IndexableMessage {
-                        message_id: m.id,
-                        channel_id: m.channel_id.clone(),
-                        channel_name: current_ch.clone(),
-                        grove_id: if grove_id.is_empty() {
-                            None
-                        } else {
-                            Some(grove_id.clone())
-                        },
-                        letter_id: None,
-                        author_peer_id,
-                        author_handle: m.author_display_name.to_lowercase(),
-                        author_display_name: m.author_display_name,
-                        timestamp_ms: m.timestamp_ms,
-                        body: m.body,
-                        has_image: false,
-                        has_file: false,
-                        has_link,
+            // One-shot hydration over every channel + message
+            // currently in state.
+            willow_client::search::hydrate_index(&handle, &search, grove_id.clone()).await;
+            set_status.set(willow_client::SearchIndexBuildStatus::Idle);
+
+            // Subscribe to live events and update incrementally.
+            let mut rx = handle.subscribe_events().await;
+            while let Some(event) = rx.recv().await {
+                // Re-read grove on each event so a future multi-grove
+                // client picks up the right id without us caching it.
+                let grove_id = {
+                    let g = active_server_sig.get_untracked();
+                    if g.is_empty() {
+                        None
+                    } else {
+                        Some(g)
                     }
-                })
-                .collect();
-            // Ignore local peer binding to avoid unused_variables clippy
-            // noise — we keep the read so the effect subscribes in case
-            // a later phase filters by author presence.
-            let _ = local_peer;
-            let search = search.clone();
-            let set_status = write_local.search.set_status;
-            leptos::task::spawn_local(async move {
-                search.rebuild(indexable).await;
-                // `Rebuild` always settles status to `Idle` before the
-                // future resolves; no need for a second round-trip.
-                set_status.set(willow_client::SearchIndexBuildStatus::Idle);
-            });
+                };
+                match event {
+                    ClientEvent::MessageReceived {
+                        channel,
+                        message_id,
+                        ..
+                    } => {
+                        willow_client::search::index_message(
+                            &handle,
+                            &search,
+                            &channel,
+                            &message_id,
+                            grove_id,
+                        )
+                        .await;
+                    }
+                    ClientEvent::MessageEdited {
+                        channel,
+                        message_id,
+                        ..
+                    } => {
+                        willow_client::search::reindex_message(
+                            &handle,
+                            &search,
+                            &channel,
+                            &message_id,
+                            grove_id,
+                        )
+                        .await;
+                    }
+                    ClientEvent::MessageDeleted { message_id, .. } => {
+                        search.remove_message(&message_id);
+                    }
+                    ClientEvent::ChannelDeleted(channel_id) => {
+                        search.remove_channel(&channel_id);
+                    }
+                    _ => {}
+                }
+            }
         });
     }
 
@@ -434,8 +568,10 @@ pub fn App() -> impl IntoView {
                 write.ui.set_join_token.set(Some(state::ParsedJoinToken {
                     raw: token_str.clone(),
                     link_id: token.link_id,
+                    inviter_peer_id: token.inviter_peer_id,
                     server_name: token.server_name,
                     inviter_name: token.inviter_name,
+                    bootstrap_endpoint_ids: token.bootstrap_endpoint_ids,
                 }));
                 write.ui.set_join_status.set(String::new());
             }
@@ -460,8 +596,10 @@ pub fn App() -> impl IntoView {
                             .set(Some(state::ParsedJoinToken {
                                 raw: token_str.clone(),
                                 link_id: token.link_id,
+                                inviter_peer_id: token.inviter_peer_id,
                                 server_name: token.server_name,
                                 inviter_name: token.inviter_name,
+                                bootstrap_endpoint_ids: token.bootstrap_endpoint_ids,
                             }));
                         write_for_hash.ui.set_join_status.set(String::new());
                     }
@@ -494,17 +632,46 @@ pub fn App() -> impl IntoView {
                 tracing::warn!(url = %relay_url, "failed to parse relay URL");
             }
 
-            // Fetch the bootstrap node's endpoint ID from the relay.
-            let bootstrap_peers = match fetch_bootstrap_id(&relay_url).await {
-                Some(id) => {
-                    tracing::info!(%id, "fetched bootstrap peer from relay");
-                    vec![id]
-                }
-                None => {
-                    tracing::warn!("could not fetch bootstrap peer ID from relay");
-                    vec![]
-                }
-            };
+            // Resolve bootstrap addressing per the outbox-relay-discovery spec:
+            // the share link's `bootstrap_endpoint_ids` (Layer 1, pkarr) lead and
+            // the configured relay's `/bootstrap-id` node is always appended as a
+            // fallback candidate (see `resolve_bootstrap_peers`). DHT resolution
+            // latency is seconds, so while a link's bootstrap IDs are being
+            // resolved we surface a `"resolving"` join status (rendered as
+            // "Finding the server…" by `JoinPage`) before the existing
+            // `"connecting"` handshake state.
+            let token_bootstrap_ids = state_for_events
+                .ui
+                .join_token
+                .get_untracked()
+                .map(|t| t.bootstrap_endpoint_ids)
+                .unwrap_or_default();
+            let resolving = !token_bootstrap_ids.is_empty();
+            if resolving {
+                write_for_events
+                    .ui
+                    .set_join_status
+                    .set("resolving".to_string());
+            }
+
+            let relay_url_for_fetch = relay_url.clone();
+            let bootstrap_peers = resolve_bootstrap_peers(&token_bootstrap_ids, || async move {
+                fetch_bootstrap_id(&relay_url_for_fetch).await
+            })
+            .await;
+            tracing::info!(
+                count = bootstrap_peers.len(),
+                from_link = resolving,
+                "resolved bootstrap peers"
+            );
+
+            // Resolution attempt complete — clear the transient resolving state
+            // back to idle so the user can press Join (the post-`PeerConnected`
+            // path below advances it to `"connecting"`). Leave a non-join boot
+            // path untouched.
+            if resolving {
+                write_for_events.ui.set_join_status.set(String::new());
+            }
 
             // Set bootstrap peers on the client handle so topic subscriptions use them.
             handle_for_connect.bootstrap_peers = bootstrap_peers.clone();
@@ -554,7 +721,8 @@ pub fn App() -> impl IntoView {
                     let status = state_for_events.ui.join_status.get_untracked();
                     if status == "connecting" {
                         if let Some(token) = state_for_events.ui.join_token.get_untracked() {
-                            handle_for_events.send_join_request(&token.link_id);
+                            handle_for_events
+                                .send_join_request(&token.link_id, token.inviter_peer_id);
                         }
                     }
                 }
@@ -696,6 +864,21 @@ pub fn App() -> impl IntoView {
             <crate::components::OfflineStrip/>
             <crate::components::ReconnectionToast/>
             <crate::components::WelcomeBackBanner/>
+            // Phase 3b T10 — page-level drag-and-drop overlay.
+            // Installs document-level drag/drop listeners that route
+            // dropped files into the same `UploadQueue` the dialog
+            // reads. Mounted at the app shell so the listeners are
+            // active for every route.
+            <crate::components::DragOverlay/>
+            // Phase 3b T8 — modal upload sheet, mounted at the app
+            // shell so it's visible from both desktop + mobile shells
+            // (the previous mount inside `.shell-desktop` rendered
+            // nothing on mobile because CSS sets that subtree to
+            // `display:none`). Visibility is owned by `queue.open`
+            // and CSS positions it as a fixed overlay regardless of
+            // parent. Channel signal comes from the same app-state
+            // store both shells consume.
+            <UploadDialog channel=current_channel />
             {move || {
                 // Join link takes priority over everything.
                 if join_token_signal.get().is_some() {
@@ -884,7 +1067,10 @@ pub fn App() -> impl IntoView {
 
                                     // Request mic permission SYNCHRONOUSLY in the click handler
                                     // to preserve the user gesture chain (required on mobile).
-                                    let window = web_sys::window().unwrap();
+                                    let Some(window) = web_sys::window() else {
+                                        tracing::error!("No browser window context for getUserMedia");
+                                        return;
+                                    };
                                     let navigator = window.navigator();
                                     let Ok(media_devices) = navigator.media_devices() else {
                                         tracing::error!("No media devices available");
@@ -982,12 +1168,42 @@ pub fn App() -> impl IntoView {
                                             });
                                         })
                                     };
+                                    // ArrowUp on an empty composer enters edit
+                                    // mode on the most recent own message in
+                                    // the current channel. Spec
+                                    // `composer.md` §Keyboard (desktop). The
+                                    // composer fires `on_arrow_up_edit` and
+                                    // the parent owns the lookup + signal
+                                    // write so the component stays unaware
+                                    // of the client handle.
+                                    let on_arrow_up_edit_cb = {
+                                        let h = handle_ty.clone();
+                                        let ch = current_channel;
+                                        Callback::new(move |_: ()| {
+                                            let h = h.clone();
+                                            let channel = ch.get_untracked();
+                                            wasm_bindgen_futures::spawn_local(async move {
+                                                if let Some(msg) =
+                                                    h.last_own_message(&channel).await
+                                                {
+                                                    write.chat.set_editing.set(Some(msg));
+                                                }
+                                            });
+                                        })
+                                    };
                                     let on_pin_cb = {
                                         let pin_handler = pin.clone();
                                         Callback::new(move |msg: DisplayMessage| {
                                             pin_handler(msg);
                                         })
                                     };
+                                    // Phase 3a T7 — clicking the composer's reply-bar
+                                    // body scrolls + flashes the parent message in
+                                    // the list. Re-uses the `msg-{id}` DOM ids set by
+                                    // `MessageRow`.
+                                    let on_jump_to_parent_cb = Callback::new(|parent_id: String| {
+                                        crate::util::scroll_to_message_and_flash(&parent_id);
+                                    });
                                     // Derive one-of-four right-rail state from existing UI signals.
                                     // Phase 2b — sync queue takes precedence over members/pinned
                                     // when `app.queue.open == true` (mounted desktop right-pane).
@@ -1031,6 +1247,13 @@ pub fn App() -> impl IntoView {
                                         let _ = current_channel.get();
                                         set_composer_revealed.set(false);
                                     });
+                                    // Phase 3c — surface the pinned-message count to
+                                    // the header so the pin IconBtn picks up the
+                                    // `--amber` tint + mono superscript count when
+                                    // the active channel has pins, per spec
+                                    // `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+                                    // §Header entry point.
+                                    let pinned_count = Signal::derive(move || pinned_messages.get().len());
                                     view! {
                                         <main
                                             class="chat-container main-pane"
@@ -1042,6 +1265,7 @@ pub fn App() -> impl IntoView {
                                                 which=which_signal
                                                 on_set_which=on_set_which
                                                 on_search_click=Callback::new(move |_| write.ui.set_show_palette.set(true))
+                                                pinned_count=pinned_count
                                             />
                                             {move || {
                                                 if channels_signal.get().is_empty() {
@@ -1105,30 +1329,16 @@ pub fn App() -> impl IntoView {
                                                     js_sys::eval("var i=document.querySelector('.input-area input,.input-area textarea');if(i)i.focus();").ok();
                                                 })
                                             />
-                                            <div class="typing-indicator">
-                                                {move || {
-                                                    let ch = current_channel.get();
-                                                    let views = channel_views.get();
-                                                    let names = views
-                                                        .get(&ch)
-                                                        .map(|v| v.typing.clone())
-                                                        .unwrap_or_default();
-                                                    match names.len() {
-                                                        0 => String::new(),
-                                                        1 => format!("{} is typing...", names[0]),
-                                                        2 => format!("{} and {} are typing...", names[0], names[1]),
-                                                        3 => format!("{}, {}, and {} are typing...", names[0], names[1], names[2]),
-                                                        _ => "Multiple people are typing...".to_string(),
-                                                    }
-                                                }}
-                                            </div>
                                             // Phase 2d: hide the composer entirely
                                             // for archived ephemerals until the
                                             // user taps `post` from the banner.
                                             // Uses a class toggle (CSS
                                             // `.input-row--hidden`) rather than
-                                            // unmounting so the FileShareButton
-                                            // and ChatInput state stays.
+                                            // unmounting so the Composer state
+                                            // stays. The typing indicator is
+                                            // owned by <Composer> per phase-3a
+                                            // §T11/T12, so no separate row is
+                                            // rendered here.
                                             <div
                                                 class=move || {
                                                     if archived_band.get() && !composer_revealed.get() {
@@ -1138,10 +1348,7 @@ pub fn App() -> impl IntoView {
                                                     }
                                                 }
                                             >
-                                                <FileShareButton
-                                                    channel=current_channel
-                                                />
-                                                <ChatInput
+                                                <Composer
                                                     on_send=send2
                                                     replying_to=replying_to
                                                     on_cancel_reply=Callback::new(move |_| {
@@ -1153,6 +1360,21 @@ pub fn App() -> impl IntoView {
                                                         write.chat.set_editing.set(None);
                                                     })
                                                     on_typing=on_typing_cb
+                                                    on_arrow_up_edit=on_arrow_up_edit_cb
+                                                    on_jump_to_parent=on_jump_to_parent_cb
+                                                    // Typing peers come off the `channel_views`
+                                                    // map (filled by the typing-expiry timer
+                                                    // spawned at app start). The composer
+                                                    // collapses the row itself when the list
+                                                    // is empty per spec §Typing indicator.
+                                                    typing_peers=Signal::derive(move || {
+                                                        let ch = current_channel.get();
+                                                        channel_views
+                                                            .get()
+                                                            .get(&ch)
+                                                            .map(|v| v.typing.clone())
+                                                            .unwrap_or_default()
+                                                    })
                                                 />
                                             </div>
                                         </main>
@@ -1175,11 +1397,44 @@ pub fn App() -> impl IntoView {
                                 queue_open_rail.set(false);
                             });
                             let on_pinned_jump = Callback::new(move |msg_id: String| {
-                                js_sys::eval(&format!(
-                                    "document.getElementById('msg-{}')?.scrollIntoView({{behavior:'smooth',block:'center'}})",
-                                    msg_id.replace('\'', "")
-                                )).ok();
+                                if let Some(elem) = web_sys::window()
+                                    .and_then(|w| w.document())
+                                    .and_then(|d| d.get_element_by_id(&format!("msg-{msg_id}")))
+                                {
+                                    let opts = web_sys::ScrollIntoViewOptions::new();
+                                    opts.set_behavior(web_sys::ScrollBehavior::Smooth);
+                                    opts.set_block(web_sys::ScrollLogicalPosition::Center);
+                                    elem.scroll_into_view_with_scroll_into_view_options(&opts);
+                                }
                                 write.ui.set_show_pinned.set(false);
+                            });
+                            // Phase 3c — per-entry `unpin` button in the pinned
+                            // panel is permission-gated on `ManageChannels` per
+                            // spec `docs/specs/2026-04-19-ui-design/reactions-pins.md`
+                            // §Pinned panel contents. Permission signal greys the
+                            // button + flips its tooltip; the callback mirrors the
+                            // `make_pin_handler` async/toast pattern but always
+                            // unpins (the panel only lists already-pinned rows).
+                            let can_unpin: Signal<bool> =
+                                app_state.server.local_can_manage_channels.into();
+                            let unpin_handle = handle.clone();
+                            let on_unpin = Callback::new(move |id: String| {
+                                let ch = current_channel.get_untracked();
+                                let h = unpin_handle.clone();
+                                let toasts = use_context::<ToastStack>();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let Ok(hash) = id.parse::<willow_client::willow_state::EventHash>() else {
+                                        tracing::warn!(id, "pinned panel unpin: invalid event hash");
+                                        return;
+                                    };
+                                    if let Err(e) = h.unpin_message(&ch, &hash).await {
+                                        crate::handlers::warn_and_toast_with(
+                                            "unpin message",
+                                            &e,
+                                            toasts.as_ref(),
+                                        );
+                                    }
+                                });
                             });
                             view! {
                                 <RightRail
@@ -1189,6 +1444,8 @@ pub fn App() -> impl IntoView {
                                     peer_id=peer_id
                                     pinned_messages=pinned_messages
                                     on_pinned_jump=on_pinned_jump
+                                    can_unpin=can_unpin
+                                    on_unpin=on_unpin
                                 />
                             }
                         }
@@ -1313,7 +1570,87 @@ pub async fn handle_voice_answer(vm: VoiceManagerHandle, from: String, sdp: Stri
 
 #[cfg(test)]
 mod tests {
-    use super::bootstrap_id_url;
+    use super::{bootstrap_id_url, resolve_bootstrap_peers};
+
+    fn an_endpoint_id() -> willow_identity::EndpointId {
+        willow_identity::Identity::generate().endpoint_id()
+    }
+
+    /// The link's bootstrap IDs lead (Layer-1 preference) and the configured
+    /// relay's bootstrap node is appended as a fallback candidate, so a session
+    /// always retains a known-good relay path.
+    #[test]
+    fn bootstrap_preference_token_ids_lead_then_relay_appended() {
+        let boot1 = an_endpoint_id();
+        let boot2 = an_endpoint_id();
+        let relay_node = an_endpoint_id();
+        let token_ids = vec![boot1, boot2];
+
+        let resolved =
+            futures::executor::block_on(resolve_bootstrap_peers(&token_ids, || async move {
+                Some(relay_node)
+            }));
+
+        // Preferred bootstraps first, relay fallback last.
+        assert_eq!(resolved, vec![boot1, boot2, relay_node]);
+    }
+
+    /// An unreachable preferred bootstrap is still seeded (iroh skips it when
+    /// dialing) but the relay node is appended so the mesh can still form
+    /// through the relay — the "first bootstrap unreachable → fall through"
+    /// path the e2e test exercises.
+    #[test]
+    fn bootstrap_unreachable_first_bootstrap_still_keeps_relay_fallback() {
+        let unreachable = an_endpoint_id();
+        let relay_node = an_endpoint_id();
+
+        let resolved =
+            futures::executor::block_on(resolve_bootstrap_peers(&[unreachable], || async move {
+                Some(relay_node)
+            }));
+
+        assert_eq!(resolved, vec![unreachable, relay_node]);
+        assert!(
+            resolved.contains(&relay_node),
+            "relay fallback must survive even when the only token bootstrap is unreachable"
+        );
+    }
+
+    /// With no bootstrap IDs in the link, the flow falls back to the configured
+    /// relay's `/bootstrap-id` node alone.
+    #[test]
+    fn bootstrap_preference_falls_back_to_relay_when_token_empty() {
+        let relay_node = an_endpoint_id();
+
+        let resolved = futures::executor::block_on(resolve_bootstrap_peers(&[], || async move {
+            Some(relay_node)
+        }));
+
+        assert_eq!(resolved, vec![relay_node]);
+    }
+
+    /// The relay node is de-duplicated: a token that already names the relay
+    /// bootstrap node does not seed it twice.
+    #[test]
+    fn bootstrap_relay_node_is_deduplicated() {
+        let relay_node = an_endpoint_id();
+
+        let resolved =
+            futures::executor::block_on(resolve_bootstrap_peers(&[relay_node], || async move {
+                Some(relay_node)
+            }));
+
+        assert_eq!(resolved, vec![relay_node]);
+    }
+
+    /// Both pkarr (no token IDs) and the relay fetch failing yields an empty set —
+    /// the network is constructed bootstrap-less and surfaces the connection
+    /// error itself (pinned decision Q2).
+    #[test]
+    fn bootstrap_preference_empty_when_token_empty_and_relay_unreachable() {
+        let resolved = futures::executor::block_on(resolve_bootstrap_peers(&[], || async { None }));
+        assert!(resolved.is_empty());
+    }
 
     #[test]
     fn bootstrap_id_url_http_is_passthrough() {

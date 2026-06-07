@@ -10,13 +10,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use willow_identity::EndpointId;
 
 use crate::dag::EventDag;
-use crate::event::{Event, EventKind, Permission, ProposedAction};
+use crate::event::{Event, EventKind, Permission, ProposedAction, MAX_ENCRYPTED_KEYS_OVER_MEMBERS};
 use crate::hash::EventHash;
 use crate::server::{PendingProposal, ServerState};
 use crate::types::{
-    Channel, ChatMessage, Member, PinnedFragment, Profile, PROFILE_CAP_BIO,
-    PROFILE_CAP_CREST_COLOR, PROFILE_CAP_ELSEWHERE_ENTRY, PROFILE_CAP_ELSEWHERE_LEN,
-    PROFILE_CAP_PINNED_BODY, PROFILE_CAP_PRONOUNS, PROFILE_CAP_SINCE, PROFILE_CAP_TAGLINE,
+    Channel, ChatMessage, FileAttachment, Member, PinMetadata, PinnedFragment, Profile,
+    PROFILE_CAP_BIO, PROFILE_CAP_CREST_COLOR, PROFILE_CAP_ELSEWHERE_ENTRY,
+    PROFILE_CAP_ELSEWHERE_LEN, PROFILE_CAP_PINNED_BODY, PROFILE_CAP_PRONOUNS, PROFILE_CAP_SINCE,
+    PROFILE_CAP_TAGLINE,
 };
 
 /// Truncate `s` to at most `cap` UTF-8 characters.
@@ -28,6 +29,23 @@ use crate::types::{
 fn truncate_chars(s: &str, cap: usize) -> String {
     s.chars().take(cap).collect()
 }
+
+/// Maximum UTF-8 byte length of a `Reaction.emoji` string.
+///
+/// Emoji codepoints are short — even multi-codepoint ZWJ sequences fit
+/// in ~28 bytes. Capping at 32 bytes prevents a peer with
+/// `SendMessages` permission from broadcasting multi-MB strings as
+/// reaction keys, which would replicate to every receiver. Measured in
+/// bytes (not chars) because byte length is what drives wire-format
+/// storage cost. See issue #615.
+pub const MAX_REACTION_EMOJI_BYTES: usize = 32;
+
+/// Maximum number of distinct reaction keys per message.
+///
+/// Without this cap, a single peer can issue N events with N distinct
+/// emoji to grow `ChatMessage.reactions` cardinality unboundedly,
+/// since each unique key clones at every replay. See issue #615.
+pub const MAX_REACTIONS_PER_MESSAGE: usize = 32;
 
 /// Result of applying an event to state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,6 +298,7 @@ fn reevaluate_all_proposals(state: &mut ServerState) {
 fn required_permission(kind: &EventKind) -> Option<Permission> {
     match kind {
         EventKind::Message { .. }
+        | EventKind::FileMessage { .. }
         | EventKind::EditMessage { .. }
         | EventKind::DeleteMessage { .. }
         | EventKind::Reaction { .. } => Some(Permission::SendMessages),
@@ -301,16 +320,23 @@ fn required_permission(kind: &EventKind) -> Option<Permission> {
         //   RevokePermission,
         //   RenameServer,
         //   SetServerDescription — admin-only, checked in the admin block above
-        //   SetProfile          — unrestricted (any member)
-        //   UpdateProfile       — unrestricted (any member; self-authorship
-        //                         is the only identity check)
+        //   SetProfile          — any current member; membership gate
+        //                         lives in apply_mutation (issue #177)
+        //   UpdateProfile       — any current member; membership gate
+        //                         lives in apply_mutation. Self-
+        //                         authorship is enforced structurally
+        //                         (only the author's own profile is
+        //                         mutated). See issue #177.
         //   PinMessage,
-        //   UnpinMessage        — unrestricted (any member)
+        //   UnpinMessage        — any current member; membership gate
+        //                         lives in apply_mutation (issue #177)
         //   ChannelRevive       — membership check lives in apply_mutation
         //                         (does not require SendMessages so a muted
         //                         member can still un-archive)
         //   MuteChannel,
         //   MuteGrove           — per-identity preference, never gated
+        //                         (preferences are not server state and
+        //                         survive a kick)
         //
         // If a new EventKind variant is added and is NOT listed here or
         // in an arm above, it will silently get no permission check.
@@ -356,7 +382,7 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                     Channel {
                         id: channel_id.clone(),
                         name: name.clone(),
-                        pinned_messages: BTreeSet::new(),
+                        pinned_messages: BTreeMap::new(),
                         kind: kind.clone(),
                         ephemeral: ephemeral.clone(),
                         last_activity_hlc: None,
@@ -418,9 +444,20 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             permission,
             granted,
         } => {
+            // Drop the unknown-legacy sentinel produced by the
+            // back-compat deserialize path so a rogue / future client
+            // can never inject an unrecognised permission name into a
+            // role's permission set.
+            if matches!(permission, Permission::__UnknownLegacy) {
+                tracing::warn!(
+                    role_id = %role_id,
+                    "SetPermission with unknown legacy permission; dropping",
+                );
+                return ApplyResult::Applied;
+            }
             if let Some(role) = state.roles.get_mut(role_id) {
                 if *granted {
-                    role.permissions.insert(permission.clone());
+                    role.permissions.insert(*permission);
                 } else {
                     role.permissions.remove(permission);
                 }
@@ -479,12 +516,91 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 deleted: false,
                 reactions: BTreeMap::new(),
                 reply_to: *reply_to,
+                attachment: None,
             });
             state.message_index.insert(event.hash, idx);
             // Advance the channel's last_activity_hlc on every Message.
             // Tracked unconditionally — permanent channels carry it too —
             // so the branch stays simple and a future feature can reuse
             // it. Spec: ephemeral-channels.md §Inactivity ladder.
+            if let Some(ch) = state.channels.get_mut(channel_id) {
+                ch.last_activity_hlc = Some(event.timestamp_hint_ms);
+            }
+        }
+
+        EventKind::FileMessage {
+            channel_id,
+            hash,
+            filename,
+            mime_type,
+            size_bytes,
+            width,
+            height,
+            body,
+            reply_to,
+        } => {
+            // Defense-in-depth bounds. The send-side already enforces
+            // `MAX_ATTACHMENT_FILENAME_BYTES` / `MAX_ATTACHMENT_MIME_BYTES`
+            // / `FileAttachment::MAX_DIMENSION_PX`, but the wire is
+            // peer-controlled — silently dropping over-cap attachments
+            // here keeps the in-memory `ServerState` from carrying
+            // them onward. Compared to bailing, dropping mirrors the
+            // existing pattern for over-cap profile fields and keeps
+            // the materialize signature `Result`-free.
+            if filename.len() > crate::event::MAX_ATTACHMENT_FILENAME_BYTES {
+                return ApplyResult::Rejected(format!(
+                    "FileMessage filename too long: {} bytes (max {})",
+                    filename.len(),
+                    crate::event::MAX_ATTACHMENT_FILENAME_BYTES
+                ));
+            }
+            if mime_type.len() > crate::event::MAX_ATTACHMENT_MIME_BYTES {
+                return ApplyResult::Rejected(format!(
+                    "FileMessage mime_type too long: {} bytes (max {})",
+                    mime_type.len(),
+                    crate::event::MAX_ATTACHMENT_MIME_BYTES
+                ));
+            }
+            if let Some(w) = *width {
+                if w > FileAttachment::MAX_DIMENSION_PX {
+                    return ApplyResult::Rejected(format!(
+                        "FileMessage width {}px exceeds max {}px",
+                        w,
+                        FileAttachment::MAX_DIMENSION_PX
+                    ));
+                }
+            }
+            if let Some(h) = *height {
+                if h > FileAttachment::MAX_DIMENSION_PX {
+                    return ApplyResult::Rejected(format!(
+                        "FileMessage height {}px exceeds max {}px",
+                        h,
+                        FileAttachment::MAX_DIMENSION_PX
+                    ));
+                }
+            }
+            let idx = state.messages.len();
+            state.messages.push(ChatMessage {
+                id: event.hash,
+                channel_id: channel_id.clone(),
+                author: event.author,
+                body: body.clone(),
+                timestamp_ms: event.timestamp_hint_ms,
+                edited: false,
+                deleted: false,
+                reactions: BTreeMap::new(),
+                reply_to: *reply_to,
+                attachment: Some(FileAttachment {
+                    hash: hash.clone(),
+                    filename: filename.clone(),
+                    mime_type: mime_type.clone(),
+                    size_bytes: *size_bytes,
+                    width: *width,
+                    height: *height,
+                }),
+            });
+            state.message_index.insert(event.hash, idx);
+            // Advance last_activity_hlc just like the text Message arm.
             if let Some(ch) = state.channels.get_mut(channel_id) {
                 ch.last_activity_hlc = Some(event.timestamp_hint_ms);
             }
@@ -517,8 +633,30 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         }
 
         EventKind::Reaction { message_id, emoji } => {
+            // Reject oversized emoji strings — bounds DAG-time storage
+            // cost, since each unique emoji is cloned as a BTreeMap key
+            // on every receiver. See issue #615.
+            if emoji.len() > MAX_REACTION_EMOJI_BYTES {
+                return ApplyResult::Rejected(format!(
+                    "reaction emoji exceeds {} bytes ({} bytes)",
+                    MAX_REACTION_EMOJI_BYTES,
+                    emoji.len()
+                ));
+            }
             if let Some(&idx) = state.message_index.get(message_id) {
                 if let Some(msg) = state.messages.get_mut(idx) {
+                    // Reject if adding a *new* reaction key would push
+                    // cardinality past the cap. Adding an author to an
+                    // existing emoji key is fine — that doesn't grow
+                    // cardinality. See issue #615.
+                    if !msg.reactions.contains_key(emoji)
+                        && msg.reactions.len() >= MAX_REACTIONS_PER_MESSAGE
+                    {
+                        return ApplyResult::Rejected(format!(
+                            "message already has {} distinct reactions (cap)",
+                            MAX_REACTIONS_PER_MESSAGE
+                        ));
+                    }
                     msg.reactions
                         .entry(emoji.clone())
                         .or_default()
@@ -528,6 +666,15 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         }
 
         EventKind::SetProfile { display_name } => {
+            // Defense-in-depth: reject if the author isn't a member of
+            // the server. `required_permission()` returns `None` for
+            // SetProfile (it's "any current member"), so the membership
+            // gate must live here. Without it, late-arriving events
+            // from a kicked or never-joined signer would silently
+            // mutate `state.profiles`. See issue #177.
+            if !state.members.contains_key(&event.author) {
+                return ApplyResult::Rejected(format!("author '{}' is not a member", event.author));
+            }
             if display_name.chars().count() > 64 {
                 return ApplyResult::Rejected(format!(
                     "display name exceeds 64 chars ({} chars)",
@@ -545,6 +692,17 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
         }
 
         EventKind::UpdateProfile(delta) => {
+            // Defense-in-depth: reject if the author isn't a member of
+            // the server. `required_permission()` returns `None` for
+            // UpdateProfile (it's "any current member"; self-authorship
+            // is already structurally enforced by mutating only the
+            // author's own profile). The membership gate must live
+            // here so late-arriving events from a kicked or never-
+            // joined signer cannot silently mutate `state.profiles`.
+            // See issue #177.
+            if !state.members.contains_key(&event.author) {
+                return ApplyResult::Rejected(format!("author '{}' is not a member", event.author));
+            }
             let crate::types::ProfileDelta {
                 display_name,
                 pronouns,
@@ -556,6 +714,21 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
                 elsewhere,
                 since,
             } = delta.as_ref();
+            // Mirror SetProfile's display_name cap: reject the entire
+            // event if display_name exceeds 64 chars. Rejection (not
+            // silent truncation like the sibling profile fields) is
+            // chosen for parity with SetProfile and because display_name
+            // is identity-tier — silent truncation could produce
+            // confusing duplicate names ("alice" vs a truncated
+            // "alice…"). See issue #614.
+            if let Some(name) = display_name {
+                if name.chars().count() > 64 {
+                    return ApplyResult::Rejected(format!(
+                        "display name exceeds 64 chars ({} chars)",
+                        name.chars().count()
+                    ));
+                }
+            }
             let entry = state
                 .profiles
                 .entry(event.author)
@@ -620,6 +793,25 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             if !state.members.contains_key(&event.author) {
                 return ApplyResult::Rejected(format!("author '{}' is not a member", event.author));
             }
+            // Anti-DoS cap (SEC-V-07). A legitimate RotateChannelKey
+            // carries at most one entry per current member; epsilon
+            // absorbs benign races between membership changes and key
+            // rotation. Anything beyond that is a fabricated-id flood —
+            // every entry would otherwise `.clone()` into the per-server
+            // `BTreeMap<EndpointId, Vec<u8>>` on every peer.
+            let cap = state
+                .members
+                .len()
+                .saturating_add(MAX_ENCRYPTED_KEYS_OVER_MEMBERS);
+            if encrypted_keys.len() > cap {
+                return ApplyResult::Rejected(format!(
+                    "RotateChannelKey: {} encrypted_keys exceeds cap {} (members={} + epsilon={})",
+                    encrypted_keys.len(),
+                    cap,
+                    state.members.len(),
+                    MAX_ENCRYPTED_KEYS_OVER_MEMBERS,
+                ));
+            }
             if !encrypted_keys.is_empty() {
                 let keys = state.channel_keys.entry(channel_id.clone()).or_default();
                 for (peer_id, key_bytes) in encrypted_keys {
@@ -632,8 +824,28 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             channel_id,
             message_id,
         } => {
+            // Defense-in-depth: reject if the author isn't a member of
+            // the server. `required_permission()` returns `None` for
+            // PinMessage (it's "any current member"), so the membership
+            // gate must live here. Without it, late-arriving events
+            // from a kicked or never-joined signer would silently
+            // mutate `pinned_messages`. See issue #177.
+            if !state.members.contains_key(&event.author) {
+                return ApplyResult::Rejected(format!("author '{}' is not a member", event.author));
+            }
             if let Some(ch) = state.channels.get_mut(channel_id) {
-                ch.pinned_messages.insert(*message_id);
+                // Capture pinner identity + pin time from the event so
+                // the pinned-panel UI can render the
+                // `pinned by {name} · {when}` footer without walking
+                // the DAG. See
+                // `docs/specs/2026-05-21-pinned-message-metadata-design.md`.
+                ch.pinned_messages.insert(
+                    *message_id,
+                    PinMetadata {
+                        pinner: event.author,
+                        pinned_at_ms: event.timestamp_hint_ms,
+                    },
+                );
             }
         }
 
@@ -641,6 +853,15 @@ fn apply_mutation(state: &mut ServerState, event: &Event) -> ApplyResult {
             channel_id,
             message_id,
         } => {
+            // Defense-in-depth: reject if the author isn't a member of
+            // the server. `required_permission()` returns `None` for
+            // UnpinMessage (it's "any current member"), so the
+            // membership gate must live here. Without it, late-
+            // arriving events from a kicked or never-joined signer
+            // would silently mutate `pinned_messages`. See issue #177.
+            if !state.members.contains_key(&event.author) {
+                return ApplyResult::Rejected(format!("author '{}' is not a member", event.author));
+            }
             if let Some(ch) = state.channels.get_mut(channel_id) {
                 ch.pinned_messages.remove(message_id);
             }
@@ -1527,6 +1748,81 @@ mod tests {
     }
 
     #[test]
+    fn update_profile_display_name_over_64_chars_rejected() {
+        // Mirrors the SetProfile cap (issue #614): an UpdateProfile event
+        // carrying a >64-char display_name must be rejected so a
+        // misbehaving peer cannot DoS receivers by broadcasting a
+        // multi-megabyte name (`Some("a".repeat(10_000_000))`). At the
+        // same time, a 64-char display name must still apply, and the
+        // sibling fields (which use silent truncation) must not regress.
+        let admin = Identity::generate();
+        let mut dag = test_dag(&admin);
+
+        // First, set a known-good display name via SetProfile so we have
+        // a baseline value to assert against after the rejected event.
+        let baseline = "alice".to_string();
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::SetProfile {
+                display_name: baseline.clone(),
+            },
+        );
+
+        // 64 crabs (256 bytes) must apply — char-count, not byte-length.
+        let ok_display: String = "🦀".repeat(64);
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::UpdateProfile(Box::new(crate::types::ProfileDelta {
+                display_name: Some(ok_display.clone()),
+                ..Default::default()
+            })),
+        );
+        let state_after_ok = materialize(&dag);
+        assert_eq!(
+            state_after_ok.profiles[&admin.endpoint_id()].display_name,
+            ok_display,
+            "64-char UpdateProfile display_name must apply",
+        );
+        assert_eq!(
+            state_after_ok.members[&admin.endpoint_id()].display_name,
+            Some(ok_display.clone()),
+            "members entry must mirror profiles entry",
+        );
+
+        // 65 crabs must be rejected — and the prior value must remain.
+        let bad_display: String = "🦀".repeat(65);
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::UpdateProfile(Box::new(crate::types::ProfileDelta {
+                display_name: Some(bad_display),
+                // Pair with a benign sibling field; if the event were
+                // (incorrectly) applied with truncation instead of
+                // rejection, the pronouns side-effect would still land.
+                // Rejection must drop the *whole* event.
+                pronouns: Some(Some("they/them".into())),
+                ..Default::default()
+            })),
+        );
+        let state = materialize(&dag);
+        // Display name pinned at the prior 64-char value.
+        assert_eq!(
+            state.profiles[&admin.endpoint_id()].display_name,
+            ok_display,
+            "rejected UpdateProfile must leave display_name unchanged",
+        );
+        // Sibling field must NOT have been applied — rejection drops the
+        // whole event, not just the offending field.
+        assert_eq!(
+            state.profiles[&admin.endpoint_id()].pronouns,
+            None,
+            "rejected UpdateProfile must not apply sibling fields",
+        );
+    }
+
+    #[test]
     fn kick_cleans_up_pending_votes() {
         let admin = Identity::generate();
         let alice = Identity::generate();
@@ -1591,5 +1887,178 @@ mod tests {
 
         let state = materialize(&dag);
         assert_eq!(state.vote_threshold, VoteThreshold::Unanimous);
+    }
+
+    #[test]
+    fn reaction_emoji_over_32_bytes_rejected() {
+        // Issue #615: an oversized Reaction.emoji must be rejected, not
+        // applied as a BTreeMap key, otherwise a peer with SendMessages
+        // permission can broadcast a multi-MB string and force every
+        // receiver to clone it on every replay.
+        let admin = Identity::generate();
+        let mut dag = test_dag(&admin);
+        let msg = emit(
+            &mut dag,
+            &admin,
+            EventKind::Message {
+                channel_id: "general".into(),
+                body: "react to me".into(),
+                reply_to: None,
+            },
+        );
+
+        // 33 bytes of ASCII — one byte over the 32-byte cap.
+        let bad_emoji: String = "a".repeat(MAX_REACTION_EMOJI_BYTES + 1);
+        assert_eq!(bad_emoji.len(), MAX_REACTION_EMOJI_BYTES + 1);
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::Reaction {
+                message_id: msg.hash,
+                emoji: bad_emoji.clone(),
+            },
+        );
+
+        let state = materialize(&dag);
+        assert!(
+            !state.messages[0].reactions.contains_key(&bad_emoji),
+            "oversized emoji must not appear as a reaction key",
+        );
+        assert!(
+            state.messages[0].reactions.is_empty(),
+            "no reactions should land when the only Reaction is rejected",
+        );
+    }
+
+    #[test]
+    fn reaction_cardinality_over_32_per_message_rejected() {
+        // Issue #615: distinct reaction keys per message are capped at
+        // MAX_REACTIONS_PER_MESSAGE. A 33rd distinct emoji must be
+        // rejected; the first 32 must remain.
+        let admin = Identity::generate();
+        let mut dag = test_dag(&admin);
+        let msg = emit(
+            &mut dag,
+            &admin,
+            EventKind::Message {
+                channel_id: "general".into(),
+                body: "react to me".into(),
+                reply_to: None,
+            },
+        );
+
+        // 32 distinct ASCII emojis (use 2-char strings so they're
+        // unambiguously distinct keys, well under 32 bytes each).
+        for i in 0..MAX_REACTIONS_PER_MESSAGE {
+            let emoji = format!("e{i:02}");
+            emit(
+                &mut dag,
+                &admin,
+                EventKind::Reaction {
+                    message_id: msg.hash,
+                    emoji,
+                },
+            );
+        }
+
+        // 33rd distinct key — must be rejected.
+        let overflow_emoji = "EXTRA".to_string();
+        emit(
+            &mut dag,
+            &admin,
+            EventKind::Reaction {
+                message_id: msg.hash,
+                emoji: overflow_emoji.clone(),
+            },
+        );
+
+        let state = materialize(&dag);
+        assert_eq!(
+            state.messages[0].reactions.len(),
+            MAX_REACTIONS_PER_MESSAGE,
+            "exactly MAX_REACTIONS_PER_MESSAGE distinct keys must remain",
+        );
+        assert!(
+            !state.messages[0].reactions.contains_key(&overflow_emoji),
+            "33rd distinct reaction must not be added",
+        );
+    }
+
+    #[test]
+    fn reaction_existing_key_not_blocked_by_cardinality_cap() {
+        // Issue #615: at the cap, applying a Reaction with an emoji
+        // *already* present must still succeed — it only adds an author
+        // to the existing set; cardinality does not grow.
+        let admin = Identity::generate();
+        let bob = Identity::generate();
+        let mut dag = test_dag(&admin);
+
+        // Trust bob so he can react.
+        let grant = emit(
+            &mut dag,
+            &admin,
+            EventKind::GrantPermission {
+                peer_id: bob.endpoint_id(),
+                permission: crate::event::Permission::SendMessages,
+            },
+        );
+        let msg = emit(
+            &mut dag,
+            &admin,
+            EventKind::Message {
+                channel_id: "general".into(),
+                body: "react to me".into(),
+                reply_to: None,
+            },
+        );
+
+        // Fill to the cap with admin's reactions.
+        for i in 0..MAX_REACTIONS_PER_MESSAGE {
+            let emoji = format!("e{i:02}");
+            emit(
+                &mut dag,
+                &admin,
+                EventKind::Reaction {
+                    message_id: msg.hash,
+                    emoji,
+                },
+            );
+        }
+
+        // Bob reacts with an *existing* emoji key — must apply, even
+        // though the message is at MAX_REACTIONS_PER_MESSAGE distinct
+        // reactions, because cardinality does not grow. Bob's event
+        // must causally depend on the grant + message so the topo sort
+        // places it after both, otherwise his reaction may be processed
+        // before he has SendMessages.
+        let existing_emoji = "e00".to_string();
+        emit_with_deps(
+            &mut dag,
+            &bob,
+            EventKind::Reaction {
+                message_id: msg.hash,
+                emoji: existing_emoji.clone(),
+            },
+            vec![grant.hash, msg.hash],
+        );
+
+        let state = materialize(&dag);
+        assert_eq!(
+            state.messages[0].reactions.len(),
+            MAX_REACTIONS_PER_MESSAGE,
+            "cardinality unchanged",
+        );
+        let authors = state.messages[0]
+            .reactions
+            .get(&existing_emoji)
+            .expect("existing emoji key must still be present");
+        assert!(
+            authors.contains(&admin.endpoint_id()),
+            "admin's original reaction must remain",
+        );
+        assert!(
+            authors.contains(&bob.endpoint_id()),
+            "bob's reaction with existing emoji must be added",
+        );
     }
 }

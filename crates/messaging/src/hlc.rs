@@ -72,6 +72,18 @@ impl std::fmt::Display for HlcTimestamp {
     }
 }
 
+/// Maximum forward drift, in milliseconds, that a remote HLC timestamp may
+/// have over the local wall clock before it is clamped in [`HLC::receive`].
+///
+/// Without this cap a single malicious or buggy peer could broadcast one
+/// message with `millis = u64::MAX - k`, permanently poisoning every
+/// receiver's HLC and saturating the counter on subsequent local events
+/// (Kulkarni et al., 2014, §V — recommended forward-drift bound).
+///
+/// 24h is generous enough to absorb realistic NTP skew, mobile sleep, and
+/// timezone-misconfigured peers while still bounding worst-case poisoning.
+pub const MAX_FORWARD_DRIFT_MS: u64 = 24 * 60 * 60 * 1000;
+
 // ───── HLC state machine ────────────────────────────────────────────────────
 
 /// Returns the current wall-clock time in milliseconds since Unix epoch.
@@ -169,15 +181,36 @@ impl HLC {
     ///
     /// Returns a new local timestamp that is strictly greater than both the
     /// local clock and the remote timestamp.
+    ///
+    /// The remote `millis` value is clamped to
+    /// `wall_clock + MAX_FORWARD_DRIFT_MS` before being folded into the
+    /// `max` chain. This prevents a single peer with a far-future timestamp
+    /// from permanently poisoning the local HLC (see
+    /// [`MAX_FORWARD_DRIFT_MS`]). A clamp event emits a `warn!` so ops can
+    /// surface peers that consistently exceed the drift bound.
     pub fn receive(&mut self, remote: HlcTimestamp) -> HlcTimestamp {
         let wall = wall_clock_ms();
-        let millis = wall.max(self.latest.millis).max(remote.millis);
 
-        let (millis, counter) = if millis == self.latest.millis && millis == remote.millis {
+        let max_allowed = wall.saturating_add(MAX_FORWARD_DRIFT_MS);
+        let clamped_remote_millis = if remote.millis > max_allowed {
+            tracing::warn!(
+                remote_millis = remote.millis,
+                wall_ms = wall,
+                max_allowed,
+                "HLC remote timestamp exceeded forward-drift cap; clamping"
+            );
+            max_allowed
+        } else {
+            remote.millis
+        };
+
+        let millis = wall.max(self.latest.millis).max(clamped_remote_millis);
+
+        let (millis, counter) = if millis == self.latest.millis && millis == clamped_remote_millis {
             bump_counter(millis, self.latest.counter.max(remote.counter))
         } else if millis == self.latest.millis {
             bump_counter(millis, self.latest.counter)
-        } else if millis == remote.millis {
+        } else if millis == clamped_remote_millis {
             bump_counter(millis, remote.counter)
         } else {
             (millis, 0)
@@ -412,6 +445,90 @@ mod tests {
         let t1 = clock.now();
         let t2 = clock.now();
         assert!(t2 > t1);
+    }
+
+    #[test]
+    fn receive_clamps_far_future_remote() {
+        // A malicious peer broadcasting `u64::MAX - 1000` must not be able to
+        // poison the local HLC. After the call, `latest.millis` must sit
+        // within roughly `wall + MAX_FORWARD_DRIFT_MS` (plus a tiny epsilon
+        // for the wall-clock tick between calls).
+        let wall_before = wall_clock_ms();
+        let mut clock = HLC::new();
+
+        let attack = HlcTimestamp {
+            millis: u64::MAX - 1000,
+            counter: 0,
+        };
+        let result = clock.receive(attack);
+
+        let upper_bound = wall_before
+            .saturating_add(MAX_FORWARD_DRIFT_MS)
+            .saturating_add(1_000); // 1s slack for wall-clock advance
+        assert!(
+            result.millis <= upper_bound,
+            "receive() must clamp far-future remote (got {}, bound {upper_bound})",
+            result.millis,
+        );
+
+        // Subsequent now() calls must still produce reasonable timestamps,
+        // not anywhere near u64::MAX.
+        let next = clock.now();
+        assert!(
+            next.millis <= upper_bound.saturating_add(1_000),
+            "now() after clamp must remain near wall clock (got {})",
+            next.millis,
+        );
+        assert!(next > result, "monotonicity must still hold");
+    }
+
+    #[test]
+    fn receive_accepts_within_drift() {
+        // A remote timestamp 1 hour in the future is well within the 24h
+        // drift cap and must be adopted unchanged.
+        let wall = wall_clock_ms();
+        let mut clock = HLC::new();
+
+        let one_hour_ms: u64 = 60 * 60 * 1000;
+        let remote = HlcTimestamp {
+            millis: wall + one_hour_ms,
+            counter: 0,
+        };
+        let result = clock.receive(remote);
+
+        // The HLC should adopt the remote's millis (since it dominates wall
+        // and latest), not clamp it.
+        assert_eq!(
+            result.millis, remote.millis,
+            "remote within drift bound must be adopted unchanged",
+        );
+        assert!(result > remote);
+    }
+
+    #[test]
+    fn receive_clamps_at_exact_boundary() {
+        // The boundary check is strict (`>`), so a remote exactly one ms over
+        // the cap must clamp, while the cap itself is still accepted.
+        let wall = wall_clock_ms();
+        let mut clock = HLC::new();
+
+        let remote = HlcTimestamp {
+            millis: wall + MAX_FORWARD_DRIFT_MS + 1,
+            counter: 0,
+        };
+        let result = clock.receive(remote);
+
+        // After clamping the remote down to `wall + MAX_FORWARD_DRIFT_MS`,
+        // the new latest must equal that cap (possibly +1 if the wall clock
+        // ticked between the two reads; assert with a small slack window).
+        let lower = wall.saturating_add(MAX_FORWARD_DRIFT_MS);
+        let upper = wall.saturating_add(MAX_FORWARD_DRIFT_MS).saturating_add(50);
+        assert!(
+            (lower..=upper).contains(&result.millis),
+            "receive() must clamp to wall + MAX_FORWARD_DRIFT_MS \
+             (got {}, expected in [{lower}, {upper}])",
+            result.millis,
+        );
     }
 
     #[test]

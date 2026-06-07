@@ -19,6 +19,9 @@ clap = { version = "4", features = ["derive"] }
 anyhow = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
+# Native-only worker runtime (tokio "full"); used to draw a per-run random
+# `stream_generation` for HistorySyncComplete markers (pinned decision 6).
+rand = "0.9"
 
 [features]
 test-utils = []

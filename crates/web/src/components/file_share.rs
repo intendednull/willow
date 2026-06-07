@@ -1,113 +1,42 @@
+//! Legacy `[file:NAME:base64]` message decoder.
+//!
+//! Phase 3b T9 retired the standalone `<FileShareButton>` paperclip
+//! — the composer's `+` attach button now owns the path into
+//! `<UploadDialog>` (see `composer.rs::on_click_attach`). The
+//! `parse_inline_file` reader below stays alive so historical
+//! `[file:NAME:base64]` messages from pre-3b peers still render.
+//! Senders no longer emit that format; once enough time has passed
+//! that the wild population has rotated past those messages, the
+//! whole module can drop.
+
 use leptos::prelude::*;
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
 
-use crate::app::WebClientHandle;
 use crate::icons;
+use crate::upload_state::use_upload_queue;
 
-/// Maximum inline file size (256 KB).
-const MAX_FILE_SIZE: u64 = 256 * 1024;
-
-/// Attachment button that opens a native file picker and shares small files
-/// inline via base64-encoded messages.
-///
-/// Files larger than 256 KB are rejected with a browser alert.
+/// Composer paperclip (deprecated). Retained as a stub so
+/// out-of-tree consumers (test harnesses, plugins) keep compiling
+/// across the cut-over. New surfaces should use the composer's `+`
+/// attach button instead.
+#[deprecated(note = "phase-3b T9: use the composer's `+` attach button \
+            (composer__attach) instead — it flips the same \
+            `UploadQueue::open` signal this button does.")]
 #[component]
 pub fn FileShareButton(channel: ReadSignal<String>) -> impl IntoView {
-    let handle = use_context::<WebClientHandle>().unwrap();
-
-    // Create a hidden file input and trigger it on button click.
-    let input_ref = NodeRef::<leptos::html::Input>::new();
-
-    let on_click = move |_| {
-        if let Some(input) = input_ref.get() {
-            let el: &web_sys::HtmlInputElement = &input;
-            // Reset so the same file can be picked again.
-            el.set_value("");
-            el.click();
-        }
+    let _ = channel;
+    let queue = use_upload_queue();
+    let on_click = move |_ev: web_sys::MouseEvent| {
+        queue.open.set(true);
     };
-
-    let handle_change = handle.clone();
-    let on_change = move |_ev: web_sys::Event| {
-        let Some(input) = input_ref.get() else {
-            return;
-        };
-        let el: &web_sys::HtmlInputElement = &input;
-
-        let Some(files) = el.files() else {
-            return;
-        };
-        let Some(file) = files.get(0) else {
-            return;
-        };
-
-        let size = file.size() as u64;
-        if size > MAX_FILE_SIZE {
-            if let Some(window) = web_sys::window() {
-                window
-                    .alert_with_message("File is too large. Maximum size is 256 KB.")
-                    .ok();
-            }
-            return;
-        }
-
-        let filename = file.name();
-        let ch = channel.get_untracked();
-        let handle_inner = handle_change.clone();
-
-        let Ok(reader) = web_sys::FileReader::new() else {
-            tracing::error!("FileShareButton: FileReader::new failed");
-            return;
-        };
-        let reader_clone = reader.clone();
-
-        let cb = Closure::once(move || {
-            let result = match reader_clone.result() {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("FileReader result error: {e:?}");
-                    return;
-                }
-            };
-            let array_buf = match result.dyn_into::<js_sys::ArrayBuffer>() {
-                Ok(b) => b,
-                Err(_) => {
-                    tracing::error!("FileReader result was not an ArrayBuffer");
-                    return;
-                }
-            };
-            let uint8 = js_sys::Uint8Array::new(&array_buf);
-            let data = uint8.to_vec();
-
-            wasm_bindgen_futures::spawn_local(async move {
-                if let Err(e) = handle_inner.share_file_inline(&ch, &filename, &data).await {
-                    if let Some(window) = web_sys::window() {
-                        window
-                            .alert_with_message(&format!("Failed to share file: {e}"))
-                            .ok();
-                    }
-                }
-            });
-        });
-
-        reader.set_onloadend(Some(cb.as_ref().unchecked_ref()));
-        reader.read_as_array_buffer(&file).ok();
-        // Intentional leak: the FileReader callback must outlive this scope.
-        // Since file picks are infrequent, the leak is acceptable.
-        cb.forget();
-    };
-
     view! {
-        <button class="file-share-btn" title="Attach file" on:click=on_click>
+        <button
+            class="file-share-btn"
+            aria-label="attach file"
+            title="Attach file"
+            on:click=on_click
+        >
             {icons::icon_paperclip()}
         </button>
-        <input
-            node_ref=input_ref
-            type="file"
-            style="display:none"
-            on:change=on_change
-        />
     }
 }
 

@@ -7,6 +7,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   ci:
     name: CI
@@ -36,7 +39,9 @@ jobs:
           restore-keys: deploy-
 
       - name: Install trunk
-        run: cargo install trunk --locked
+        uses: taiki-e/install-action@50b4a718b59c718df4ef27a3b445f86cd57b9f00 # v2.79.3 trunk
+        with:
+          tool: trunk@0.21.14
 
       - name: Install sshpass
         run: sudo apt-get update && sudo apt-get install -y sshpass
@@ -70,6 +75,17 @@ jobs:
 
       - name: Verify deployment
         run: |
-          sleep 3
-          curl -sf -o /dev/null -w "Web: HTTP %{http_code}\n" https://willow.intendednull.com/
+          # Poll the web endpoint until it serves (max ~30s) instead of a
+          # blind 3s sleep — avoids flaking when the relay takes longer to
+          # bind and masking a silent deploy failure.
+          for i in $(seq 1 15); do
+            if curl -sf -o /dev/null -w "Web: HTTP %{http_code}\n" https://willow.intendednull.com/; then
+              break
+            fi
+            if [ "$i" -eq 15 ]; then
+              echo "verify: HTTP probe never succeeded after 15 attempts (~30s)" >&2
+              exit 1
+            fi
+            sleep 2
+          done
           sshpass -p '${{ secrets.DEPLOY_PASSWORD }}' ssh -o StrictHostKeyChecking=no root@willow.intendednull.com 'systemctl is-active willow-relay'

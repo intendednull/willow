@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use willow_identity::{EndpointId, Identity};
 
-use crate::event::{Event, EventKind};
+use crate::event::{Event, EventKind, MAX_ENCRYPTED_KEY_BYTES, MAX_EVENT_DEPS};
 use crate::hash::EventHash;
 
 /// Error returned when inserting an event into the DAG fails.
@@ -39,6 +39,13 @@ pub enum InsertError {
         vote: EventHash,
         proposal: EventHash,
     },
+    /// `event.deps.len()` exceeds [`crate::event::MAX_EVENT_DEPS`].
+    /// Anti-DoS cap; see SEC-V-07 (#236).
+    DepsTooLong { got: usize, max: usize },
+    /// One entry inside `RotateChannelKey.encrypted_keys` carries a
+    /// blob larger than [`crate::event::MAX_ENCRYPTED_KEY_BYTES`].
+    /// Anti-DoS cap; see SEC-V-07 (#236).
+    EncryptedKeyTooLarge { got: usize, max: usize },
     /// Author lacks the required permission for this EventKind.
     PermissionDenied(String),
 }
@@ -74,12 +81,82 @@ impl std::fmt::Display for InsertError {
                 f,
                 "Vote event {vote} must include proposal {proposal} in deps"
             ),
+            Self::DepsTooLong { got, max } => {
+                write!(f, "event.deps too long: {got} entries (max {max})")
+            }
+            Self::EncryptedKeyTooLarge { got, max } => write!(
+                f,
+                "RotateChannelKey encrypted blob too large: {got} bytes (max {max})"
+            ),
             Self::PermissionDenied(reason) => write!(f, "permission denied: {reason}"),
         }
     }
 }
 
 impl std::error::Error for InsertError {}
+
+/// Server-local filter for a heads-based delta sync, applied by
+/// [`EventDag::events_since_filtered`].
+///
+/// This mirrors the wire-level `SyncFilter` in `willow-common` minus its
+/// `server_id` field (a single [`EventDag`] already *is* one server). It lives
+/// in `willow-state` rather than reusing the wire type because `willow-state`
+/// is the lower layer — `willow-common` depends on it, not the reverse — so the
+/// caller (the gossip responder, in a later PR) maps `SyncFilter` onto this.
+///
+/// Every axis is `Option`; `None` means "no restriction on that axis".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EventFilter {
+    /// Restrict **chat-shaped** events (those whose
+    /// [`EventKind::chat_channel_id`] is `Some` — `Message`, `FileMessage`,
+    /// `PinMessage`, `UnpinMessage`) to these channel ids. Structural events,
+    /// including channel-lifecycle and key-rotation kinds (`CreateChannel`,
+    /// `RotateChannelKey`, …), are never excluded by this axis, so server
+    /// structure and key epochs always reconcile fully (spec § Filter
+    /// semantics).
+    pub channels: Option<Vec<String>>,
+    /// Restrict to events authored by these endpoints.
+    pub authors: Option<Vec<EndpointId>>,
+    /// Restrict to events whose [`EventKind::discriminant`] is in this list.
+    pub event_kinds: Option<Vec<u8>>,
+    /// Advisory soft floor on the display-only `timestamp_hint_ms`: events with
+    /// a lower hint are dropped. The authoritative cursor remains the per-author
+    /// `seq` in `their_heads`; this only narrows scan width.
+    pub since_ms: Option<u64>,
+}
+
+impl EventFilter {
+    /// Whether `event` passes every set axis of this filter.
+    fn matches(&self, event: &Event) -> bool {
+        if let Some(authors) = &self.authors {
+            if !authors.contains(&event.author) {
+                return false;
+            }
+        }
+        if let Some(kinds) = &self.event_kinds {
+            if !kinds.contains(&event.kind.discriminant()) {
+                return false;
+            }
+        }
+        if let Some(since) = self.since_ms {
+            if event.timestamp_hint_ms < since {
+                return false;
+            }
+        }
+        // `channels` only narrows chat-shaped events; structural events
+        // (including channel lifecycle + key rotation, whose
+        // chat_channel_id() is None) always pass so structure and key epochs
+        // reconcile fully (spec § Filter semantics).
+        if let Some(channels) = &self.channels {
+            if let Some(cid) = event.kind.chat_channel_id() {
+                if !channels.iter().any(|c| c == cid) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
 
 /// The Merkle-DAG of all known events across all authors.
 ///
@@ -113,17 +190,49 @@ impl EventDag {
     /// The first event must be `EventKind::CreateServer` with seq=1 and
     /// prev=ZERO. Unknown deps are silently accepted (soft-accept).
     pub fn insert(&mut self, event: Event) -> Result<(), InsertError> {
-        // 1. Verify signature.
+        // 1. Anti-DoS vector caps (SEC-V-07).
+        //
+        // A peer holding any permission could otherwise broadcast events
+        // with pathologically large `deps` or `encrypted_keys` blobs that
+        // every other peer would clone into a `BTreeMap` during apply.
+        // Reject at the inbound DAG boundary so over-cap events never
+        // even reach `applied_events` / `materialize`.
+        //
+        // ORDERING: cheap structural caps first; signature verify last to
+        // short-circuit DoS. Ed25519 + bincode + blake3 verify costs ~50µs
+        // per event — an attacker with `SendMessages` could otherwise force
+        // every receiver to pay that cost on each over-cap event before
+        // rejection. The syntactic checks here are O(1) / O(n) over already-
+        // deserialized fields, so running them first lets us drop pathological
+        // payloads without ever invoking the expensive crypto path.
+        if event.deps.len() > MAX_EVENT_DEPS {
+            return Err(InsertError::DepsTooLong {
+                got: event.deps.len(),
+                max: MAX_EVENT_DEPS,
+            });
+        }
+        if let EventKind::RotateChannelKey { encrypted_keys, .. } = &event.kind {
+            for (_, blob) in encrypted_keys {
+                if blob.len() > MAX_ENCRYPTED_KEY_BYTES {
+                    return Err(InsertError::EncryptedKeyTooLarge {
+                        got: blob.len(),
+                        max: MAX_ENCRYPTED_KEY_BYTES,
+                    });
+                }
+            }
+        }
+
+        // 2. Verify signature.
         if !event.verify() {
             return Err(InsertError::InvalidSignature);
         }
 
-        // 2. Check duplicate.
+        // 3. Check duplicate.
         if self.events.contains_key(&event.hash) {
             return Err(InsertError::Duplicate);
         }
 
-        // 3. Genesis check: first event must be CreateServer.
+        // 4. Genesis check: first event must be CreateServer.
         //    After genesis is set, reject any further CreateServer events.
         if self.genesis_hash.is_none() {
             match &event.kind {
@@ -143,7 +252,7 @@ impl EventDag {
             return Err(InsertError::DuplicateGenesis);
         }
 
-        // 4. Check seq: must be latest_seq + 1.
+        // 5. Check seq: must be latest_seq + 1.
         //    This also prevents equivocation: an author cannot insert two
         //    events at the same seq number because only seq = latest + 1
         //    is accepted. Combined with the prev-hash check below, this
@@ -157,7 +266,7 @@ impl EventDag {
             });
         }
 
-        // 5. Check prev: must match current head (or ZERO for seq=1).
+        // 6. Check prev: must match current head (or ZERO for seq=1).
         let expected_prev = self
             .heads
             .get(&event.author)
@@ -171,7 +280,7 @@ impl EventDag {
             });
         }
 
-        // 6. Governance structural checks: Vote events must causally
+        // 7. Governance structural checks: Vote events must causally
         //    depend on their proposal (via deps or prev) so topological
         //    sort always places the proposal before the vote.
         if let EventKind::Vote { proposal, .. } = &event.kind {
@@ -183,7 +292,7 @@ impl EventDag {
             }
         }
 
-        // 7. Insert.
+        // 8. Insert.
         let hash = event.hash;
         let author = event.author;
         self.events.insert(hash, event);
@@ -284,6 +393,27 @@ impl EventDag {
         their_heads: &std::collections::BTreeMap<EndpointId, u64>,
         limit: Option<usize>,
     ) -> Vec<&Event> {
+        self.events_since_filtered(their_heads, None, limit)
+    }
+
+    /// Like [`EventDag::events_since`], but additionally drops any event that
+    /// does not pass `filter` (when `Some`).
+    ///
+    /// Filtering is applied **after** the per-author `seq` cursor and **before**
+    /// the `limit` cap, so `limit` bounds the number of *returned* (post-filter)
+    /// events. Passing `None` is identical to [`EventDag::events_since`].
+    ///
+    /// Per-author monotonicity is preserved: within each author we still walk
+    /// `seq` ascending from `their_seq`, so the surviving events for any author
+    /// remain a contiguous-by-seq, gap-free, duplicate-free ascending run
+    /// (subject to the filter removing some). Authors the requester listed but
+    /// we don't know are silently skipped — we cannot serve what we don't have.
+    pub fn events_since_filtered(
+        &self,
+        their_heads: &std::collections::BTreeMap<EndpointId, u64>,
+        filter: Option<&EventFilter>,
+        limit: Option<usize>,
+    ) -> Vec<&Event> {
         let mut result = Vec::new();
         for (author, chain) in &self.chains {
             let their_seq = their_heads.get(author).copied().unwrap_or(0);
@@ -294,11 +424,21 @@ impl EventDag {
                     }
                 }
                 if let Some(event) = self.events.get(hash) {
-                    result.push(event);
+                    if filter.is_none_or(|f| f.matches(event)) {
+                        result.push(event);
+                    }
                 }
             }
         }
         result
+    }
+
+    /// Every author with at least one event in the DAG, in arbitrary order.
+    ///
+    /// Used by a sync responder to pick up authors the requester never
+    /// mentioned in its `HeadsSummary` (those default to `known_max = 0`).
+    pub fn known_authors(&self) -> Vec<EndpointId> {
+        self.chains.keys().copied().collect()
     }
 
     // ── Topological sort ────────────────────────────────────────────
@@ -641,6 +781,48 @@ mod tests {
         event.author = id_b.endpoint_id();
         let err = dag.insert(event).unwrap_err();
         assert!(matches!(err, InsertError::InvalidSignature));
+    }
+
+    /// SEC-V-07 regression: structural caps must short-circuit BEFORE the
+    /// expensive Ed25519 verify path, so an attacker with `SendMessages`
+    /// permission cannot force receivers to pay sig-verify cost on
+    /// pathologically over-cap events. Construct an event whose signature
+    /// is obviously bogus AND whose deps exceed `MAX_EVENT_DEPS`; we expect
+    /// `DepsTooLong` (not `InvalidSignature`), which proves the cheap cap
+    /// was checked first.
+    #[test]
+    fn insert_deps_cap_rejects_before_signature_verify() {
+        use willow_identity::Signature;
+
+        let id = Identity::generate();
+        let mut dag = test_dag(&id);
+
+        // Build an event with deps.len() > MAX_EVENT_DEPS, then clobber the
+        // signature with all-zero bytes so that any attempt to verify would
+        // fail. If verify ran first we'd see `InvalidSignature`; if the
+        // structural cap runs first we get `DepsTooLong`.
+        let oversize_deps = vec![EventHash::ZERO; MAX_EVENT_DEPS + 1];
+        let mut event = dag.create_event(
+            &id,
+            EventKind::SetProfile {
+                display_name: "dos".into(),
+            },
+            oversize_deps,
+            0,
+        );
+        event.sig = Signature::from_bytes(&[0u8; 64]);
+
+        let err = dag.insert(event).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                InsertError::DepsTooLong {
+                    got,
+                    max: MAX_EVENT_DEPS,
+                } if got == MAX_EVENT_DEPS + 1
+            ),
+            "expected DepsTooLong (cheap cap first), got {err:?}",
+        );
     }
 
     #[test]

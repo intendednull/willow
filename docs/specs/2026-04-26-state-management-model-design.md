@@ -27,6 +27,20 @@ Every shared-mutable-state decision in the codebase has an obvious, documented a
 - **In scope:** Written rule + decision tree in `CLAUDE.md` and this spec. Refactor of all 6 audit hotspots. Inline `// state: lock-ok — <reason>` comments on every legitimate remaining lock. Test coverage at the new actor boundaries (client tier).
 - **Out of scope:** Mechanical CI gate (rejected — too many false positives, agent-context awareness preferred). Changes to the actor framework itself. Changes to iroh layer locks (documented as boundary). Changes to native worker runtime. Performance optimisation. New features.
 
+## Prior Art
+
+The "state lives in an actor, not behind a shared lock" rule descends from a long lineage of message-passing concurrency models:
+
+| Source | Idea adopted (or diverged from) |
+|---|---|
+| **Hewitt, Bishop & Steiger, "A Universal Modular ACTOR Formalism for Artificial Intelligence"** (IJCAI, 1973) | Original actor model: a single actor owns its state and mutates it only in response to messages — no shared memory. Willow's `StateActor<S>` is a direct descendant: one task owns `S`, callers send messages. |
+| **Hoare, "Communicating Sequential Processes"** (CACM 21(8), 1978) and Go's proverb *"Do not communicate by sharing memory; instead, share memory by communicating"* | CSP channels as the synchronization primitive. Willow replaces `Arc<Mutex<T>>` with a tokio mpsc channel into the owning task — the practical expression of this proverb. |
+| **Erlang/OTP `gen_server`** | Shared-nothing processes with single-process state ownership and a generic request/reply (`call`/`cast`) behaviour. Willow's bespoke domain-message actors (e.g. `SearchActor`) mirror `gen_server`'s explicit message protocol; generic `StateActor<S>` mirrors its `call`/`cast` genericity. Willow omits OTP supervision trees. |
+| **Akka** (typed actors, `ask`/`tell`, supervision) | Re-popularized actors on the JVM with typed messages and request (`ask`) vs fire-and-forget (`tell`). Willow's actor handles distinguish awaited mutations from fire-and-forget sends along the same lines, without Akka's full supervision/clustering surface. |
+| **actix** (Rust `Actor`/`Handler<M>`/`Addr`), **ractor** (Erlang-OTP-inspired Rust actors), **kameo** (Rust actor framework) | Existing Rust actor crates demonstrating the pattern is idiomatic in Rust. Willow deliberately ships a minimal in-tree `willow-actor` instead of adopting one, to keep a small dual-target (native + WASM) surface and avoid a heavy framework dependency. |
+| **Ryhl, "Actors with Tokio"** (ryhl.io, 2021) | The canonical Rust-on-Tokio recipe: split an actor into a channel-owned task plus a cheap `Clone` handle, instead of `Arc<Mutex<T>>`. This is the concrete template `willow-actor`'s `StateActor<S>` generalizes. |
+| **Leptos** fine-grained reactive signals, after **SolidJS** | Signal/effect graph where reads auto-subscribe and writes notify dependents. Willow keeps this as the sanctioned exception for reactive UI state (`RwSignal`, `Resource`, `Memo`, `Effect`) rather than forcing UI state through an actor. |
+
 ## Architecture
 
 ### The rule
@@ -216,6 +230,7 @@ Add a `## State Management` section between the existing `## Repository Structur
 > | WASM single-threaded interior mut | `Rc<RefCell<_>>` (web only) |
 > | Reactive UI state in web | Leptos signal (`RwSignal`, `Resource`) |
 > | Web state mutated from non-Leptos context | `StateActor<S>` |
+> | Web actor-handler dedup cache (deferred to F2) | `Arc<Mutex<Option<U>>>` + `// state: lock-ok` citing § F2 |
 >
 > No `Arc<Mutex<T>>` / `Arc<RwLock<T>>` / `parking_lot::*` for business state. New locks need a `// state: lock-ok` comment with rationale. Full discussion: `docs/specs/2026-04-26-state-management-model-design.md`.
 
@@ -277,7 +292,7 @@ Trigger: open as a dedicated PR titled `refactor(client+web): eliminate Nickname
 
 ### F2. Re-evaluate `state_bridge.rs` cache shape
 
-The `Arc<Mutex<Option<U>>>` async result cache in `crates/web/src/state_bridge.rs` is annotated `// state: lock-ok` in this PR. Whether the right replacement is a Leptos `Resource`, an explicit derived state actor, or a redesign that eliminates the cache entirely needs a closer look at the bridge's call sites. Touch this when F1 lands, since the trait elimination will simplify the bridge.
+The `Arc<Mutex<Option<U>>>` async result cache in `crates/web/src/state_bridge.rs` is annotated `// state: lock-ok` in this PR. Whether the right replacement is a Leptos `Resource`, an explicit derived state actor, or a redesign that eliminates the cache entirely needs a closer look at the bridge's call sites. Touch this when F1 lands, since the trait elimination will simplify the bridge. The CLAUDE.md-addition decision table above carries a row for this exception so the spec stays self-consistent until F2 lands.
 
 ### F3. Custom clippy lint or grep gate (optional)
 

@@ -216,7 +216,23 @@ impl<N: willow_network::Network> ClientHandle<N> {
         self.mutation_handle.broadcast_on_topic(topic, data);
     }
 
-    pub fn send_join_request(&self, link_id: &str) {
+    /// Broadcast a `JoinRequest` to the inviter for `link_id` and
+    /// record the pending attempt so subsequent `JoinResponse` /
+    /// `JoinDenied` messages can be authenticated against the expected
+    /// `inviter_peer_id`.
+    ///
+    /// `inviter_peer_id` is taken straight from the
+    /// [`ops::JoinToken::inviter_peer_id`] the caller decoded; the
+    /// listener uses it to drop spoofed responses signed by anyone else
+    /// (issue #309 / SEC-A-07).
+    pub fn send_join_request(&self, link_id: &str, inviter_peer_id: willow_identity::EndpointId) {
+        // Record the pending attempt BEFORE broadcasting. If the inviter
+        // races us and replies before we've populated the map, the
+        // listener would otherwise drop the legitimate response with a
+        // "no outstanding join request" debug log.
+        self.pending_joins
+            .lock()
+            .insert(link_id.to_string(), inviter_peer_id);
         let msg = ops::WireMessage::JoinRequest {
             link_id: link_id.to_string(),
             peer_id: self.identity.endpoint_id(),
@@ -255,6 +271,20 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let profiles = willow_actor::state::get(&self.profile_state_addr).await;
         let inviter_name = profiles.names.get(&pid).cloned().unwrap_or_default();
 
+        // Layer-3 bootstrap hint (outbox-relay-discovery spec, "Bootstrap flow
+        // for share links" step 5): ship the server's live, un-revoked
+        // `SyncProvider` endpoints in the token so a joiner can resolve them via
+        // pkarr (Layer 1) before falling back to the configured relay. These are
+        // self-certifying `EndpointId`s — a tampered list causes connection
+        // failure, not state forgery (pinned decision Q1, deferred signing).
+        let bootstrap_endpoint_ids: Vec<willow_identity::EndpointId> =
+            willow_actor::state::select(&self.event_state_addr, |es| {
+                crate::relay_discovery::enumerate_sync_providers(es)
+                    .into_iter()
+                    .collect()
+            })
+            .await;
+
         let link = ops::JoinLink {
             link_id: uuid::Uuid::new_v4().to_string(),
             server_id: server_id.clone(),
@@ -266,12 +296,14 @@ impl<N: willow_network::Network> ClientHandle<N> {
         };
         let token = ops::JoinToken {
             inviter_peer_id: pid,
-            server_id,
+            server_id: server_id.clone(),
             link_id: link.link_id.clone(),
             server_name,
             inviter_name,
+            bootstrap_endpoint_ids,
         };
         self.join_links.lock().push(link);
+        self.persist_join_links_for(&server_id);
         Ok(token.encode())
     }
 
@@ -281,14 +313,48 @@ impl<N: willow_network::Network> ClientHandle<N> {
 
     pub async fn delete_join_link(&self, link_id: &str) {
         let link_id = link_id.to_string();
+        // Find which server this link belongs to before we drop it so we
+        // can persist the post-delete state for that server.
+        let server_id = self
+            .join_links
+            .lock()
+            .iter()
+            .find(|l| l.link_id == link_id)
+            .map(|l| l.server_id.clone());
         self.join_links.lock().retain(|l| l.link_id != link_id);
+        if let Some(sid) = server_id {
+            self.persist_join_links_for(&sid);
+        }
+    }
+
+    /// Snapshot the current join-links for `server_id` and forward them
+    /// to the persistence actor. No-op when persistence is disabled (the
+    /// handler itself short-circuits in that case, but checking here
+    /// avoids an unnecessary actor round-trip).
+    fn persist_join_links_for(&self, server_id: &str) {
+        if !self.persistence_enabled {
+            return;
+        }
+        let links: Vec<ops::JoinLink> = self
+            .join_links
+            .lock()
+            .iter()
+            .filter(|l| l.server_id == server_id)
+            .cloned()
+            .collect();
+        let _ = self
+            .persistence_addr
+            .do_send(crate::persistence_actor::PersistJoinLinks {
+                server_id: server_id.to_string(),
+                links,
+            });
     }
 
     pub async fn set_display_name(&self, name: &str) {
         let pid = self.identity.endpoint_id();
         let name = name.to_string();
         willow_actor::state::mutate(&self.profile_state_addr, move |p| {
-            p.names.insert(pid, name);
+            p.insert_name(pid, name);
         })
         .await;
         self.broadcast_profile_via_network();
@@ -326,8 +392,8 @@ impl<N: willow_network::Network> ClientHandle<N> {
         let profiles = willow_actor::state::get(&self.profile_state_addr).await;
         willow_actor::state::mutate(&self.network_meta_addr, move |n| {
             let now = util::current_time_ms();
-            n.typing_peers
-                .retain(|_, (_, ts)| now - *ts < crate::TYPING_INDICATOR_TTL_MS);
+            // Keep map + recency in lockstep: helper drops both.
+            n.sweep_typing(now, crate::TYPING_INDICATOR_TTL_MS);
             n.typing_peers
                 .iter()
                 .filter(|(pid, (ch, _))| ch == &channel && *pid != &my_id)
@@ -338,7 +404,7 @@ impl<N: willow_network::Network> ClientHandle<N> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     //! Tests for the client-side auth guards on invite generation.
     //!
@@ -347,6 +413,7 @@ mod tests {
     //!     `CreateInvite` permission.
     //!   * `generate_invite` must record the real `genesis_author` in the
     //!     invite payload rather than an arbitrary admin.
+    use crate::ops::JoinToken;
     use crate::test_client;
     use willow_state::Permission;
 
@@ -393,6 +460,56 @@ mod tests {
         assert!(
             err.to_string().contains("CreateInvite"),
             "error should name the missing permission, got: {err}"
+        );
+    }
+
+    /// PR 6 Task 6.4 — `create_join_link` ships the server's live
+    /// `SyncProvider` endpoints in the token's `bootstrap_endpoint_ids` so a
+    /// joiner can resolve them via pkarr before the relay fallback
+    /// (outbox-relay-discovery spec, "Bootstrap flow for share links"). Only
+    /// *live* explicit grants belong there: a revoked grant — absent from
+    /// `peer_permissions` — must not appear, and implicit admin/owner authority
+    /// (no explicit `SyncProvider` grant) must not either.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn create_join_link_carries_live_sync_provider_bootstrap_ids() {
+        let (client, _rx) = test_client();
+
+        // A worker holding a live SyncProvider grant — belongs in the token.
+        let worker = willow_identity::Identity::generate().endpoint_id();
+        // A peer whose SyncProvider grant has been revoked (i.e. is simply
+        // absent from peer_permissions) — must NOT appear.
+        let revoked = willow_identity::Identity::generate().endpoint_id();
+        // The owner (local identity) holds SyncProvider *implicitly* via
+        // genesis authority but has no explicit grant — must NOT appear.
+        willow_actor::state::mutate(&client.event_state_addr, move |es| {
+            es.peer_permissions
+                .entry(worker)
+                .or_default()
+                .insert(Permission::SyncProvider);
+            // `revoked` deliberately left out of peer_permissions to model a
+            // revoked/absent grant; `client.identity` left without an explicit
+            // SyncProvider entry to model implicit owner authority.
+            let _ = revoked;
+        })
+        .await;
+
+        let code = client
+            .create_join_link(5, None)
+            .await
+            .expect("owner must mint a join link");
+
+        let token = JoinToken::decode(&code).expect("join link must decode");
+        assert_eq!(
+            token.bootstrap_endpoint_ids,
+            vec![worker],
+            "token must carry exactly the live explicit SyncProvider grants — \
+             not revoked grants, not implicit owner authority"
+        );
+        assert!(
+            !token
+                .bootstrap_endpoint_ids
+                .contains(&client.identity.endpoint_id()),
+            "implicit owner authority must not be advertised as a bootstrap ID"
         );
     }
 

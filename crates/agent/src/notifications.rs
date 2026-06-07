@@ -114,6 +114,18 @@ pub fn event_to_json(event: &ClientEvent) -> serde_json::Value {
             r#type: "SyncCompleted",
             data: serde_json::json!({ "ops_applied": ops_applied }),
         }),
+        ClientEvent::HistorySynced {
+            topic,
+            provider,
+            still_pending,
+        } => to_value(&NotificationPayload {
+            r#type: "HistorySynced",
+            data: serde_json::json!({
+                "topic": topic,
+                "provider": provider.to_string(),
+                "still_pending": still_pending,
+            }),
+        }),
         ClientEvent::RoleCreated { name, role_id } => to_value(&NotificationPayload {
             r#type: "RoleCreated",
             data: serde_json::json!({
@@ -250,7 +262,7 @@ pub fn event_to_json(event: &ClientEvent) -> serde_json::Value {
     }
 }
 
-/// All 31 event type names for validation.
+/// All 32 event type names for validation.
 pub const EVENT_TYPE_NAMES: &[&str] = &[
     "MessageReceived",
     "MessageEdited",
@@ -266,6 +278,7 @@ pub const EVENT_TYPE_NAMES: &[&str] = &[
     "FileAnnounced",
     "Listening",
     "SyncCompleted",
+    "HistorySynced",
     "RoleCreated",
     "RoleDeleted",
     "ProposalCreated",
@@ -302,8 +315,8 @@ mod tests {
     use willow_identity::Identity;
 
     #[test]
-    fn all_31_event_types_listed() {
-        assert_eq!(EVENT_TYPE_NAMES.len(), 31);
+    fn all_32_event_types_listed() {
+        assert_eq!(EVENT_TYPE_NAMES.len(), 32);
     }
 
     #[test]
@@ -379,6 +392,11 @@ mod tests {
             },
             ClientEvent::Listening("topic".into()),
             ClientEvent::SyncCompleted { ops_applied: 5 },
+            ClientEvent::HistorySynced {
+                topic: "aa".repeat(32),
+                provider: id,
+                still_pending: 0,
+            },
             ClientEvent::RoleCreated {
                 name: "mod".into(),
                 role_id: "r1".into(),

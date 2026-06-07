@@ -6,7 +6,28 @@
 //! networking — just DAG operations and deterministic state projection.
 
 #[cfg(test)]
-mod tests;
+#[path = "tests/dag.rs"]
+mod tests_dag;
+
+#[cfg(test)]
+#[path = "tests/materialize.rs"]
+mod tests_materialize;
+
+#[cfg(test)]
+#[path = "tests/permissions.rs"]
+mod tests_permissions;
+
+#[cfg(test)]
+#[path = "tests/stress.rs"]
+mod tests_stress;
+
+#[cfg(test)]
+#[path = "tests/sync.rs"]
+mod tests_sync;
+
+#[cfg(test)]
+#[path = "tests/voting.rs"]
+mod tests_voting;
 
 pub mod dag;
 pub mod ephemeral;
@@ -19,7 +40,7 @@ pub mod sync;
 pub mod types;
 
 // Re-exports for convenience.
-pub use dag::{EventDag, InsertError};
+pub use dag::{EventDag, EventFilter, InsertError};
 pub use ephemeral::{
     derive_ephemeral_state, EphemeralConfig, EphemeralKind, EphemeralState,
     DEFAULT_CHANNEL_THRESHOLD_MS, DEFAULT_THREAD_THRESHOLD_MS, DEFAULT_WHISPER_THRESHOLD_MS,
@@ -35,6 +56,6 @@ pub use sync::{
     DEFAULT_PENDING_MAX_AGE_MS, DEFAULT_PENDING_MAX_ENTRIES,
 };
 pub use types::{
-    Channel, ChannelKind, ChatMessage, CrestPattern, Member, MuteState, PinnedFragment, PinnedKind,
-    Profile, ProfileDelta, Role,
+    Channel, ChannelKind, ChatMessage, CrestPattern, FileAttachment, Member, MuteState,
+    PinMetadata, PinnedFragment, PinnedKind, Profile, ProfileDelta, Role,
 };

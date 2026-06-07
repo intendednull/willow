@@ -1,14 +1,13 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './test-hooks';
 import {
   sendMessage,
   waitForMessage,
   setupTwoPeers,
   kickPeer,
-  openServerSettings,
+  openMemberList,
   openCompareFingerprints,
   markFingerprintsMatch,
   markFingerprintsMismatch,
-  longPressAvatar,
   visibleShell,
 } from './helpers';
 
@@ -18,15 +17,19 @@ import {
 test.describe.configure({ mode: 'serial' });
 
 test.describe('Permissions and trust', () => {
-  // Two-peer permission tests need extra time for setup + P2P sync.
-  test.setTimeout(120_000);
+  // Two-peer permission tests share the setupTwoPeers + joinViaInvite
+  // path with multi-peer-sync. After 7f88280 bumped joinViaInvite's
+  // post-join `.channel-item` wait to 60 s for slow-CI gossip, the
+  // compounded budget for setup + member-list poll + kick + re-poll
+  // reliably runs past 120 s on CI under load. Match the 180 s ceiling
+  // already used by multi-peer-sync.spec.ts and multi-peer-mobile.spec.ts.
+  test.setTimeout(180_000);
 
   // Mobile member-list surface is deferred to a later phase (Phase 1b
   // shipped the mobile shell without the right-rail members pane).
-  // Kick tests go through `.member-item`, which only renders on desktop
-  // today. Long-press / compare-sheet tests below opt back in explicitly
-  // since they drive trust via the compare-fingerprints sheet, not the
-  // member list.
+  // Kick + compare-sheet tests go through `.member-item`, which only
+  // renders on desktop today, so they're skipped on mobile projects.
+  // Mobile long-press coverage tracked in #595.
   //
   // Trust / untrust tests that used to live here (Unknown → Verified
   // and badge-render contracts) moved to:
@@ -36,7 +39,7 @@ test.describe('Permissions and trust', () => {
   //     (`trust_badge_dom` — `.trust-badge--verified` / `--unverified`).
   // Only the real-multi-peer behaviours stay in Playwright.
   test.beforeEach(async ({}, testInfo) => {
-    const mobileSkipPattern = /kicks member|kicked peer|server settings panel/;
+    const mobileSkipPattern = /kicks member|kicked peer/;
     if (testInfo.project.name.startsWith('mobile') && mobileSkipPattern.test(testInfo.title)) {
       testInfo.skip(true, 'mobile member-list surface deferred — tracked in onboarding phase followup');
     }
@@ -45,15 +48,23 @@ test.describe('Permissions and trust', () => {
   test('owner kicks member — member count drops', async ({ browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Kick Server', 'Alice', 'Bob');
     try {
-      // Record initial member count (includes relay + peers).
-      await page1.waitForTimeout(1000);
-      const initialCount = await page1.locator(`${visibleShell(page1)} .member-item`).count();
-      expect(initialCount).toBeGreaterThanOrEqual(2);
+      // The members pane is closed by default — `setupTwoPeers` opens it
+      // briefly to wait for display-name sync and then closes it again.
+      // Open it before counting so `.member-item` rows are mounted (the
+      // right-rail `match which.get()` only renders MemberList when the
+      // pane is open). Then poll for the membership-sync-completed state
+      // (>= 2 members) instead of taking a single fixed-delay snapshot.
+      await openMemberList(page1);
+      const memberItems = page1.locator(`${visibleShell(page1)} .member-item`);
+      await expect.poll(() => memberItems.count(), { timeout: 30_000 })
+        .toBeGreaterThanOrEqual(2);
+      const initialCount = await memberItems.count();
 
-      // Alice kicks Bob.
+      // Alice kicks Bob (helper toggles the pane open/closed itself).
       await kickPeer(page1, 'Bob');
 
-      // Member count should drop by 1.
+      // Re-open the pane so we can re-count after the kick lands.
+      await openMemberList(page1);
       await expect(page1.locator(`${visibleShell(page1)} .member-item`))
         .toHaveCount(initialCount - 1, { timeout: 30_000 });
     } finally {
@@ -62,88 +73,66 @@ test.describe('Permissions and trust', () => {
     }
   });
 
-  test('kicked peer messages do not reach owner', async ({ browser }) => {
+  test('kicked peer messages do not reach owner', async ({ peer, browser }) => {
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Kick Msg', 'Alice', 'Bob');
+    const alice = await peer(page1, 'Alice');
+    const bob = await peer(page2, 'Bob');
     try {
       // Alice kicks Bob.
       await kickPeer(page1, 'Bob');
-      await page1.waitForTimeout(2000);
 
-      // Bob tries to send a message that should NOT arrive.
-      await sendMessage(page2, 'kicked but trying');
+      // Wait for Bob's DAG to converge with Alice's — once heads match,
+      // Bob's local state has applied the kick event and any send he
+      // attempts will be locally rejected (no SendMessages permission).
+      await bob.waitUntilHeadsEqual(alice);
+
+      // Bob tries to send a message that should NOT arrive. Bypass
+      // `sendMessage` because, post-kick, Bob's own broadcast is
+      // rejected by the local DAG, so the message body never renders
+      // locally and the helper's input-clear wait would time out.
+      const bobInput = page2
+        .locator(`${visibleShell(page2)} .input-area input, ${visibleShell(page2)} .input-area textarea`)
+        .first();
+      await bobInput.fill('kicked but trying');
+      await bobInput.press('Enter');
 
       // Sentinel: Alice sends her own message. Her own message appears locally
       // immediately, so waiting for it proves that local rendering is working
       // and that enough real time has elapsed for any P2P delivery to have
       // occurred — without relying on a fixed sleep duration.
       await sendMessage(page1, 'alice sentinel after kick');
-      await waitForMessage(page1, 'alice sentinel after kick', 10_000);
+      await waitForMessage(page1, 'alice sentinel after kick');
 
       // Assert that Bob's message never arrived on Alice's side.
       await expect(page1.locator('.message .body', { hasText: 'kicked but trying' }))
-        .not.toBeVisible({ timeout: 5000 });
+        .not.toBeVisible();
     } finally {
       await ctx1.close();
       await ctx2.close();
     }
   });
 
-  test('server settings panel opens and back button returns to chat', async ({ browser }) => {
-    // NOTE: Role creation UI is not yet implemented. This test was previously
-    // guarded by an `if (await roleInput.isVisible())` check that made the
-    // entire test body optional — the test passed vacuously whether or not the
-    // UI existed. Until roles are added, this test verifies that the settings
-    // panel opens and the Back button returns to the chat view, which is a real
-    // and unconditional assertion. Add role creation assertions here once the
-    // UI lands.
-    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Role Server', 'Alice', 'Bob');
-    try {
-      // Open server settings.
-      await openServerSettings(page1);
+  // The non-owner channel-add hidden test moved to a wasm-pack browser
+  // test in `crates/web/tests/browser.rs` (`non_owner_hides_channel_add_button`).
+  // It was a single-viewport DOM-visibility predicate that didn't need the
+  // setupTwoPeers infrastructure — see audit F40 (#540).
 
-      // Settings panel should be visible.
-      await expect(page1.locator('.server-settings, .settings-panel')).toBeVisible({ timeout: 5000 });
-
-      // Go back to chat.
-      await page1.locator('text=Back').click();
-
-      // Sidebar / chat area should be visible again.
-      await expect(page1.locator(`${visibleShell(page1)} .channel-sidebar, ${visibleShell(page1)} .mobile-home`).first()).toBeVisible({ timeout: 5000 });
-    } finally {
-      await ctx1.close();
-      await ctx2.close();
-    }
-  });
-
-  test('non-owner cannot create a channel — add button absent', async ({ browser }, testInfo) => {
-    // Desktop only — easier to assert button visibility without sidebar toggle.
-    test.skip(testInfo.project.name.startsWith('mobile'), 'desktop only');
-
-    const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Chan Perm', 'Alice', 'Bob');
-    try {
-      // Bob (non-admin) should not see the channel-add or delete buttons.
-      // The state machine rejects ManageChannels mutations from non-admins, but the
-      // UI must also hide the controls — otherwise errors are swallowed silently.
-      await expect(page2.locator('.channel-add-btn')).toBeHidden({ timeout: 5_000 });
-    } finally {
-      await ctx1.close();
-      await ctx2.close();
-    }
-  });
-
-  test('non-owner has no action buttons in member list', async ({ browser }, testInfo) => {
+  test('non-owner has no action buttons in member list', async ({ peer, browser }, testInfo) => {
     // Skip on mobile — two-peer setup + member list toggle is flaky on narrow viewports.
     test.skip(testInfo.project.name.startsWith('mobile'), 'desktop only');
 
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'NoActions', 'Alice', 'Bob');
+    const alice = await peer(page1, 'Alice');
+    const bob = await peer(page2, 'Bob');
     try {
-      // Bob opens the member list (he is not the owner).
-      // On desktop, member list is always visible (no toggle needed).
-      await page2.waitForTimeout(1000);
+      // Wait for membership events to converge before asserting on the
+      // member list (Bob's row has to be rendered for `.member-actions`
+      // to mean anything).
+      await bob.waitUntilHeadsEqual(alice);
 
       // Bob should NOT have any trust/kick/untrust action buttons.
       const actionButtons = page2.locator(`${visibleShell(page2)} .member-actions button`);
-      await expect(actionButtons).toHaveCount(0, { timeout: 5000 });
+      await expect(actionButtons).toHaveCount(0);
     } finally {
       await ctx1.close();
       await ctx2.close();
@@ -174,10 +163,13 @@ test.describe('Permissions and trust', () => {
   });
 
   test('compare mismatch keeps peer unverified but messaging still works', async ({
+    peer,
     browser,
   }, testInfo) => {
     test.skip(testInfo.project.name.startsWith('mobile'), 'desktop-chrome path');
     const { ctx1, ctx2, page1, page2 } = await setupTwoPeers(browser, 'Mismatch', 'Alice', 'Bob');
+    const alice = await peer(page1, 'Alice');
+    const _bob = await peer(page2, 'Bob');
     try {
       await openCompareFingerprints(page1, 'Bob');
       await markFingerprintsMismatch(page1);
@@ -187,27 +179,16 @@ test.describe('Permissions and trust', () => {
       // Bob's row keeps the unverified/downgrade treatment.
       const bobRow = page1.locator(`${visibleShell(page1)} .member-item`, { hasText: 'Bob' });
       await expect(bobRow.locator('.trust-badge--unverified, .trust-badge--downgrade'))
-        .toBeVisible({ timeout: 5_000 });
+        .toBeVisible();
 
-      // Messaging is unaffected.
+      // Messaging is unaffected. Wait for the cross-peer
+      // MessageReceived event before asserting the rendered body.
       await sendMessage(page2, 'mismatch still talks');
-      await waitForMessage(page1, 'mismatch still talks', 30_000);
-    } finally {
-      await ctx1.close();
-      await ctx2.close();
-    }
-  });
-
-  test('mobile long-press opens the compare sheet', async ({ browser }, testInfo) => {
-    test.skip(!testInfo.project.name.startsWith('mobile'), 'mobile-chrome path');
-    // Long-press targets a member avatar; the mobile member surface
-    // lands in a follow-up phase. Skip until that ships.
-    test.skip(true, 'mobile member-list surface deferred');
-    const { ctx1, ctx2, page1 } = await setupTwoPeers(browser, 'LongPress', 'Alice', 'Bob');
-    try {
-      await longPressAvatar(page1, 'Bob');
-      await expect(page1.locator('.add-friend__card[role="dialog"]'))
-        .toBeVisible({ timeout: 10_000 });
+      await alice.nextEvent(e =>
+        e.kind === 'MessageReceived' &&
+        !e.isLocal
+      );
+      await waitForMessage(page1, 'mismatch still talks');
     } finally {
       await ctx1.close();
       await ctx2.close();

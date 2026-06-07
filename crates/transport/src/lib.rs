@@ -27,7 +27,18 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 /// Current protocol version. Bumped whenever the wire format changes in an
 /// incompatible way.
-pub const PROTOCOL_VERSION: u16 = 1;
+///
+/// Version 2 (phase 3b, 2026-05-08): `Content::File` gained optional
+/// `width` / `height` trailing fields. bincode is positional and does
+/// not honour `#[serde(default)]` for missing trailing fields, so a
+/// pre-3b peer trying to decode a post-3b payload will fail at the
+/// envelope layer instead of silently corrupting state. Old relay /
+/// storage workers reject the post-3b envelope with
+/// `TransportError::UnsupportedVersion` rather than truncating the
+/// payload, so archival storage stays consistent across the upgrade
+/// window. See `docs/plans/2026-05-08-ui-phase-3b-files-inline.md`
+/// §Architecture.
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Maximum byte size for deserialization. Payloads exceeding this limit are
 /// rejected before allocation. Set above the gossip layer's 64 KB
@@ -76,6 +87,15 @@ pub enum MessageType {
     Presence = 5,
     /// Application-level ping / keep-alive.
     Ping = 6,
+    // Reserved for future promotion (do not allocate now):
+    //   7 = HistorySyncComplete / EOSE  (see specs/2026-04-24-history-sync-eose.md)
+    //   8 = Sync                          (see specs/2026-04-24-negentropy-sync.md)
+    // The heads-based sync (`SyncRequestV2` / `SyncBatchV2`) and the EOSE
+    // marker currently ride the existing `MessageType::Channel` envelope as
+    // additive `WireMessage` variants; these slots are held so the two specs
+    // can never collide on a number if either is later hoisted to a dedicated
+    // top-level `MessageType`. See docs/plans/2026-05-28-relay-upgrade-bundle.md
+    // (pinned decision #1). Allocate neither now.
 }
 
 // ───── Envelope ──────────────────────────────────────────────────────────────

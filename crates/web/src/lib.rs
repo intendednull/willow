@@ -17,8 +17,14 @@ pub mod keybindings;
 pub mod notifications;
 pub mod palette_recents;
 pub mod profile;
+pub mod reaction_recency;
+pub mod service_worker_bridge;
 pub mod state;
 pub mod state_bridge;
+#[cfg(feature = "test-hooks")]
+pub mod test_hooks;
 pub mod trust_store;
+pub mod upload_state;
 pub mod util;
 pub mod voice;
+pub mod voice_note_player;

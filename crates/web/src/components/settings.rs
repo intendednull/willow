@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use willow_client::presence::{PresenceOverride, PresenceState};
 
 use crate::app::WebClientHandle;
-use crate::components::{RoleManager, StatusDot, StatusDotBorder, StatusDotSize};
+use crate::components::{RoleManager, StatusDot, StatusDotBorder, StatusDotSize, ToastStack};
 use crate::icons;
 use crate::state::{AppState, SettingsTab};
 use crate::util::copy_to_clipboard;
@@ -54,8 +54,18 @@ pub fn SettingsPanel(
         if !name.trim().is_empty() {
             let h = handle_save.clone();
             let name = name.trim().to_string();
+            // Capture toast stack on the outer reactive frame —
+            // `spawn_local` strips the owner so `use_context` inside
+            // the async block would return None.
+            let toasts = use_context::<ToastStack>();
             wasm_bindgen_futures::spawn_local(async move {
-                let _ = h.set_server_display_name(&name).await;
+                if let Err(e) = h.set_server_display_name(&name).await {
+                    crate::handlers::warn_and_toast_with(
+                        "set server display name",
+                        &e,
+                        toasts.as_ref(),
+                    );
+                }
             });
         }
         set_status_msg.set("Saved.".to_string());
@@ -229,6 +239,12 @@ pub fn SettingsPanel(
                 {
                     let (link_copied, set_link_copied) = signal(false);
                     let (link_list, set_link_list) = signal(Vec::new());
+                    // Spec defaults: max_uses=5, expires=never. Surfaced as
+                    // an `<details>` disclosure so the common case stays a
+                    // one-click action.
+                    let (max_uses, set_max_uses) = signal(5u32);
+                    // Encoded as seconds from now; 0 sentinels "never expires".
+                    let (expires_seconds, set_expires_seconds) = signal(0u64);
 
                     // Load initial link list asynchronously.
                     {
@@ -244,8 +260,18 @@ pub fn SettingsPanel(
                     let on_create_link = move |_| {
                         let h = handle_gen.clone();
                         let set_ll = set_link_list;
+                        let mu = max_uses.get_untracked().max(1);
+                        let exp_secs = expires_seconds.get_untracked();
+                        let expires_at = if exp_secs == 0 {
+                            None
+                        } else {
+                            // `js_sys::Date::now()` returns ms-since-epoch as
+                            // f64; cast saturates above u64::MAX which is
+                            // billions of years away and not a real concern.
+                            Some((js_sys::Date::now() as u64) + exp_secs * 1_000)
+                        };
                         wasm_bindgen_futures::spawn_local(async move {
-                            match h.create_join_link(5, None).await {
+                            match h.create_join_link(mu, expires_at).await {
                                 Ok(token) => {
                                     let origin = web_sys::window()
                                         .and_then(|w| w.location().origin().ok())
@@ -278,6 +304,45 @@ pub fn SettingsPanel(
                                     <span class="copied-tooltip">"Copied!"</span>
                                 })}
                             </div>
+                            <details class="invite-link-options">
+                                <summary>"Options"</summary>
+                                <div class="invite-link-options__row">
+                                    <label class="invite-link-options__label">
+                                        "Max uses"
+                                        <input
+                                            class="invite-link-options__max-uses"
+                                            type="number"
+                                            min="1"
+                                            max="999"
+                                            prop:value=move || max_uses.get()
+                                            on:input=move |ev| {
+                                                let v: String = event_target_value(&ev);
+                                                if let Ok(n) = v.parse::<u32>() {
+                                                    set_max_uses.set(n.clamp(1, 999));
+                                                }
+                                            }
+                                        />
+                                    </label>
+                                    <label class="invite-link-options__label">
+                                        "Expires"
+                                        <select
+                                            class="invite-link-options__expires"
+                                            prop:value=move || expires_seconds.get().to_string()
+                                            on:change=move |ev| {
+                                                let v: String = event_target_value(&ev);
+                                                if let Ok(n) = v.parse::<u64>() {
+                                                    set_expires_seconds.set(n);
+                                                }
+                                            }
+                                        >
+                                            <option value="0">"Never"</option>
+                                            <option value="3600">"1 hour"</option>
+                                            <option value="86400">"24 hours"</option>
+                                            <option value="604800">"7 days"</option>
+                                        </select>
+                                    </label>
+                                </div>
+                            </details>
 
                             <div class="invite-link-list">
                                 <For
@@ -435,8 +500,14 @@ fn NotificationsTabPlaceholder() -> impl IntoView {
             let target = !local_muted.get_untracked();
             set_local_muted.set(target);
             let h = handle.clone();
+            // Capture toast stack on the outer reactive frame —
+            // `spawn_local` strips the owner so `use_context` inside
+            // the async block would return None.
+            let toasts = use_context::<ToastStack>();
             wasm_bindgen_futures::spawn_local(async move {
-                let _ = h.mutate_grove_mute(target).await;
+                if let Err(e) = h.mutate_grove_mute(target).await {
+                    crate::handlers::warn_and_toast_with("mute server", &e, toasts.as_ref());
+                }
             });
         }
     };

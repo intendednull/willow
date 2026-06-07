@@ -10,6 +10,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   e2e:
     name: Playwright E2E
@@ -36,12 +39,25 @@ jobs:
           restore-keys: e2e-
 
       - name: Install just
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1 # v2.9.4 just
+        uses: taiki-e/install-action@50b4a718b59c718df4ef27a3b445f86cd57b9f00 # v2.79.3 just
         with:
           tool: just
 
       - name: Run full E2E flow (setup + tests + teardown)
         id: e2e
+        shell: bash --noprofile --norc -eo pipefail {0}
+        # PLAYWRIGHT_WORKERS=1: the multi-peer + cross-browser specs
+        # share a single relay + iroh-gossip mesh, and parallel cold
+        # starts make two peer pairs race on the relay handshake, so
+        # the first 30–50 s of dial timeouts blow past the per-spec
+        # deadline. Sequential execution keeps the warm-relay path
+        # the dominant cost; the full suite settles in ~8–10 min on
+        # a fresh runner. PLAYWRIGHT_RETRIES=0 mirrors local CI runs
+        # and keeps failures actionable instead of papering over them
+        # with flake retries.
+        env:
+          PLAYWRIGHT_WORKERS: '1'
+          PLAYWRIGHT_RETRIES: '0'
         run: just test-e2e-full 2>&1 | tee /tmp/e2e.log
       - name: Surface E2E failure
         if: failure() && steps.e2e.conclusion == 'failure'

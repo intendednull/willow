@@ -31,6 +31,20 @@ authorize them via `GrantPermission` like any other peer.
 - Future worker types (see below) — not implemented, but the architecture
   must accommodate them
 
+## Prior Art
+
+This design's central bet — always-on infrastructure nodes that are *just peers*, earning trust through the normal permission system rather than holding wire-level authority — has direct precedent across P2P systems. Each row notes what Willow's worker model borrows or where it diverges.
+
+| System | Relevance to worker nodes |
+|---|---|
+| **Nostr relays** (NIP-01) | Always-on, untrusted event stores: relays verify signatures and replay events to subscribers but hold no authority over content. Closely mirrors Willow workers — but Nostr relays *replace* P2P (clients only ever talk to relays), whereas Willow workers are optional accelerators layered over real peer-to-peer gossip. |
+| **Negentropy / range-based set reconciliation** (hoytech, NIP-77; underlying RBSR algorithm: Aljoscha Meyer, arXiv:2212.13567, Dec 2022 / SRDS 2023) | The catch-up problem Willow solves with `HeadsSummary` + event-replay. Negentropy reconciles two event sets via recursive range fingerprints. Willow deliberately reuses its existing gossip + heads-summary sync path for worker convergence instead of adding a dedicated reconciliation wire protocol — same goal (find the missing events), lighter mechanism. |
+| **Secure Scuttlebutt pubs** (ssbc) | Always-online peers in a signed-append-log gossip network that follow/replicate feeds for availability and NAT traversal — the archetype for "an always-on box that is still just a peer." (SSB *rooms*, by contrast, only broker tunneled connections without replicating feeds.) Willow's replay node is the pub analogue (re-serves state); a pub gains no special trust, exactly like a worker pre-`GrantPermission`. |
+| **Matrix homeservers** (spec.matrix.org, server-server federation) | The privileged-server model Willow explicitly rejects. A homeserver is authoritative for its users and is part of the trust boundary; losing it loses the account. Willow workers carry no authority — owners grant `SyncProvider` to a worker the same way they would any peer, and revoke it the same way. Contrast, not adoption. |
+| **IPFS pinning services** (Pinata, Infura) | Durable hosting of otherwise-ephemeral content-addressed data: dedicated always-on nodes pin content so the network doesn't garbage-collect it. Directly analogous to Willow's storage node, which archives every event indefinitely so history survives beyond any single peer's local cache. |
+| **Hypercore / Dat** (holepunchto / Dat Foundation) | Signed append-only logs replicated peer-to-peer, with always-on "pinning" peers that re-host data for availability. Matches Willow's per-author signed event chains plus storage-node re-hosting; differs in that Willow merges many authors' chains into one materialized `ServerState` rather than syncing independent logs. |
+| **Dynamo** (DeCandia et al., SOSP 2007) | Hinted handoff + anti-entropy (Merkle-tree) replica reconciliation: the lineage for "durable replicas that actively converge rather than passively receive." Willow's active-sync loop (workers broadcast `SyncRequest` to backfill anything gossip dropped) is the same idea — periodic anti-entropy on top of best-effort delivery — at a smaller scale. |
+
 ## Future Worker Types
 
 The `WorkerRole` trait and `RoleType` enum are designed to be extended.

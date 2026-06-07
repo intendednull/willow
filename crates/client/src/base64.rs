@@ -60,7 +60,7 @@ pub fn decode(input: &str) -> Option<Vec<u8>> {
     Some(result)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

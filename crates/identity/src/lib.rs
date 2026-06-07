@@ -333,6 +333,14 @@ impl std::fmt::Debug for Identity {
 // ───── Standalone verification ──────────────────────────────────────────────
 
 /// Verify a signature against a public key without needing an [`Identity`].
+///
+/// This delegates to [`PublicKey::verify`] from `iroh-base`, which internally
+/// uses `ed25519_dalek::VerifyingKey::verify_strict` (RFC 8032 strict mode).
+/// Strict verification rejects non-canonical signature encodings — in particular,
+/// signatures whose `S` component is not reduced modulo the curve order — which
+/// closes off Ed25519 signature malleability vectors. Defense in depth: any
+/// future change that bypasses `iroh-base`'s wrapper must continue to use the
+/// strict primitive.
 pub fn verify(key: &PublicKey, data: &[u8], sig: &Signature) -> bool {
     key.verify(data, sig).is_ok()
 }
@@ -745,6 +753,37 @@ mod tests {
         assert!(!verify(&id.public_key(), b"wrong data", &sig));
     }
 
+    /// Regression: `verify` must use strict Ed25519 verification (RFC 8032),
+    /// rejecting signatures whose `S` component is non-canonical (S ≥ ℓ).
+    ///
+    /// Setting the top bit of byte 63 of `S` makes `S` larger than the curve
+    /// order ℓ ≈ 2^252 + …, so non-strict verification might accept it while
+    /// strict verification must reject it. This pins the call-site invariant:
+    /// the underlying primitive is `verify_strict`, providing defense in depth
+    /// against signature malleability.
+    #[test]
+    fn verify_rejects_non_canonical_s_component() {
+        let id = Identity::generate();
+        let data = b"test data";
+        let sig = id.sign(data);
+
+        // Original signature is valid.
+        assert!(verify(&id.public_key(), data, &sig));
+
+        // Mutate the S scalar's high bit. S occupies bytes 32..64 of the
+        // signature; its most-significant byte is at index 63. Flipping the top
+        // bit pushes S above the curve order, producing a non-canonical encoding
+        // that strict verification rejects.
+        let mut bytes = sig.to_bytes();
+        bytes[63] ^= 0x80;
+        let mutated = Signature::from_bytes(&bytes);
+
+        assert!(
+            !verify(&id.public_key(), data, &mutated),
+            "verify must reject non-canonical S (signature malleability vector)"
+        );
+    }
+
     #[test]
     fn endpoint_id_hash_map_key() {
         use std::collections::HashMap;
@@ -845,6 +884,103 @@ mod tests {
 
         let result = unpack_profile(&data);
         assert!(result.is_err(), "tampered profile must not verify");
+    }
+
+    /// Issue #424: an `EndpointId` parsed from a string that is not valid hex
+    /// (and not a valid z32-encoded key) must fail with a parse error rather
+    /// than silently producing a bogus key. `EndpointId` aliases iroh's
+    /// `PublicKey`, whose `FromStr` impl rejects garbage input.
+    #[test]
+    fn endpoint_id_rejects_malformed_hex() {
+        use std::str::FromStr;
+
+        // Not hex, not z32, just a clearly-wrong string.
+        let result = EndpointId::from_str("not-a-valid-key!!!");
+        assert!(
+            result.is_err(),
+            "malformed string must not parse to an EndpointId, got: {result:?}"
+        );
+
+        // 64 chars but contains non-hex characters — should still fail.
+        let bad_hex = "z".repeat(64);
+        let result = EndpointId::from_str(&bad_hex);
+        assert!(
+            result.is_err(),
+            "non-hex 64-char string must not parse, got: {result:?}"
+        );
+
+        // Wrong length hex (too short).
+        let result = EndpointId::from_str("deadbeef");
+        assert!(
+            result.is_err(),
+            "short hex must not parse to an EndpointId, got: {result:?}"
+        );
+    }
+
+    /// Issue #424: feeding random / garbage bytes to `unpack_profile`
+    /// (which deserializes via `willow_transport::unpack`, i.e. bincode)
+    /// must surface as `IdentityError::Serde`, not a panic and not a
+    /// silent default-constructed profile.
+    #[test]
+    fn profile_decode_rejects_invalid_cbor() {
+        // Random-looking bytes that don't form a valid bincode-encoded
+        // `SignedMessage`. (The crate uses bincode under the hood, but
+        // the issue still names the test for historical reasons.)
+        let garbage: [u8; 16] = [
+            0xFF, 0x00, 0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+            0x42, 0x42,
+        ];
+
+        let err = unpack_profile(&garbage).unwrap_err();
+        match err {
+            IdentityError::Serde(_) => {}
+            other => panic!("expected IdentityError::Serde for garbage bytes, got {other:?}"),
+        }
+
+        // Empty input must also be rejected as a serialization error
+        // (bincode can't parse an empty buffer into a `SignedMessage`).
+        let err = unpack_profile(&[]).unwrap_err();
+        match err {
+            IdentityError::Serde(_) => {}
+            other => panic!("expected IdentityError::Serde for empty bytes, got {other:?}"),
+        }
+    }
+
+    /// Issue #424: malformed serialized envelope bytes — truncated mid-record
+    /// or otherwise non-decodable — must be rejected by `unpack` with
+    /// `IdentityError::Serde`. Exercises the outer-envelope deserialization
+    /// path, distinct from a tampered-but-well-formed payload (which is
+    /// covered by `tampered_payload_fails_verification`).
+    #[test]
+    fn unpack_rejects_truncated_envelope_bytes() {
+        let alice = Identity::generate();
+        let signed = pack(&String::from("hello"), &alice).unwrap();
+
+        // Truncate to roughly the first quarter of the envelope so that
+        // bincode can't reconstruct the `SignedMessage` framing
+        // (length prefixes / Vec contents will run off the end).
+        let truncated = &signed[..signed.len() / 4];
+        let err = unpack::<String>(truncated).unwrap_err();
+        match err {
+            IdentityError::Serde(_) => {}
+            other => panic!("expected IdentityError::Serde for truncated bytes, got {other:?}"),
+        }
+
+        // A `SignedMessage` whose `public_key` field is the wrong length
+        // must reach the verify path and fail with `PublicKeyDecode`,
+        // proving the signature path's malformed-bytes rejection works
+        // for well-framed but cryptographically-invalid inputs.
+        let bogus = SignedMessage {
+            public_key: vec![0u8; 7], // not 32 bytes
+            signature: vec![0u8; 64],
+            payload: willow_transport::pack(&String::from("anything")).unwrap(),
+        };
+        let bytes = willow_transport::pack(&bogus).unwrap();
+        let err = unpack::<String>(&bytes).unwrap_err();
+        match err {
+            IdentityError::PublicKeyDecode(_) => {}
+            other => panic!("expected IdentityError::PublicKeyDecode for short pk, got {other:?}"),
+        }
     }
 
     /// A key file with fewer than 32 bytes causes `load_or_generate` to return

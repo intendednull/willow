@@ -1,7 +1,77 @@
 # Agentic Peer API Design Spec
 
 **Date**: 2026-03-29
-**Status**: Draft
+**Status**: landed — `willow-agent` MCP binary, 36 tools, 14 resources, 31 notifications, scope-gated access, 28 E2E integration tests all shipped via [`docs/plans/2026-04-01-agentic-peer-api.md`](../plans/2026-04-01-agentic-peer-api.md). Several promised items were *not* realised and are tracked in *Realised state* below: `verify_state` tool + `state-agreement` resource + `StateHashMismatch` notification (dropped), `willow-agent-sdk` companion crate (future work).
+**Implementation plan:** [`docs/plans/2026-04-01-agentic-peer-api.md`](../plans/2026-04-01-agentic-peer-api.md)
+
+> **Realised state (post-2026-05 audit).** The MCP binary shipped and the
+> bulk of the API matches intent, but the body below drifts from the
+> realised implementation in several places. Diffs:
+>
+> - **`verify_state` MCP tool not implemented.** The tool was specified
+>   under §State for broadcasting state-hash verification, but no
+>   matching method exists on `ClientHandle` and no tool is registered
+>   in `crates/agent/src/tools.rs`. The convergence example that calls
+>   `mutations.verify_state().await` is therefore unreachable.
+> - **`willow://server/state-agreement` resource not registered.** Paired
+>   with `verify_state`, this resource is absent from
+>   `crates/agent/src/resources.rs::list_resources()` and has no read
+>   branch. Realised resource count is 14, not the 15/16 the spec
+>   implies.
+> - **Realised tool count is 36, not 37.** `crates/agent/src/tools.rs:725`
+>   pins `expected = 36` and `tool_names_are_unique` enumerates exactly
+>   36 names. The spec narrative still says 37.
+> - **`CurrentServerResource` exposes `admins`, not `owner`.**
+>   `crates/agent/src/resources.rs:309-315` — Willow's trust model is
+>   admin-set, not single-owner; the field follows that. The spec's
+>   `willow://server/current` schema is stale on this point.
+> - **`MemberKicked` notification absent.** Kicks now flow through
+>   `ProposalCreated` + `VoteCast` (the governance path documented
+>   elsewhere in the spec). No `MemberKicked` variant is forwarded;
+>   not in `EVENT_TYPE_NAMES`. The notification table is stale.
+> - **`StateHashMismatch` notification absent.** Paired with the
+>   removed `verify_state` tool — not in `ClientEvent`, not in
+>   `EVENT_TYPE_NAMES`.
+> - **Five notification variants forwarded but absent from the spec
+>   table:** `ProposalCreated`, `VoteCast`, `MuteChanged`,
+>   `QueueChanged`, `RelayStatusChanged`, `DeviceOnlineChanged`. The
+>   realised set in `crates/agent/src/notifications.rs:254-287` is 31
+>   variants; the spec's table lists ~25. Phase 2b sync-queue variants
+>   are real and shipped (`QueueChanged`, etc.).
+> - **`willow-agent-sdk` companion crate does not exist.** The spec
+>   describes it under §Crate structure, references it in the Rust
+>   client example, and lists it as a Phase 3 plan item, but
+>   `crates/agent-sdk/` is not present in the workspace and there is
+>   no `willow-agent-sdk` Cargo.toml. Future work.
+> - **Cargo dependency drift.** `crates/agent/Cargo.toml` actually
+>   uses `rmcp = "1.5"` (spec: `"1.3"`), and adds `subtle = "2"` for
+>   constant-time bearer-token comparison (spec omits), `willow-state`
+>   (spec omits), `tokio-util = "0.7"` (spec omits). `tokio` is via
+>   workspace inheritance, not a local version pin. `rand = "0.8"`
+>   (spec: `"0.9"`).
+> - **E2E test count is 28, not 24.** `crates/agent/tests/e2e.rs` has
+>   28 `#[tokio::test]` functions (24 unique + 4 scope/resource gate
+>   tests).
+> - **CLI flags drift.** `--identity <PATH>` has no clap default; the
+>   default is computed lazily by `default_identity_path()`. Three CLI
+>   flags exist that the spec omits: `--generate-identity`,
+>   `--print-peer-id`, `--scope <messaging|read|full>` (default
+>   `messaging`, not `full` as the spec's "Default token: full access"
+>   line implies — least-privilege default is the better choice).
+> - **`--relay` is optional and uses `RelayUrl`, not multiaddr.**
+>   `crates/agent/src/main.rs:19` typing is `Option<String>`, parsed
+>   as `iroh::RelayUrl` (`https://relay.example.com`), not a libp2p
+>   multiaddr like `/ip4/.../tcp/.../ws`. Network only starts if
+>   `--relay` is provided.
+> - **Resource subscription deferral.** `enable_resources()` is set on
+>   the MCP server but `subscribe` capability is not enabled. Push
+>   fan-out works only via `notifications/willow/event`. This matches
+>   the spec's noted deferral and is intentional, listed here for
+>   completeness so the follow-up doesn't get lost.
+>
+> The body below is preserved as the original target. The *Realised
+> state* list above is authoritative for current implementation shape;
+> do not edit the body in place to match it.
 
 ## Overview
 
@@ -68,6 +138,22 @@ processes enables:
 5. **Local-only by default**: The MCP server uses stdio (spawned by AI
    client) or binds to `127.0.0.1`. No remote access without explicit
    configuration.
+
+## Prior Art
+
+The agentic peer API builds on established agent-integration protocols and bot-platform
+patterns, adopting some and pointedly diverging from others:
+
+| Work | Relevance to this design |
+|---|---|
+| **Model Context Protocol** (Anthropic, open-sourced 2024-11-25) | The substrate itself: an open standard for exposing tool/resource/prompt surfaces to LLM agents with built-in schema discovery (`tools/list`), notifications, and an auth model. Willow embeds an MCP server (`willow-agent`) so any MCP client drives it with zero integration; ClientHandle methods → tools, StateRef views → resources, Broker events → notifications. |
+| **JSON-RPC 2.0** (spec dated 2010-03-26) | The transport-agnostic request/response + notification envelope MCP rides on. Willow inherits it for free via the MCP layer rather than defining a new wire protocol — the existing client surfaces map 1:1 onto JSON-RPC methods. |
+| **OpenAI function calling / tool use** (Chat Completions, 2023-06-13) | Established the "describe a typed function, let the model emit a structured call" paradigm that MCP later standardized across clients. Willow's `schemars`-derived tool schemas are the same idea, but vendor-neutral and discoverable at runtime instead of hand-registered per model. |
+| **Matrix Application Service API** (`spec.matrix.org`, appservice `as_token`/`hs_token`) | Closest analogue *and* the key contrast. Matrix appservices are first-class, token-authenticated homeserver clients (inspiration for an agent as a real peer) — but they masquerade as users via the `user_id` query param to bridge other networks. Willow explicitly **rejects** this delegation/"act-on-behalf-of-user" model: each agent gets its own auditable Ed25519 identity ("peer, not proxy"). |
+| **Discord bot gateway + Gateway Intents** (Discord Developer Portal) | Scoped bot participation: a bot connects with a token and declares *intents* to receive only the event groups it needs, with bitwise permissions layered on top. Willow's bearer-token scopes (Full/ReadOnly/Messaging/Admin) follow the same restrict-don't-expand shape — ReadOnly even hides mutating tools from `tools/list` entirely, the MCP analogue of withholding an intent. |
+| **Slack Events API + OAuth bot scopes** (`xoxb-` bot tokens, granular per-method scopes) | The bot-as-installed-app integration model with fine-grained, per-capability OAuth scopes granted at install time. Reinforces the design's bearer-token scope axis; Willow diverges by making scopes a *local* attenuation of an already-granted network identity rather than a server-side grant. |
+| **OAuth 2.1 bearer tokens** (IETF `draft-ietf-oauth-v2-1`) + **principle of least privilege** (Saltzer & Schroeder, *The Protection of Information in Computer Systems*, Proc. IEEE, 1975) | The capability-scoping foundation: a token confers a bounded, least-authority capability. Willow's two-axis security makes this strictly attenuating — a scope can only *restrict*, never *expand*, the peer's underlying network permissions — and defaults to local-only (stdio isolation, 127.0.0.1 bind). |
+| **Server-Sent Events** (WHATWG HTML Living Standard, `text/event-stream` / `EventSource`) | The long-lived HTTP server-push model underpinning MCP's streamable-HTTP transport. Willow uses it for the notification channel (Broker `ClientEvent`s → MCP notifications) when not running over stdio. |
 
 ## Architecture
 
@@ -230,8 +316,8 @@ string (the Ed25519 public key of the target peer).
 
 | Tool | Parameters | Description |
 |---|---|---|
-| `trust_peer` | `peer_id` | Grant Administrator permission |
-| `untrust_peer` | `peer_id` | Revoke Administrator permission |
+| `trust_peer` | `peer_id` | Grant admin status (via vote) |
+| `untrust_peer` | `peer_id` | Revoke admin status (via vote) |
 | `kick_member` | `peer_id` | Remove member, rotate keys |
 | `create_role` | `name` | Create a permission role |
 | `delete_role` | `role_id` | Delete a role |
@@ -240,8 +326,10 @@ string (the Ed25519 public key of the target peer).
 | `authorize_workers` | `worker_peer_ids` | Grant SyncProvider to workers |
 
 Valid `permission` values: `SyncProvider`, `ManageChannels`,
-`ManageRoles`, `KickMembers`, `SendMessages`, `CreateInvite`,
-`Administrator`.
+`ManageRoles`, `SendMessages`, `CreateInvite`. Admin status is not a
+`Permission` — `trust_peer` / `untrust_peer` go through the
+`ProposedAction` + vote path. There is no `KickMembers` permission;
+kicks are admin-only via `ProposedAction::KickMember`.
 
 #### Identity
 

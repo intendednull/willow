@@ -25,7 +25,7 @@ pub async fn download_file(
     Ok(blobs.get(hash).await?.map(|b| b.to_vec()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use willow_network::mem::{MemHub, MemNetwork};

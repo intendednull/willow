@@ -1,5 +1,7 @@
 # UI Phase 2b — Sync queue Implementation Plan
 
+**Status:** landed (commit `99f8283` SyncQueueView + `70db3c7` browser tests + RelaySignalButton close-out) — `crates/client/src/queue.rs` ships the per-peer queue; `crates/web/src/components/{offline_strip,queue_pill,inline_queue_note,sync_queue_view}.rs` render the surfaces. Plan's self-review checklist is all ticked.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development + superpowers:test-driven-development.
 
 **Goal:** Ship `docs/specs/2026-04-19-ui-design/sync-queue.md` — the visible representation of patient P2P messaging: amber offline status strip, per-peer queue pills on letter / member rows, per-message inline queue notes, mobile pull-down + desktop chevron summary, dedicated sync-queue screen (outbound / inbound tabs + recent arrivals), relay-awareness badge, reconnection toast, welcome-back banner, and the signal contract between `crates/web` and `willow-client`. Closes the Phase 2a `Pending → None` state-flip gate left open in `views.rs`.

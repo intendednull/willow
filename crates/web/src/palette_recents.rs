@@ -61,7 +61,6 @@ pub fn push(entry: Recent) {
 }
 
 /// Clear all recents.
-#[allow(dead_code)]
 pub fn clear() {
     if let Some(s) = storage() {
         let _ = s.remove_item(KEY);

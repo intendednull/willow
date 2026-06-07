@@ -130,7 +130,10 @@ mod tests {
             req: WorkerRequest,
         ) -> WorkerResponse {
             match req {
-                WorkerRequest::Sync { .. } => WorkerResponse::SyncBatch { events: vec![] },
+                WorkerRequest::Sync { .. } => WorkerResponse::SyncBatch {
+                    events: vec![],
+                    more: false,
+                },
                 WorkerRequest::History { .. } => WorkerResponse::Denied {
                     reason: "not a storage node".to_string(),
                 },
@@ -202,7 +205,7 @@ mod tests {
             .await
             .unwrap();
         match resp {
-            WorkerResponse::SyncBatch { events } => assert!(events.is_empty()),
+            WorkerResponse::SyncBatch { events, .. } => assert!(events.is_empty()),
             _ => panic!("expected SyncBatch"),
         }
 

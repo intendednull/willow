@@ -20,7 +20,8 @@
 //! never reordered or rewritten so existing databases stay consistent.
 
 use rusqlite::{params, Connection};
-use willow_common::SYNC_BATCH_LIMIT;
+use willow_common::{MAX_AUTHORS_PER_SYNC, SYNC_BATCH_LIMIT};
+use willow_identity::EndpointId;
 use willow_state::{Event, EventKind, HeadsSummary};
 
 /// Ordered list of schema migrations. Each entry is run inside its own
@@ -40,6 +41,14 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_events_server ON events(server_id);
     CREATE INDEX IF NOT EXISTS idx_events_channel ON events(server_id, channel_id);
     CREATE INDEX IF NOT EXISTS idx_events_author_seq ON events(author, seq);",
+    // Migration 2: server-prefixed (server_id, author, seq) index so the
+    // restructured `sync_since` resolves every `(author = ? AND seq > ?)`
+    // disjunct as a per-(server, author) range scan instead of a server scan.
+    // The legacy `idx_events_author_seq` is intentionally NOT dropped here:
+    // dropping it is a separate, later migration so a rollout stays reversible
+    // (see docs/specs/2026-04-24-negentropy-sync.md § Storage requirements).
+    "CREATE INDEX IF NOT EXISTS idx_events_server_author_seq
+        ON events(server_id, author, seq);",
 ];
 
 /// SQLite-backed event store.
@@ -103,10 +112,13 @@ impl StorageEventStore {
             }
             let tx = self.conn.unchecked_transaction()?;
             tx.execute_batch(sql)?;
+            // Propagate clock errors instead of recording `applied_at_ms = 0`
+            // when the system clock is somehow set before 1970. The rest of
+            // this crate returns `anyhow::Result`, so surface the error too.
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+                .map_err(anyhow::Error::from)?
+                .as_millis() as i64;
             tx.execute(
                 "INSERT INTO schema_version (version, applied_at_ms) VALUES (?1, ?2)",
                 params![version, now_ms],
@@ -189,6 +201,19 @@ impl StorageEventStore {
         before: Option<&HeadsSummary>,
         limit: u32,
     ) -> anyhow::Result<(Vec<Event>, bool)> {
+        // Reject peer-supplied cursors that would balloon SQL construction
+        // (see `MAX_AUTHORS_PER_SYNC`). Done before any allocation or SQL
+        // building so a hostile request fails fast.
+        if let Some(heads) = before {
+            if heads.heads.len() > MAX_AUTHORS_PER_SYNC {
+                anyhow::bail!(
+                    "too many heads in history cursor: {} > {}",
+                    heads.heads.len(),
+                    MAX_AUTHORS_PER_SYNC
+                );
+            }
+        }
+
         let capped = (limit as usize).min(SYNC_BATCH_LIMIT);
         let fetch_limit = capped + 1;
 
@@ -284,10 +309,26 @@ impl StorageEventStore {
     /// For each author in our store: if the requester has a lower seq (or
     /// doesn't know the author at all), return events with seq > their_seq.
     /// If heads is empty, returns all events for the server.
-    /// Maximum events returned in a single sync batch to prevent OOM.
-    /// Defined once in `willow_common::SYNC_BATCH_LIMIT` so storage
-    /// production and client validation cannot drift apart.
+    ///
+    /// The SQL `LIMIT willow_common::SYNC_BATCH_LIMIT` is an **OOM guard** on
+    /// the materialized row set, not the wire bound: the caller
+    /// ([`StorageRole::handle_request`](crate::role)) byte-budgets this delta
+    /// with `pack_sync_batches` / `SYNC_ENVELOPE_BUDGET` and serves only the
+    /// first budget-fitting batch, so the authoritative per-envelope bound is
+    /// the 64 KiB gossip ceiling (see
+    /// `docs/specs/2026-04-24-negentropy-sync.md` § Wire protocol).
     pub fn sync_since(&self, server_id: &str, heads: &HeadsSummary) -> anyhow::Result<Vec<Event>> {
+        // Reject peer-supplied summaries that would balloon SQL construction
+        // (see `MAX_AUTHORS_PER_SYNC`). Done before any allocation or SQL
+        // building so a hostile request fails fast.
+        if heads.heads.len() > MAX_AUTHORS_PER_SYNC {
+            anyhow::bail!(
+                "too many heads in sync request: {} > {}",
+                heads.heads.len(),
+                MAX_AUTHORS_PER_SYNC
+            );
+        }
+
         if heads.heads.is_empty() {
             // New peer — send up to SYNC_BATCH_LIMIT events for this server.
             let mut stmt = self.conn.prepare(
@@ -319,14 +360,24 @@ impl StorageEventStore {
             return Ok(events);
         }
 
-        // Build a parameterized query for events after the requester's known heads.
-        // For known authors: seq > their_seq. For unknown authors: all events.
+        // Build a parameterized query for events after the requester's known
+        // heads. Every disjunct is a per-author range predicate
+        // `(author = ? AND seq > ?)`:
+        //   - authors the requester mentioned use their advertised seq;
+        //   - authors we hold locally but the requester never mentioned default
+        //     to seq 0 (the requester has nothing for them).
+        // Enumerating the unmentioned authors explicitly — rather than the old
+        // `author NOT IN (...)` fanout — lets the planner seek each disjunct on
+        // the `(server_id, author, seq)` index (`idx_events_server_author_seq`,
+        // migration 2) instead of falling back to a server scan with an in-list
+        // negation. See docs/specs/2026-04-24-negentropy-sync.md
+        // § Storage requirements.
         let mut sql = String::from("SELECT event_data FROM events WHERE server_id = ?1 AND (");
         let mut param_idx = 2u32;
         let mut extra_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
         let mut conditions = Vec::new();
-        let mut author_placeholders = Vec::new();
+
+        // Mentioned authors: seq > their advertised seq.
         for (author, head) in &heads.heads {
             conditions.push(format!(
                 "(author = ?{} AND seq > ?{})",
@@ -335,13 +386,26 @@ impl StorageEventStore {
             ));
             extra_params.push(Box::new(author.as_bytes().to_vec()));
             extra_params.push(Box::new(head.seq as i64));
-            author_placeholders.push(format!("?{param_idx}"));
             param_idx += 2;
         }
 
-        // Events from authors not in the heads (they don't know about them).
-        let known_authors = author_placeholders.join(", ");
-        conditions.push(format!("author NOT IN ({known_authors})"));
+        // Locally-known-but-unmentioned authors: seq > 0 (i.e. everything).
+        // Resolved up front via `known_authors` so each becomes its own
+        // per-(server, author) range scan rather than an in-list negation.
+        for author in self.known_authors(server_id)? {
+            if heads.heads.contains_key(&author) {
+                continue;
+            }
+            conditions.push(format!("(author = ?{param_idx} AND seq > 0)"));
+            extra_params.push(Box::new(author.as_bytes().to_vec()));
+            param_idx += 1;
+        }
+
+        // No authors to serve at all → empty delta (the requester is up to date
+        // on everything we hold). Bail before issuing an `AND ()` query.
+        if conditions.is_empty() {
+            return Ok(Vec::new());
+        }
 
         sql.push_str(&conditions.join(" OR "));
         sql.push_str(&format!(") ORDER BY seq ASC LIMIT {SYNC_BATCH_LIMIT}"));
@@ -376,6 +440,51 @@ impl StorageEventStore {
             .collect();
 
         Ok(events)
+    }
+
+    /// Distinct authors with at least one stored event for `server_id`.
+    ///
+    /// Used by [`Self::sync_since`] to enumerate locally-known-but-unmentioned
+    /// authors up front (so each becomes a per-author range scan), and by a
+    /// sync responder to serve authors the requester never advertised. Backed
+    /// by `idx_events_server_author_seq` (migration 2). Author byte-blobs that
+    /// are not a valid 32-byte endpoint id are skipped with a warning rather
+    /// than failing the whole call.
+    pub fn known_authors(&self, server_id: &str) -> anyhow::Result<Vec<EndpointId>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT author FROM events WHERE server_id = ?1")?;
+        let rows: Vec<Vec<u8>> = stmt
+            .query_map(params![server_id], |row| row.get(0))?
+            .filter_map(|r| match r {
+                Ok(bytes) => Some(bytes),
+                Err(e) => {
+                    tracing::warn!("failed to read author row in known_authors: {e}");
+                    None
+                }
+            })
+            .collect();
+
+        let authors = rows
+            .into_iter()
+            .filter_map(|bytes| match <[u8; 32]>::try_from(bytes.as_slice()) {
+                Ok(arr) => match EndpointId::from_bytes(&arr) {
+                    Ok(id) => Some(id),
+                    Err(e) => {
+                        tracing::warn!("invalid author key in known_authors: {e}");
+                        None
+                    }
+                },
+                Err(_) => {
+                    tracing::warn!(
+                        len = bytes.len(),
+                        "author blob is not 32 bytes; skipping in known_authors"
+                    );
+                    None
+                }
+            })
+            .collect();
+        Ok(authors)
     }
 
     /// Total number of stored events.
@@ -831,22 +940,35 @@ mod tests {
     #[test]
     fn schema_version_table_exists_after_open() {
         let (_dir, store) = open_file_store();
-        let versions: Vec<i64> = store
+        let rows: Vec<(i64, i64)> = store
             .conn
-            .prepare("SELECT version FROM schema_version ORDER BY version ASC")
+            .prepare("SELECT version, applied_at_ms FROM schema_version ORDER BY version ASC")
             .unwrap()
-            .query_map([], |row| row.get(0))
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
             .unwrap()
             .map(|r| r.unwrap())
             .collect();
         assert!(
-            !versions.is_empty(),
+            !rows.is_empty(),
             "schema_version table should be populated after open"
         );
+        let versions: Vec<i64> = rows.iter().map(|(v, _)| *v).collect();
         assert!(
             versions.contains(&1),
             "migration 1 (initial schema) must be recorded"
         );
+        // applied_at_ms must reflect the real clock, not the legacy `0`
+        // fallback. Under a normal system clock (post-1970) it is strictly
+        // positive. The pre-1970 branch now returns an error instead of
+        // silently writing 0; testing that path would require time-mocking
+        // infrastructure this crate doesn't have, which is out of scope.
+        for (version, applied_at_ms) in &rows {
+            assert!(
+                *applied_at_ms > 0,
+                "migration {version} recorded applied_at_ms={applied_at_ms}, \
+                 expected a positive Unix-ms timestamp",
+            );
+        }
     }
 
     #[test]
@@ -1151,6 +1273,204 @@ mod tests {
         assert_eq!(
             orig_bytes, rec_bytes,
             "serialized bytes of recovered event must match original after reopen"
+        );
+    }
+
+    /// Build a `HeadsSummary` with `n` distinct random authors for cap tests.
+    fn heads_summary_with_authors(n: usize) -> HeadsSummary {
+        use willow_state::AuthorHead;
+        let mut heads = std::collections::BTreeMap::new();
+        for _ in 0..n {
+            let id = Identity::generate();
+            heads.insert(
+                id.endpoint_id(),
+                AuthorHead {
+                    seq: 1,
+                    hash: EventHash::ZERO,
+                },
+            );
+        }
+        HeadsSummary { heads }
+    }
+
+    /// A peer-supplied `HeadsSummary` with more than `MAX_AUTHORS_PER_SYNC`
+    /// entries must be rejected by `sync_since` before any SQL is built.
+    /// Without the cap, the rusqlite bind-parameter limit (default 32766) or
+    /// CPU spent compiling the giant prepared statement is the failure mode.
+    #[test]
+    fn sync_since_rejects_oversize_heads() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let oversize = heads_summary_with_authors(MAX_AUTHORS_PER_SYNC + 1);
+
+        let err = store
+            .sync_since("srv-1", &oversize)
+            .expect_err("oversize heads must be rejected, not processed");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("too many heads"),
+            "error message should mention the cap; got: {msg}"
+        );
+    }
+
+    /// `sync_since` must accept exactly `MAX_AUTHORS_PER_SYNC` entries — the
+    /// cap is inclusive on the legal side.
+    #[test]
+    fn sync_since_accepts_exact_cap() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let at_cap = heads_summary_with_authors(MAX_AUTHORS_PER_SYNC);
+        // No events stored, so the result is empty — but it must not error.
+        let events = store
+            .sync_since("srv-1", &at_cap)
+            .expect("exactly MAX_AUTHORS_PER_SYNC entries must be accepted");
+        assert!(events.is_empty());
+    }
+
+    /// A peer-supplied `before` cursor with more than `MAX_AUTHORS_PER_SYNC`
+    /// entries must be rejected by `history` before any SQL is built.
+    #[test]
+    fn history_rejects_oversize_before_cursor() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let oversize = heads_summary_with_authors(MAX_AUTHORS_PER_SYNC + 1);
+
+        let err = store
+            .history("srv-1", None, Some(&oversize), 10)
+            .expect_err("oversize cursor must be rejected, not processed");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("too many heads"),
+            "error message should mention the cap; got: {msg}"
+        );
+    }
+
+    /// `history` must accept exactly `MAX_AUTHORS_PER_SYNC` cursor entries.
+    #[test]
+    fn history_accepts_exact_cap_cursor() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let at_cap = heads_summary_with_authors(MAX_AUTHORS_PER_SYNC);
+        let (events, has_more) = store
+            .history("srv-1", None, Some(&at_cap), 10)
+            .expect("exactly MAX_AUTHORS_PER_SYNC entries must be accepted");
+        assert!(events.is_empty());
+        assert!(!has_more);
+    }
+
+    // -------------------------------------------------------------------------
+    // known_authors + per-author sync_since restructure
+    // -------------------------------------------------------------------------
+
+    /// `known_authors` returns the distinct set of authors with stored events
+    /// for a given server, and nothing from other servers.
+    #[test]
+    fn known_authors_returns_distinct_authors_per_server() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let id_a = Identity::generate();
+        let id_b = Identity::generate();
+        let other = Identity::generate();
+
+        // Two authors on srv-1, each with two events.
+        for (id, srv) in [(&id_a, "srv-1"), (&id_b, "srv-1")] {
+            let e1 = make_message(id, 2, EventHash::ZERO, "general");
+            let e2 = make_message(id, 3, e1.hash, "general");
+            store.store_event(srv, &e1).unwrap();
+            store.store_event(srv, &e2).unwrap();
+        }
+        // A different server must not leak into srv-1's author set.
+        let oe = make_message(&other, 2, EventHash::ZERO, "general");
+        store.store_event("srv-2", &oe).unwrap();
+
+        let mut got = store.known_authors("srv-1").unwrap();
+        got.sort();
+        let mut want = vec![id_a.endpoint_id(), id_b.endpoint_id()];
+        want.sort();
+        assert_eq!(got, want);
+
+        assert_eq!(
+            store.known_authors("srv-2").unwrap(),
+            vec![other.endpoint_id()]
+        );
+        assert!(store.known_authors("nonexistent").unwrap().is_empty());
+    }
+
+    /// The restructured `sync_since` (per-author `(author = ? AND seq > ?)`
+    /// range scans for both mentioned and locally-known-but-unmentioned authors)
+    /// must return exactly the same delta as a manual reference computation:
+    /// for each author, every stored event with `seq > requester_seq` (0 if the
+    /// requester never mentioned that author).
+    #[test]
+    fn sync_since_serves_unmentioned_authors_via_per_author_scan() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let id_a = Identity::generate();
+        let id_b = Identity::generate();
+
+        // Author A: seq 2..=5 ; Author B: seq 2..=4.
+        let mut a_prev = EventHash::ZERO;
+        for seq in 2..=5 {
+            let e = make_message(&id_a, seq, a_prev, "general");
+            a_prev = e.hash;
+            store.store_event("srv-1", &e).unwrap();
+        }
+        let mut b_prev = EventHash::ZERO;
+        for seq in 2..=4 {
+            let e = make_message(&id_b, seq, b_prev, "general");
+            b_prev = e.hash;
+            store.store_event("srv-1", &e).unwrap();
+        }
+
+        // Requester knows A up to seq 3 and has NEVER heard of B.
+        let mut heads_map = std::collections::BTreeMap::new();
+        heads_map.insert(
+            id_a.endpoint_id(),
+            willow_state::AuthorHead {
+                seq: 3,
+                hash: EventHash::ZERO,
+            },
+        );
+        let heads = HeadsSummary { heads: heads_map };
+
+        let delta = store.sync_since("srv-1", &heads).unwrap();
+
+        // Expected: A seq {4,5} (after the requester's seq 3) + all of B {2,3,4}
+        // (unmentioned author defaults to seq 0).
+        let mut a_seqs: Vec<u64> = delta
+            .iter()
+            .filter(|e| e.author == id_a.endpoint_id())
+            .map(|e| e.seq)
+            .collect();
+        a_seqs.sort_unstable();
+        let mut b_seqs: Vec<u64> = delta
+            .iter()
+            .filter(|e| e.author == id_b.endpoint_id())
+            .map(|e| e.seq)
+            .collect();
+        b_seqs.sort_unstable();
+
+        assert_eq!(a_seqs, vec![4, 5], "A: only events past requester's seq 3");
+        assert_eq!(b_seqs, vec![2, 3, 4], "B: all events (requester unaware)");
+        assert_eq!(delta.len(), 5);
+    }
+
+    /// The new compound index `idx_events_server_author_seq` must exist after a
+    /// fresh open, and the legacy `idx_events_author_seq` must remain (the new
+    /// migration is additive — the old index is dropped in a later, separate
+    /// migration for rollout reversibility).
+    #[test]
+    fn server_author_seq_index_exists_and_legacy_index_retained() {
+        let store = StorageEventStore::open(":memory:").unwrap();
+        let names: Vec<String> = store
+            .conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "idx_events_server_author_seq"),
+            "new compound index must exist; got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "idx_events_author_seq"),
+            "legacy index must be retained (dropped in a later migration); got {names:?}"
         );
     }
 }

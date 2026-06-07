@@ -25,7 +25,16 @@ futures-lite = "2"
 
 # iroh-blobs pulls in bao-tree → tokio net (mio) which doesn't compile
 # on WASM. Gate as native-only; use BlobHash wrapper for cross-platform.
+#
+# The `address-lookup-pkarr-dht` feature enables iroh's pkarr/Mainline-DHT
+# address lookup (`DhtAddressLookup`). It pulls in the `mainline` UDP DHT
+# crate, which is native-only — so the feature is enabled here, in the
+# native target block, and the builder call in `iroh.rs` is `cfg`-gated to
+# native. Cargo unions features per target, so the wasm32 build never sees
+# the feature or `mainline`. (iroh 0.98.1 ships this as an *optional*
+# feature; the plan's note that it was already enabled was stale.)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iroh = { workspace = true, features = ["address-lookup-pkarr-dht"] }
 iroh-blobs = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 

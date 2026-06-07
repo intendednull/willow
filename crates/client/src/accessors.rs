@@ -175,6 +175,24 @@ impl<N: willow_network::Network> ClientHandle<N> {
         willow_actor::state::select(&self.event_state_addr, |es| es.admins.clone()).await
     }
 
+    /// Enumerate the live (un-revoked) `SyncProvider` grants in the active
+    /// server's replayed DAG — the trust layer (Layer 3) of relay discovery.
+    ///
+    /// An endpoint is a candidate sync source for this server iff it holds an
+    /// explicit, un-revoked `SyncProvider` grant. Implicit admin/owner
+    /// authority does **not** count (see
+    /// [`crate::relay_discovery::enumerate_sync_providers`] and pinned
+    /// decision 4): auto-serving from admin status would make the serving gate
+    /// and its audit trail meaningless. The set this returns is exactly the
+    /// list of endpoints whose addresses the client should resolve via pkarr
+    /// (Layer 1) and whose capability docs it should fetch (Layer 2).
+    pub async fn sync_providers(&self) -> std::collections::BTreeSet<willow_identity::EndpointId> {
+        willow_actor::state::select(&self.event_state_addr, |es| {
+            crate::relay_discovery::enumerate_sync_providers(es)
+        })
+        .await
+    }
+
     pub async fn channel_kinds(&self) -> Vec<(String, willow_state::ChannelKind)> {
         willow_actor::state::select(&self.event_state_addr, |es| {
             es.channels
@@ -193,12 +211,41 @@ impl<N: willow_network::Network> ClientHandle<N> {
         willow_actor::state::select(&self.event_state_addr, |es| es.description.clone()).await
     }
 
+    /// Most recent message authored by the local peer in `channel_id`.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/composer.md` §Keyboard —
+    /// "ArrowUp when textarea empty: enters edit mode on most recent
+    /// own message". Plan: `docs/plans/2026-04-26-ui-phase-3a-composer.md`
+    /// Task T2.
+    ///
+    /// Returns [`None`] when the channel doesn't exist or the local
+    /// peer hasn't authored any non-deleted message in it. The lookup
+    /// goes through [`views::compute_messages_view_for_channel`] so the
+    /// returned [`state::DisplayMessage`] carries the same projections
+    /// (mentions, pinned, queue note, …) as the rendered row — the
+    /// composer can pre-fill from `body` without re-deriving anything.
+    pub async fn last_own_message(&self, channel_id: &str) -> Option<state::DisplayMessage> {
+        let es = willow_actor::state::get(&self.event_state_addr).await;
+        let registry = willow_actor::state::get(&self.server_registry_addr).await;
+        let profiles = willow_actor::state::get(&self.profile_state_addr).await;
+        let local = self.identity.endpoint_id();
+        let view =
+            views::compute_messages_view_for_channel(&es, &registry, &profiles, channel_id, local);
+        // `compute_messages_view` sorts ascending by timestamp_ms; the
+        // most recent local message is the last `is_local && !deleted`
+        // entry. Iterate in reverse so we return on the first match.
+        view.messages
+            .into_iter()
+            .rev()
+            .find(|m| m.author_peer_id == local && !m.deleted)
+    }
+
     pub async fn typing_peers(&self) -> Vec<(String, String)> {
         let my_id = self.identity.endpoint_id();
         willow_actor::state::mutate(&self.network_meta_addr, move |n| {
             let now = crate::util::current_time_ms();
-            n.typing_peers
-                .retain(|_, (_, ts)| now - *ts < crate::TYPING_INDICATOR_TTL_MS);
+            // Keep map + recency in lockstep: helper drops both.
+            n.sweep_typing(now, crate::TYPING_INDICATOR_TTL_MS);
             n.typing_peers
                 .iter()
                 .filter(|(pid, _)| *pid != &my_id)
@@ -206,5 +253,33 @@ impl<N: willow_network::Network> ClientHandle<N> {
                 .collect()
         })
         .await
+    }
+}
+
+// ── Test-only address getters (test-hooks feature) ────────────────────────
+//
+// Gated behind `test-hooks` so non-test consumers (`willow-agent`,
+// `willow-replay`, etc.) never see them. The address itself doesn't grant
+// write access without an active mutator — these are a read-only handle
+// for `WillowTestHooks` in the web crate, which cannot hold a generic
+// `ClientHandle<N>` across the wasm_bindgen boundary.
+
+#[cfg(feature = "test-hooks")]
+impl<N: willow_network::Network> ClientHandle<N> {
+    /// Clone the per-author Merkle-DAG actor address. Test-only.
+    pub fn dag_addr_clone(
+        &self,
+    ) -> willow_actor::Addr<willow_actor::StateActor<crate::state_actors::DagState>> {
+        self.dag_addr.clone()
+    }
+
+    /// Clone the materialised `ServerState` actor address. Test-only.
+    ///
+    /// Used by the snapshot builder in `WillowTestHooks` to read the
+    /// channels view for assertion-style polling.
+    pub fn event_state_addr_clone(
+        &self,
+    ) -> willow_actor::Addr<willow_actor::StateActor<willow_state::ServerState>> {
+        self.event_state_addr.clone()
     }
 }

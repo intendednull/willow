@@ -33,6 +33,15 @@ pub struct JoinToken {
     pub server_name: String,
     /// Display name of whoever generated the link.
     pub inviter_name: String,
+    /// Optional bootstrap endpoint IDs (e.g. relay/worker `SyncProvider`s) the
+    /// joiner can resolve via pkarr before the relay fallback. Empty for links
+    /// generated before this field existed.
+    ///
+    /// `#[serde(default)]` keeps the JSON/self-describing-format decode path
+    /// backward-compatible; the base64 share-URL path (bincode, positional) is
+    /// handled explicitly in [`JoinToken::decode`] by retrying the legacy shape.
+    #[serde(default)]
+    pub bootstrap_endpoint_ids: Vec<EndpointId>,
 }
 
 impl JoinToken {
@@ -43,10 +52,42 @@ impl JoinToken {
     }
 
     /// Decode from a base64 string.
+    ///
+    /// The share-URL payload is positional bincode, which does not honour
+    /// `#[serde(default)]` for missing trailing fields. To keep links generated
+    /// before `bootstrap_endpoint_ids` existed decodable, a failed full-shape
+    /// decode falls back to the legacy five-field shape, defaulting the new
+    /// field to an empty list.
     pub fn decode(s: &str) -> Option<Self> {
         let bytes = crate::base64::decode(s)?;
-        willow_transport::unpack(&bytes).ok()
+        if let Ok(token) = willow_transport::unpack::<Self>(&bytes) {
+            return Some(token);
+        }
+        // Legacy fallback: a pre-`bootstrap_endpoint_ids` token has no trailing
+        // `Vec` length prefix, so the positional decode above runs off the end.
+        let legacy: LegacyJoinToken = willow_transport::unpack(&bytes).ok()?;
+        Some(JoinToken {
+            inviter_peer_id: legacy.inviter_peer_id,
+            server_id: legacy.server_id,
+            link_id: legacy.link_id,
+            server_name: legacy.server_name,
+            inviter_name: legacy.inviter_name,
+            bootstrap_endpoint_ids: Vec::new(),
+        })
     }
+}
+
+/// Pre-`bootstrap_endpoint_ids` wire shape of [`JoinToken`], retained solely so
+/// [`JoinToken::decode`] can parse share URLs generated before that field was
+/// added (bincode is positional and ignores `#[serde(default)]` for missing
+/// trailing fields).
+#[derive(Deserialize)]
+struct LegacyJoinToken {
+    inviter_peer_id: EndpointId,
+    server_id: String,
+    link_id: String,
+    server_name: String,
+    inviter_name: String,
 }
 
 /// Metadata for a generated join link, stored locally by the inviter.
@@ -87,7 +128,7 @@ pub const SERVER_OPS_TOPIC: &str = "_willow_server_ops";
 /// Global gossipsub topic for profile broadcasts.
 pub const PROFILE_TOPIC: &str = "_willow_profiles";
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use willow_identity::Identity;
@@ -111,7 +152,7 @@ mod tests {
             },
         );
 
-        let msg = WireMessage::Event(event.clone());
+        let msg = WireMessage::Event(Box::new(event.clone()));
         let data = pack_wire(&msg, &id).unwrap();
         let (decoded, signer) = unpack_wire(&data).unwrap();
 
@@ -200,7 +241,7 @@ mod tests {
             },
         );
 
-        let mut data = pack_wire(&WireMessage::Event(event), &id).unwrap();
+        let mut data = pack_wire(&WireMessage::Event(Box::new(event)), &id).unwrap();
         if let Some(byte) = data.last_mut() {
             *byte ^= 0xFF;
         }
@@ -217,6 +258,7 @@ mod tests {
             link_id: "link-abc".to_string(),
             server_name: "My Server".to_string(),
             inviter_name: "Alice".to_string(),
+            bootstrap_endpoint_ids: vec![],
         };
         let encoded = token.encode();
         let decoded = JoinToken::decode(&encoded).unwrap();
@@ -225,6 +267,64 @@ mod tests {
         assert_eq!(decoded.link_id, "link-abc");
         assert_eq!(decoded.server_name, "My Server");
         assert_eq!(decoded.inviter_name, "Alice");
+        assert!(decoded.bootstrap_endpoint_ids.is_empty());
+    }
+
+    #[test]
+    fn join_token_with_bootstrap_ids_round_trip() {
+        let inviter = Identity::generate();
+        let boot1 = Identity::generate().endpoint_id();
+        let boot2 = Identity::generate().endpoint_id();
+        let token = JoinToken {
+            inviter_peer_id: inviter.endpoint_id(),
+            server_id: "srv-1".to_string(),
+            link_id: "link-abc".to_string(),
+            server_name: "My Server".to_string(),
+            inviter_name: "Alice".to_string(),
+            bootstrap_endpoint_ids: vec![boot1, boot2],
+        };
+        let encoded = token.encode();
+        let decoded = JoinToken::decode(&encoded).unwrap();
+        assert_eq!(decoded.bootstrap_endpoint_ids, vec![boot1, boot2]);
+        assert_eq!(decoded.inviter_peer_id, inviter.endpoint_id());
+    }
+
+    /// An **old** join link generated before `bootstrap_endpoint_ids` existed —
+    /// whose wire bytes carry only the original five fields — must still decode.
+    /// This pins the backward-compatibility guarantee for in-the-wild share URLs.
+    #[test]
+    fn old_join_token_without_bootstrap_ids_still_decodes() {
+        // Mirror of the pre-bootstrap-ids `JoinToken` to produce legacy bytes.
+        #[derive(serde::Serialize)]
+        struct OldJoinToken {
+            inviter_peer_id: EndpointId,
+            server_id: String,
+            link_id: String,
+            server_name: String,
+            inviter_name: String,
+        }
+
+        let inviter = Identity::generate();
+        let old = OldJoinToken {
+            inviter_peer_id: inviter.endpoint_id(),
+            server_id: "srv-1".to_string(),
+            link_id: "link-abc".to_string(),
+            server_name: "My Server".to_string(),
+            inviter_name: "Alice".to_string(),
+        };
+        // Reproduce the exact `JoinToken::encode` pipeline against the old shape.
+        let bytes = willow_transport::pack(&old).unwrap();
+        let encoded = crate::base64::encode(&bytes);
+
+        let decoded = JoinToken::decode(&encoded)
+            .expect("legacy join token without bootstrap_endpoint_ids must decode");
+        assert_eq!(decoded.inviter_peer_id, inviter.endpoint_id());
+        assert_eq!(decoded.server_id, "srv-1");
+        assert_eq!(decoded.link_id, "link-abc");
+        assert_eq!(decoded.server_name, "My Server");
+        assert_eq!(decoded.inviter_name, "Alice");
+        // The missing field defaults to an empty list.
+        assert!(decoded.bootstrap_endpoint_ids.is_empty());
     }
 
     #[test]
@@ -314,6 +414,7 @@ mod tests {
         let id = Identity::generate();
         let joiner = Identity::generate();
         let msg = WireMessage::JoinResponse {
+            link_id: "link-1".to_string(),
             target_peer: joiner.endpoint_id(),
             invite_data: "base64inviteblob".to_string(),
         };
@@ -321,9 +422,11 @@ mod tests {
         let (decoded, _) = unpack_wire(&data).unwrap();
         match decoded {
             WireMessage::JoinResponse {
+                link_id,
                 target_peer,
                 invite_data,
             } => {
+                assert_eq!(link_id, "link-1");
                 assert_eq!(target_peer, joiner.endpoint_id());
                 assert_eq!(invite_data, "base64inviteblob");
             }
@@ -336,6 +439,7 @@ mod tests {
         let id = Identity::generate();
         let joiner = Identity::generate();
         let msg = WireMessage::JoinDenied {
+            link_id: "link-1".to_string(),
             target_peer: joiner.endpoint_id(),
             reason: "link_expired".to_string(),
         };
@@ -343,9 +447,11 @@ mod tests {
         let (decoded, _) = unpack_wire(&data).unwrap();
         match decoded {
             WireMessage::JoinDenied {
+                link_id,
                 target_peer,
                 reason,
             } => {
+                assert_eq!(link_id, "link-1");
                 assert_eq!(target_peer, joiner.endpoint_id());
                 assert_eq!(reason, "link_expired");
             }

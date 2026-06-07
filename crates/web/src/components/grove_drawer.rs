@@ -9,9 +9,12 @@
 //! Close triggers: backdrop tap, grove select, swipe-left > 60 px,
 //! Escape. Swipe gesture wiring lands in task 8.
 
+use leptos::ev::TransitionEvent;
+use leptos::html::Aside;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
+use crate::components::lifecycle::{advance, is_zero_duration, LifecycleState};
 use crate::components::{PeerStatusLabel, StatusDot, StatusDotBorder, StatusDotSize};
 use crate::icons;
 use crate::state::AppState;
@@ -65,6 +68,69 @@ pub fn GroveDrawer(
         closure.forget();
     }
 
+    // Four-phase data-state lifecycle on the inner <aside> (.grove-drawer).
+    // The aside owns the `transform` transition (.grove-drawer.open
+    // translates from -100% to 0); the root div only carries pointer-events
+    // gating via the existing `data-open` attribute.
+    //
+    // - Effect mirrors `open` into `lifecycle`. On initial mount (prev.is_none())
+    //   we snap to a terminal state (Open/Closed) so we don't fire a
+    //   spurious Opening/Closing animation phase.
+    // - on_transition_end filters on property_name() == "transform" so
+    //   stray transitionend events from box-shadow / opacity / etc. are
+    //   ignored (the spec's "ignore unrelated transitionend" failure mode).
+    // - Reduced-motion shortcut: if computed transition-duration is 0s
+    //   we snap to the terminal phase synchronously, since no
+    //   transitionend will ever fire under prefers-reduced-motion: reduce.
+    //
+    // See docs/specs/2026-04-27-event-based-waits-design.md
+    // §`data-state` attribute pattern.
+    let drawer_ref: NodeRef<Aside> = NodeRef::new();
+    let lifecycle = RwSignal::new(if open.get_untracked() {
+        LifecycleState::Open
+    } else {
+        LifecycleState::Closed
+    });
+
+    Effect::new(move |prev: Option<bool>| {
+        let now_open = open.get();
+        // First run, or no change — snap to terminal state. Don't fire
+        // Opening/Closing on initial mount.
+        if prev.is_none() || prev == Some(now_open) {
+            lifecycle.set(if now_open {
+                LifecycleState::Open
+            } else {
+                LifecycleState::Closed
+            });
+            return now_open;
+        }
+        lifecycle.set(if now_open {
+            LifecycleState::Opening
+        } else {
+            LifecycleState::Closing
+        });
+        // Reduced-motion shortcut: snap straight to terminal if no animation.
+        if let Some(el) = drawer_ref.get_untracked() {
+            if is_zero_duration(el.as_ref()) {
+                lifecycle.set(advance(lifecycle.get_untracked()));
+            }
+        }
+        now_open
+    });
+
+    let on_transition_end = move |ev: TransitionEvent| {
+        // Accept either driving property: `.grove-drawer` slides via
+        // `transform` by default, but the prefers-reduced-motion media
+        // query in components.css swaps the transition to
+        // `opacity var(--motion-slow) linear`. Both paths must advance
+        // the lifecycle; `is_zero_duration` cannot short-circuit because
+        // the reduced-motion duration is non-zero.
+        let prop = ev.property_name();
+        if prop == "transform" || prop == "opacity" {
+            lifecycle.update(|s| *s = advance(*s));
+        }
+    };
+
     view! {
         <div
             class="grove-drawer-root"
@@ -76,8 +142,11 @@ pub fn GroveDrawer(
                 on:click=move |_| on_close.run(())
             ></div>
             <aside
+                node_ref=drawer_ref
                 class=move || if open.get() { "grove-drawer open".to_string() }
                     else { "grove-drawer".to_string() }
+                data-state=move || lifecycle.get().as_str()
+                on:transitionend=on_transition_end
                 role="dialog"
                 aria-modal="true"
                 aria-label="groves"

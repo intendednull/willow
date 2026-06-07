@@ -10,6 +10,7 @@
 //! Today (Task 1): [`query`] only.
 
 pub mod actor;
+pub mod bootstrap;
 pub mod config;
 pub mod execute;
 pub mod handle;
@@ -19,9 +20,10 @@ pub mod query;
 pub mod status;
 pub mod tokenize;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
+pub use bootstrap::{hydrate_index, index_message, reindex_message};
 pub use config::{
     clear_all_recents, forget_recent, push_recent, RecentQuery, SearchIndexConfig, MAX_RECENTS,
 };

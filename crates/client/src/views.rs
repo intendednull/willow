@@ -18,7 +18,7 @@ use willow_identity::EndpointId;
 
 use crate::mentions::{extract_mention_peers, parse_mentions, PeerRef};
 use crate::presence::{derive_peer_presence, derive_self_presence, PresenceInputs, PresenceState};
-use crate::state::{DisplayMessage, QueueNote};
+use crate::state::{DisplayMessage, PinnedMetadata, QueueNote};
 use crate::state_actors::*;
 
 // ───── Profile card surfaces (phase 2c) ─────────────────────────────────
@@ -92,13 +92,13 @@ impl ServerRegistry {
     /// exposes its full membership — see the multi-grove TODO on
     /// `servers.rs`).
     pub fn shared_groves(&self, _local: &EndpointId, _other: &EndpointId) -> Vec<String> {
-        // TODO(multi-grove): plumb `state.members` into `ServerEntry`
-        // so the intersection can walk every grove the local peer is
-        // in. Until then, the helper returns the active grove's name
-        // when we know both peers are members (check deferred to the
-        // UI which reads `MembersView` for the active server). Return
-        // an empty Vec rather than fabricating a match — the spec's
-        // edge case "no shared groves → omit section" covers this.
+        // TODO(#563): plumb `state.members` into `ServerEntry` so the
+        // intersection can walk every grove the local peer is in. Until
+        // then, the helper returns the active grove's name when we know
+        // both peers are members (check deferred to the UI which reads
+        // `MembersView` for the active server). Return an empty Vec rather
+        // than fabricating a match — the spec's edge case "no shared
+        // groves → omit section" covers this.
         Vec::new()
     }
 }
@@ -201,6 +201,38 @@ pub struct MemberInfo {
     pub is_online: bool,
 }
 
+/// One peer that the composer's `@`-autocomplete can suggest.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/composer.md` §Mention
+/// autocomplete — the list of peers in the current channel, each row
+/// rendering avatar + display name + handle (mono) + status dot.
+///
+/// Plan: `docs/plans/2026-04-26-ui-phase-3a-composer.md` Task T1.
+/// Built from the existing event-state member roster (filtered to the
+/// active channel — every channel inside a Willow grove is visible to
+/// every member today) and decorated with the live presence derivation
+/// so the popover row's status dot lights up the same way as the member
+/// rail.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MentionCandidate {
+    /// Stable peer identity used to dedupe and to splice into the body
+    /// once the row is selected.
+    pub peer_id: EndpointId,
+    /// Resolved display name (`Mira`, `unknown peer`, etc.). Routed
+    /// through [`resolve_display_name`] so the fallback chain matches
+    /// the message rows.
+    pub display_name: String,
+    /// Short handle the popover renders in mono. Resolved from the
+    /// peer's profile when `Profile.handle` lands (TODO: profile-card.md);
+    /// today we fall back to a 4-char hex prefix of the peer id. Stored
+    /// lowercase to match the prefix-match contract in
+    /// [`crate::mentions::Suggestions::filter`].
+    pub handle: String,
+    /// Live presence — drives the status dot colour. Falls back to
+    /// [`PresenceState::Unknown`] when the peer has never been seen.
+    pub presence: PresenceState,
+}
+
 /// Identifier for a surface that can carry unread state.
 ///
 /// Phase 1f introduces per-surface `UnreadStats` keyed by `SurfaceId`.
@@ -299,6 +331,9 @@ pub struct RolesView {
 pub struct RoleEntry {
     pub id: String,
     pub name: String,
+    /// Permission names (string form) in stable, deduplicated order.
+    /// Surfaced as strings so UI / accessor consumers stay format-stable
+    /// even as the underlying [`willow_state::Permission`] enum grows.
     pub permissions: Vec<String>,
 }
 
@@ -465,6 +500,85 @@ impl ClientViewHandle {
             is_self: pid == local_pid,
         }
     }
+
+    /// Build the [`MentionCandidate`] list the composer's `@`-autocomplete
+    /// renders for the channel named `channel_id`.
+    ///
+    /// Spec: `docs/specs/2026-04-19-ui-design/composer.md`
+    /// §Mention autocomplete — "list of peers in the current channel".
+    /// Plan: `docs/plans/2026-04-26-ui-phase-3a-composer.md` Task T1.
+    ///
+    /// Willow's grove model exposes every channel to every grove
+    /// member, so the candidate set is "every member in the active
+    /// server, except `local_peer`". The local peer is filtered out
+    /// because mentioning yourself in your own composer is a no-op —
+    /// the spec already routes `@you` self-mentions through the
+    /// renderer, not the popover.
+    ///
+    /// `channel_id` is the channel *name* (e.g. `general`); kept named
+    /// `channel_id` to match the spec's data-dependency table. When
+    /// the named channel doesn't exist in the active server the helper
+    /// returns an empty list rather than every grove member, which
+    /// keeps the contract honest for the future "private channel"
+    /// world where members will be a strict subset.
+    pub async fn mention_candidates(
+        &self,
+        channel_id: &str,
+        local_peer: EndpointId,
+    ) -> Vec<MentionCandidate> {
+        let events = self.event_state.get().await;
+        let profiles = self.profiles.get().await;
+        let presence = self.presence.get().await;
+
+        if !events.channels.values().any(|c| c.name == channel_id) {
+            return Vec::new();
+        }
+
+        let mut out: Vec<MentionCandidate> = Vec::with_capacity(events.members.len());
+        for (pid, _member) in events.members.iter() {
+            if *pid == local_peer {
+                continue;
+            }
+            let display = resolve_display_name(&events, &profiles, pid);
+            let handle = mention_handle_for(&events, pid);
+            let state = presence
+                .per_peer
+                .get(pid)
+                .copied()
+                .unwrap_or(PresenceState::Unknown);
+            out.push(MentionCandidate {
+                peer_id: *pid,
+                display_name: display,
+                handle,
+                presence: state,
+            });
+        }
+        out
+    }
+}
+
+/// Resolve the short handle Willow renders in the mention popover.
+///
+/// Spec: `docs/specs/2026-04-19-ui-design/composer.md`
+/// §Mention autocomplete — each row shows `handle (mono)`. The grove
+/// data model does not yet carry a dedicated `Profile.handle` field
+/// (TODO: `docs/specs/2026-04-19-ui-design/profile-card.md` — once that
+/// lands, swap this branch to read it directly). Until then we fall
+/// back to the first 4 hex characters of the peer id, which matches
+/// the convention used by tooling and CLI peers.
+pub fn mention_handle_for(events: &willow_state::ServerState, peer_id: &EndpointId) -> String {
+    // Sanity check: if the profile carried a `handle` field today we
+    // would prefer it. Profile is currently devoid of the field — see
+    // the type definition in `crates/state/src/types.rs` — so we
+    // unconditionally fall back to the truncated hex form. The block
+    // is structured so the future plumb-through is a single `if let`.
+    if let Some(_profile) = events.profiles.get(peer_id) {
+        // TODO(profile-card.md): return profile.handle.clone() when the
+        // field lands. Today there's no such field.
+    }
+    let hex = peer_id.to_string();
+    let take = hex.chars().take(4).collect::<String>();
+    take.to_lowercase()
 }
 
 // ───── Compute functions (pure) ─────────────────────────────────────────
@@ -474,8 +588,10 @@ impl ClientViewHandle {
 /// Phase 2b: accepts a `queue_meta` snapshot so the projection can
 /// derive real `QueueNote::Pending` / `QueueNote::LateArrival` values
 /// for each row via [`crate::queue::derive_pending`] +
-/// [`crate::queue::derive_late_arrival`]. Closes the
-/// `TODO(sync-queue.md)` gate in this function and in the Phase 2a
+/// [`crate::queue::derive_late_arrival`]. Closes the original
+/// sync-queue gate (see plan
+/// `docs/plans/2026-04-21-ui-phase-2b-sync-queue.md`) in this function
+/// and in the Phase 2a plan
 /// `docs/plans/2026-04-20-ui-phase-2a-message-row.md` at line 490.
 pub fn compute_messages_view(
     events: &Arc<willow_state::ServerState>,
@@ -505,8 +621,9 @@ pub fn compute_messages_view(
     // track a distinct `@handle` (see `profile-card.md` for the target
     // profile data model); as a stand-in we derive a handle from the
     // display name via `display_name.to_lowercase().replace(' ', '.')`.
-    // TODO(profile-card.md): replace the display-name-derived handle
-    // with the real handle field once profile data is plumbed.
+    // TODO(plan: docs/plans/2026-04-21-ui-phase-2c-profile-card.md):
+    // replace the display-name-derived handle with the real handle field
+    // once profile data is plumbed.
     let peer_refs: Vec<PeerRef> = events
         .members
         .keys()
@@ -556,16 +673,29 @@ pub fn compute_messages_view(
                 .collect();
             let mention_segments = parse_mentions(&m.body, &peer_refs, &local_peer_id);
             let mentions = extract_mention_peers(&mention_segments);
-            // Stamp pinned from the channel's pinned-message set.
+            // Stamp pinned from the channel's pinned-message map.
             // `ServerState::channels[cid].pinned_messages` is a
-            // `BTreeSet<EventHash>` owned by the pin-event projection in
-            // willow-state; message-row.md §Pins consumes it here as a
-            // quiet 1 px amber row marker + `pinned` badge.
-            let pinned = events
+            // `BTreeMap<EventHash, PinMetadata>` owned by the
+            // pin-event projection in willow-state; message-row.md
+            // §Pins consumes the `pinned` bool here as a quiet 1 px
+            // amber row marker + `pinned` badge.
+            //
+            // When the row is pinned we also project the
+            // `PinMetadata` value into a `PinnedMetadata` that
+            // resolves the pinner's display name via the same
+            // `resolve_display_name` ladder used for the row author.
+            // The renderer in `pinned.rs` reads this for the
+            // `pinned by {name} · {when}` footer
+            // (reactions-pins.md §Pinned panel contents, line 123).
+            let pin_meta = events
                 .channels
                 .get(&m.channel_id)
-                .map(|ch| ch.pinned_messages.contains(&m.id))
-                .unwrap_or(false);
+                .and_then(|ch| ch.pinned_messages.get(&m.id));
+            let pinned = pin_meta.is_some();
+            let pinned_metadata = pin_meta.map(|meta| PinnedMetadata {
+                pinner_display_name: resolve_display_name(events, profiles, &meta.pinner),
+                pinned_at_ms: meta.pinned_at_ms,
+            });
             // Queue-note derivation. Phase 2b wires the full
             // tri-state: `Pending` (local author still waiting on
             // acks) + `LateArrival` (remote author was offline near
@@ -594,11 +724,11 @@ pub fn compute_messages_view(
             } else {
                 QueueNote::None
             };
-            // TODO(whisper-mode.md): flip via WhisperStart event when
-            // that phase lands. Phase 2a Task 8 reserves the row
-            // styling surface (message--whisper class + whisper-badge)
-            // behind this always-false gate so later work only has to
-            // swap the projection lookup.
+            // TODO(#562): flip via WhisperStart event when that phase
+            // lands. Phase 2a Task 8 reserves the row styling surface
+            // (message--whisper class + whisper-badge) behind this
+            // always-false gate so later work only has to swap the
+            // projection lookup.
             let whisper = false;
             DisplayMessage {
                 id: m.id.to_string(),
@@ -615,8 +745,10 @@ pub fn compute_messages_view(
                 reply_preview,
                 mentions,
                 pinned,
+                pinned_metadata,
                 queue_note,
                 whisper,
+                attachment: m.attachment.clone(),
             }
         })
         .collect();
@@ -694,8 +826,10 @@ pub fn compute_unread_view(
     let mute = event_state.mute_state.get(&local_peer_id).cloned();
 
     // Build a PeerRef list once for the mention parser. Mirrors the
-    // build in `compute_messages_view`; TODO(profile-card.md) tracks
-    // swapping display-name-derived handles for real profile handles.
+    // build in `compute_messages_view`; the
+    // TODO(plan: docs/plans/2026-04-21-ui-phase-2c-profile-card.md)
+    // there tracks swapping display-name-derived handles for real
+    // profile handles.
     //
     // `resolve_display_name` needs a `ProfileState` — we only have the
     // event-state profiles here, so fall back to the event-state entry
@@ -786,7 +920,7 @@ pub fn compute_roles_view(events: &Arc<willow_state::ServerState>) -> RolesView 
         .map(|role| RoleEntry {
             id: role.id.clone(),
             name: role.name.clone(),
-            permissions: role.permissions.iter().cloned().collect(),
+            permissions: role.permissions.iter().map(|p| p.to_string()).collect(),
         })
         .collect();
     roles.sort_by(|a, b| a.name.cmp(&b.name));
@@ -889,6 +1023,7 @@ pub fn compute_messages_view_for_channel(
     let chat = Arc::new(ChatMeta {
         current_channel: channel.to_string(),
         peers: Vec::new(),
+        reaction_recency: Default::default(),
     });
     let queue_meta = Arc::new(QueueMeta::default());
     compute_messages_view(
@@ -1028,14 +1163,16 @@ pub fn resolve_display_name(
     "unknown peer".to_string()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     //! Projection tests for Phase 2a Task 4 — populated `mentions` in
     //! `DisplayMessage` and `mentioned` flag in `UnreadStats`.
     use super::*;
     use std::collections::{BTreeMap, HashMap};
     use willow_identity::Identity;
-    use willow_state::{Channel, ChannelKind, ChatMessage, Member, Profile, ServerState};
+    use willow_state::{
+        Channel, ChannelKind, ChatMessage, Member, PinMetadata, Profile, ServerState,
+    };
 
     fn fresh_state(owner: EndpointId) -> ServerState {
         ServerState::new("srv", "Test", owner)
@@ -1092,6 +1229,7 @@ mod tests {
             deleted: false,
             reactions: BTreeMap::new(),
             reply_to: None,
+            attachment: None,
         });
         id
     }
@@ -1114,6 +1252,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+            reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1140,6 +1279,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+            reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1222,6 +1362,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+            reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1249,13 +1390,20 @@ mod tests {
             .get_mut("ch-1")
             .unwrap()
             .pinned_messages
-            .insert(msg_hash);
+            .insert(
+                msg_hash,
+                PinMetadata {
+                    pinner: owner,
+                    pinned_at_ms: 1_000,
+                },
+            );
 
         let events = Arc::new(state);
         let registry = Arc::new(ServerRegistry::default());
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+            reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1277,7 +1425,13 @@ mod tests {
         push_channel(&mut state, "ch-1", "general");
         let msg_hash = push_message(&mut state, "ch-1", owner, "pin me", 1_000);
         let ch = state.channels.get_mut("ch-1").unwrap();
-        ch.pinned_messages.insert(msg_hash);
+        ch.pinned_messages.insert(
+            msg_hash,
+            PinMetadata {
+                pinner: owner,
+                pinned_at_ms: 1_000,
+            },
+        );
         ch.pinned_messages.remove(&msg_hash);
 
         let events = Arc::new(state);
@@ -1285,6 +1439,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+            reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1293,6 +1448,147 @@ mod tests {
         assert!(
             !view.messages[0].pinned,
             "UnpinMessage must flip `pinned` back to false on projection"
+        );
+    }
+
+    /// `DisplayMessage.pinned_metadata` must surface the pinner's
+    /// resolved display name + the captured `pinned_at_ms` whenever a
+    /// row projects to `pinned == true`. Drives the
+    /// `pinned by {name} · {when}` footer in the pinned panel
+    /// (`docs/specs/2026-04-19-ui-design/reactions-pins.md` §Pinned
+    /// panel contents).
+    #[test]
+    fn projection_pinned_metadata_populated_with_resolved_display_name() {
+        let owner = Identity::generate().endpoint_id();
+        let pinner_id = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        // Make the pinner a member with a profile, so
+        // `resolve_display_name` returns the profile's display name.
+        state.members.insert(
+            pinner_id,
+            Member {
+                peer_id: pinner_id,
+                roles: Default::default(),
+                display_name: None,
+            },
+        );
+        state.profiles.insert(pinner_id, {
+            let mut p = Profile::new(pinner_id);
+            p.display_name = "mira".into();
+            p
+        });
+        push_channel(&mut state, "ch-1", "general");
+        let msg_hash = push_message(&mut state, "ch-1", owner, "pin me", 1_000);
+        state
+            .channels
+            .get_mut("ch-1")
+            .unwrap()
+            .pinned_messages
+            .insert(
+                msg_hash,
+                PinMetadata {
+                    pinner: pinner_id,
+                    pinned_at_ms: 1_700_000_000_000,
+                },
+            );
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+            reaction_recency: Default::default(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let queue_meta = Arc::new(QueueMeta::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, &queue_meta, owner);
+        assert_eq!(view.messages.len(), 1);
+        let pm = view.messages[0]
+            .pinned_metadata
+            .as_ref()
+            .expect("pinned row must carry PinnedMetadata");
+        assert_eq!(
+            pm.pinner_display_name, "mira",
+            "pinner_display_name must resolve via profile.display_name",
+        );
+        assert_eq!(
+            pm.pinned_at_ms, 1_700_000_000_000,
+            "pinned_at_ms must equal the source PinMetadata value",
+        );
+    }
+
+    /// `DisplayMessage.pinned_metadata` must fall back through the
+    /// same `resolve_display_name` ladder as the row author —
+    /// `unknown peer` when neither the server profile registry nor
+    /// the local `ProfileState.names` map carries an entry for the
+    /// pinner. Keeps the footer renderable even when profile sync is
+    /// lagging.
+    #[test]
+    fn projection_pinned_metadata_falls_back_to_unknown_peer() {
+        let owner = Identity::generate().endpoint_id();
+        let stranger = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        push_channel(&mut state, "ch-1", "general");
+        let msg_hash = push_message(&mut state, "ch-1", owner, "pin me", 1_000);
+        state
+            .channels
+            .get_mut("ch-1")
+            .unwrap()
+            .pinned_messages
+            .insert(
+                msg_hash,
+                PinMetadata {
+                    pinner: stranger,
+                    pinned_at_ms: 42,
+                },
+            );
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+            reaction_recency: Default::default(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let queue_meta = Arc::new(QueueMeta::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, &queue_meta, owner);
+        let pm = view.messages[0]
+            .pinned_metadata
+            .as_ref()
+            .expect("pinned row must carry PinnedMetadata even when profile is missing");
+        assert_eq!(
+            pm.pinner_display_name, "unknown peer",
+            "missing profile must surface the `unknown peer` fallback",
+        );
+        assert_eq!(pm.pinned_at_ms, 42);
+    }
+
+    /// Non-pinned rows must leave `pinned_metadata` as `None` — the
+    /// renderer gates the footer on `Some(_)`, so leaking a stale
+    /// value here would surface a "pinned by …" line on an unpinned
+    /// row.
+    #[test]
+    fn projection_pinned_metadata_is_none_for_unpinned_row() {
+        let owner = Identity::generate().endpoint_id();
+        let mut state = fresh_state(owner);
+        push_channel(&mut state, "ch-1", "general");
+        let _ = push_message(&mut state, "ch-1", owner, "not pinned", 1_000);
+
+        let events = Arc::new(state);
+        let registry = Arc::new(ServerRegistry::default());
+        let chat = Arc::new(ChatMeta {
+            current_channel: "general".into(),
+            peers: Vec::new(),
+            reaction_recency: Default::default(),
+        });
+        let profiles = Arc::new(ProfileState::default());
+        let queue_meta = Arc::new(QueueMeta::default());
+        let view = compute_messages_view(&events, &registry, &chat, &profiles, &queue_meta, owner);
+        assert!(!view.messages[0].pinned);
+        assert!(
+            view.messages[0].pinned_metadata.is_none(),
+            "unpinned rows must not carry PinnedMetadata",
         );
     }
 
@@ -1316,6 +1612,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+            reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
 
@@ -1383,6 +1680,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+            reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1414,6 +1712,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+            reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
 
@@ -1516,6 +1815,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+            reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
 
@@ -1558,6 +1858,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+            reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
@@ -1612,6 +1913,7 @@ mod tests {
         let chat = Arc::new(ChatMeta {
             current_channel: "general".into(),
             peers: Vec::new(),
+            reaction_recency: Default::default(),
         });
         let profiles = Arc::new(ProfileState::default());
         let queue_meta = Arc::new(QueueMeta::default());
