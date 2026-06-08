@@ -32,6 +32,7 @@ impl StorageRole {
     }
 }
 
+#[async_trait::async_trait]
 impl WorkerRole for StorageRole {
     fn role_info(&self) -> WorkerRoleInfo {
         let total = self.store.count().unwrap_or_else(|e| {
@@ -59,7 +60,11 @@ impl WorkerRole for StorageRole {
         }
     }
 
-    fn handle_request(&mut self, req: WorkerRequest) -> WorkerResponse {
+    async fn handle_request(
+        &mut self,
+        _signer: willow_identity::EndpointId,
+        req: WorkerRequest,
+    ) -> WorkerResponse {
         match req {
             WorkerRequest::History {
                 server_id,
@@ -104,6 +109,9 @@ impl WorkerRole for StorageRole {
                     reason: format!("sync query failed: {e}"),
                 },
             },
+            _ => WorkerResponse::Denied {
+                reason: "unsupported request type".to_string(),
+            },
         }
     }
 }
@@ -114,6 +122,21 @@ mod tests {
     use crate::store::StorageEventStore;
     use willow_identity::Identity;
     use willow_state::{EventHash, EventKind, HeadsSummary};
+
+    /// Drive an async `handle_request` call from sync `#[test]` bodies.
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    /// Test signer for `handle_request` calls. The storage role ignores the
+    /// signer (it only uses it for permission-aware roles like feedback),
+    /// so any deterministic value works.
+    fn test_signer() -> willow_identity::EndpointId {
+        Identity::generate().endpoint_id()
+    }
 
     fn make_message(id: &Identity, seq: u64, prev: EventHash, channel: &str) -> Event {
         Event::new(
@@ -174,12 +197,15 @@ mod tests {
             role.on_event(&e);
         }
 
-        let resp = role.handle_request(WorkerRequest::History {
-            server_id: "srv-1".to_string(),
-            channel: Some("general".to_string()),
-            before: None,
-            limit: 3,
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::History {
+                server_id: "srv-1".to_string(),
+                channel: Some("general".to_string()),
+                before: None,
+                limit: 3,
+            },
+        ));
 
         match resp {
             WorkerResponse::HistoryPage { events, has_more } => {
@@ -205,10 +231,13 @@ mod tests {
         }
 
         // Empty heads = new peer, should get all events.
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary::default(),
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary::default(),
+            },
+        ));
 
         match resp {
             WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 3),
@@ -241,10 +270,13 @@ mod tests {
                 hash: hashes[2].1,
             },
         );
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary { heads: their_heads },
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary { heads: their_heads },
+            },
+        ));
 
         match resp {
             WorkerResponse::SyncBatch { events, .. } => assert_eq!(events.len(), 2),
@@ -305,12 +337,15 @@ mod tests {
         let e = make_message(&id, 1, EventHash::ZERO, "general");
         role.on_event(&e);
 
-        let resp = role.handle_request(WorkerRequest::History {
-            server_id: "nonexistent".to_string(),
-            channel: Some("general".to_string()),
-            before: None,
-            limit: 10,
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::History {
+                server_id: "nonexistent".to_string(),
+                channel: Some("general".to_string()),
+                before: None,
+                limit: 10,
+            },
+        ));
 
         match resp {
             WorkerResponse::HistoryPage { events, has_more } => {
@@ -347,12 +382,15 @@ mod tests {
         let e1 = make_message(&id, 1, EventHash::ZERO, "general");
         role.on_event(&e1);
 
-        let resp = role.handle_request(WorkerRequest::History {
-            server_id: "default".to_string(),
-            channel: Some("general".to_string()),
-            before: None,
-            limit: 10,
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::History {
+                server_id: "default".to_string(),
+                channel: Some("general".to_string()),
+                before: None,
+                limit: 10,
+            },
+        ));
         match resp {
             WorkerResponse::HistoryPage { events, .. } => assert_eq!(
                 events.len(),
@@ -367,12 +405,15 @@ mod tests {
         let e2 = make_message(&id, 2, e1.hash, "general");
         role.on_event(&e2);
 
-        let resp = role.handle_request(WorkerRequest::History {
-            server_id: "srv-A".to_string(),
-            channel: Some("general".to_string()),
-            before: None,
-            limit: 10,
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::History {
+                server_id: "srv-A".to_string(),
+                channel: Some("general".to_string()),
+                before: None,
+                limit: 10,
+            },
+        ));
         match resp {
             WorkerResponse::HistoryPage { events, .. } => assert_eq!(
                 events.len(),
@@ -384,12 +425,15 @@ mod tests {
 
         // The "default" bucket still has only the first event — proves the
         // setter took effect rather than aliasing both IDs.
-        let resp = role.handle_request(WorkerRequest::History {
-            server_id: "default".to_string(),
-            channel: Some("general".to_string()),
-            before: None,
-            limit: 10,
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::History {
+                server_id: "default".to_string(),
+                channel: Some("general".to_string()),
+                before: None,
+                limit: 10,
+            },
+        ));
         match resp {
             WorkerResponse::HistoryPage { events, .. } => assert_eq!(
                 events.len(),
@@ -404,12 +448,15 @@ mod tests {
         let e3 = make_message(&id, 3, e2.hash, "general");
         role.on_event(&e3);
 
-        let resp = role.handle_request(WorkerRequest::History {
-            server_id: "srv-B".to_string(),
-            channel: Some("general".to_string()),
-            before: None,
-            limit: 10,
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::History {
+                server_id: "srv-B".to_string(),
+                channel: Some("general".to_string()),
+                before: None,
+                limit: 10,
+            },
+        ));
         match resp {
             WorkerResponse::HistoryPage { events, .. } => assert_eq!(
                 events.len(),
@@ -420,12 +467,15 @@ mod tests {
         }
 
         // "srv-A" bucket retains its single event.
-        let resp = role.handle_request(WorkerRequest::History {
-            server_id: "srv-A".to_string(),
-            channel: Some("general".to_string()),
-            before: None,
-            limit: 10,
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::History {
+                server_id: "srv-A".to_string(),
+                channel: Some("general".to_string()),
+                before: None,
+                limit: 10,
+            },
+        ));
         match resp {
             WorkerResponse::HistoryPage { events, .. } => assert_eq!(
                 events.len(),
@@ -446,12 +496,15 @@ mod tests {
         let e = make_message(&id, 1, EventHash::ZERO, "general");
         role.on_event(&e);
 
-        let resp = role.handle_request(WorkerRequest::History {
-            server_id: "srv-1".to_string(),
-            channel: Some("nonexistent".to_string()),
-            before: None,
-            limit: 10,
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::History {
+                server_id: "srv-1".to_string(),
+                channel: Some("nonexistent".to_string()),
+                before: None,
+                limit: 10,
+            },
+        ));
 
         match resp {
             WorkerResponse::HistoryPage { events, has_more } => {
@@ -490,10 +543,13 @@ mod tests {
             role.on_event(&e);
         }
 
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary::default(),
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary::default(),
+            },
+        ));
 
         match resp {
             WorkerResponse::SyncBatch { events, more } => {
@@ -535,10 +591,13 @@ mod tests {
             role.on_event(&e);
         }
 
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary::default(),
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary::default(),
+            },
+        ));
 
         match resp {
             WorkerResponse::SyncBatch { events, more } => {
@@ -593,10 +652,13 @@ mod tests {
             role.on_event(&e);
         }
 
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary::default(),
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary::default(),
+            },
+        ));
         match &resp {
             WorkerResponse::SyncBatch { events, .. } => {
                 assert_eq!(events.last().map(|e| e.hash), Some(last_hash));
@@ -633,10 +695,13 @@ mod tests {
                 hash: last_hash,
             },
         );
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary { heads: their_heads },
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary { heads: their_heads },
+            },
+        ));
         match &resp {
             WorkerResponse::SyncBatch { events, more } => {
                 assert!(events.is_empty());
@@ -673,10 +738,13 @@ mod tests {
             },
         );
 
-        let resp = role.handle_request(WorkerRequest::Sync {
-            server_id: "srv-1".to_string(),
-            heads: HeadsSummary { heads: their_heads },
-        });
+        let resp = block_on(role.handle_request(
+            test_signer(),
+            WorkerRequest::Sync {
+                server_id: "srv-1".to_string(),
+                heads: HeadsSummary { heads: their_heads },
+            },
+        ));
 
         match resp {
             WorkerResponse::SyncBatch { events, more } => {

@@ -200,7 +200,13 @@ impl<E: TopicEvents + 'static, T: TopicHandle + 'static> Handler<GossipEventMsg>
                     request_id,
                     payload,
                 } => {
-                    if let Ok(response) = state_addr.ask(WorkerRequestMsg(payload)).await {
+                    if let Ok(response) = state_addr
+                        .ask(WorkerRequestMsg {
+                            req: payload,
+                            signer: requester,
+                        })
+                        .await
+                    {
                         // The marker carries the hash of the last event this
                         // reply streams (or `None` for an empty store) — read it
                         // off the response before it is moved into the reply.

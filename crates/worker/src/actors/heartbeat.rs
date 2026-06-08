@@ -121,6 +121,7 @@ mod tests {
 
     /// A minimal test role for the state actor.
     struct TestRole;
+    #[async_trait::async_trait]
     impl crate::WorkerRole for TestRole {
         fn role_info(&self) -> WorkerRoleInfo {
             WorkerRoleInfo::Replay {
@@ -131,8 +132,9 @@ mod tests {
             }
         }
         fn on_event(&mut self, _event: &willow_state::Event) {}
-        fn handle_request(
+        async fn handle_request(
             &mut self,
+            _signer: willow_identity::EndpointId,
             _req: crate::types::WorkerRequest,
         ) -> crate::types::WorkerResponse {
             crate::types::WorkerResponse::Denied {

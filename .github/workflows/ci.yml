@@ -127,7 +127,7 @@ jobs:
             target
           key: wasm-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: wasm-
-      - run: cargo check --target wasm32-unknown-unknown --workspace --exclude willow-relay --exclude willow-worker --exclude willow-replay --exclude willow-storage --exclude willow-agent
+      - run: cargo check --target wasm32-unknown-unknown --workspace --exclude willow-relay --exclude willow-worker --exclude willow-replay --exclude willow-storage --exclude willow-agent --exclude willow-feedback
       - name: Clippy (wasm32, willow-web)
         run: cargo clippy --target wasm32-unknown-unknown -p willow-web --all-targets -- -D warnings
 
