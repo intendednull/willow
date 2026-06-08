@@ -16,7 +16,7 @@ curve25519-dalek = "4"
 hkdf = "0.12"
 sha2 = "0.10"
 blake3 = { workspace = true }
-rand = "0.8"
+rand = "0.10"
 serde = { workspace = true }
 thiserror = { workspace = true }
 zeroize = { workspace = true }
