@@ -13072,10 +13072,11 @@ mod service_worker_bridge {
 
 mod stun_config {
     //! Tests that the WebRTC ICE configuration honours the
-    //! `window.__WILLOW_STUN_URLS` override and defaults to an empty
-    //! `iceServers` list (privacy-first — no third-party STUN by default).
+    //! `window.__WILLOW_STUN_URLS` / `window.__WILLOW_ICE_SERVERS` overrides and
+    //! defaults to an empty `iceServers` list (privacy-first — no third-party
+    //! STUN by default).
     //!
-    //! See `crates/web/src/voice.rs::resolve_stun_urls` and
+    //! See `crates/web/src/voice.rs::resolve_ice_servers` and
     //! `crates/web/src/voice.rs::VoiceManager::rtc_config`.
 
     use wasm_bindgen::JsCast;
@@ -13109,22 +13110,27 @@ mod stun_config {
     #[wasm_bindgen_test]
     fn default_resolves_to_empty_list() {
         clear_override();
-        let urls = voice::resolve_stun_urls();
+        let servers = voice::resolve_ice_servers();
         assert!(
-            urls.is_empty(),
-            "default STUN URL list must be empty for privacy (got {urls:?})"
+            servers.is_empty(),
+            "default ICE server list must be empty for privacy (got {servers:?})"
         );
     }
 
     #[wasm_bindgen_test]
     fn override_resolves_to_supplied_urls() {
         set_override(&["stun:foo:1234", "stun:bar:5678"]);
-        let urls = voice::resolve_stun_urls();
+        let servers = voice::resolve_ice_servers();
         clear_override();
+        // The legacy STUN-only override collapses to a single credential-less
+        // server entry carrying both URLs.
+        assert_eq!(servers.len(), 1, "legacy STUN urls form one server entry");
         assert_eq!(
-            urls,
+            servers[0].urls,
             vec!["stun:foo:1234".to_string(), "stun:bar:5678".to_string()]
         );
+        assert!(servers[0].username.is_none());
+        assert!(servers[0].credential.is_none());
     }
 
     #[wasm_bindgen_test]
@@ -13171,6 +13177,124 @@ mod stun_config {
         assert_eq!(urls_arr.length(), 1);
         let first = urls_arr.get(0).as_string().expect("url is a string");
         assert_eq!(first, "stun:example.com:3478");
+    }
+}
+
+// ── Voice signaling logic (RC1 TURN config, perfect-negotiation, ICE buffer) ─
+
+mod voice_logic {
+    //! Unit tests for the pure decision points extracted from
+    //! `crates/web/src/voice.rs`:
+    //! * [`voice::should_ignore_offer`] — perfect-negotiation collision rule.
+    //! * [`voice::PendingIceCandidates`] — early-ICE buffer (RC3).
+    //! * [`voice::merge_ice_servers`] is exercised indirectly via
+    //!   [`voice::resolve_ice_servers`] in `stun_config`.
+    //! * [`voice::build_rtc_config_for_test`] — TURN credentials propagate (RC1).
+    //!
+    //! See `docs/reports/2026-06-07-voice-media-connectivity-investigation.md`.
+
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_test::*;
+    use willow_web::voice::{
+        self, build_rtc_config_for_test, should_ignore_offer, IceServerConfig, PendingIceCandidates,
+    };
+
+    #[wasm_bindgen_test]
+    fn impolite_ignores_offer_only_on_collision() {
+        // Impolite (polite=false): ignore when making an offer OR not stable.
+        assert!(
+            should_ignore_offer(false, true, true),
+            "making_offer collision"
+        );
+        assert!(
+            should_ignore_offer(false, false, false),
+            "non-stable collision"
+        );
+        assert!(
+            !should_ignore_offer(false, false, true),
+            "no collision: accept even when impolite"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn polite_never_ignores_offer() {
+        // Polite peer always accepts (rolls back its own offer instead).
+        assert!(!should_ignore_offer(true, true, false));
+        assert!(!should_ignore_offer(true, true, true));
+        assert!(!should_ignore_offer(true, false, true));
+    }
+
+    #[wasm_bindgen_test]
+    fn pending_ice_queues_and_drains_in_order() {
+        let mut q = PendingIceCandidates::default();
+        assert_eq!(q.peers_pending(), 0);
+        q.push("peerA", "c1");
+        q.push("peerA", "c2");
+        q.push("peerB", "c3");
+        assert_eq!(q.peers_pending(), 2);
+
+        // Draining peerA returns its candidates in arrival order and clears it.
+        assert_eq!(q.take("peerA"), vec!["c1".to_string(), "c2".to_string()]);
+        assert_eq!(
+            q.take("peerA"),
+            Vec::<String>::new(),
+            "second take is empty"
+        );
+        assert_eq!(q.peers_pending(), 1, "peerB still queued");
+
+        q.clear();
+        assert_eq!(q.peers_pending(), 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn build_rtc_config_propagates_turn_credentials() {
+        // RC1: a TURN entry must carry url + username + credential, otherwise
+        // the browser cannot authenticate to the relay and media never flows
+        // across symmetric NAT.
+        let servers = vec![IceServerConfig {
+            urls: vec!["turn:turn.example:3478".to_string()],
+            username: Some("ephemeral-user".to_string()),
+            credential: Some("hmac-token".to_string()),
+        }];
+        let cfg = build_rtc_config_for_test(&servers);
+
+        let ice_servers =
+            js_sys::Reflect::get(&cfg, &"iceServers".into()).expect("read iceServers");
+        let arr: js_sys::Array = ice_servers.dyn_into().expect("iceServers array");
+        assert_eq!(arr.length(), 1);
+        let server = arr.get(0);
+        let username = js_sys::Reflect::get(&server, &"username".into())
+            .ok()
+            .and_then(|v| v.as_string());
+        let credential = js_sys::Reflect::get(&server, &"credential".into())
+            .ok()
+            .and_then(|v| v.as_string());
+        assert_eq!(username.as_deref(), Some("ephemeral-user"));
+        assert_eq!(credential.as_deref(), Some("hmac-token"));
+    }
+
+    #[wasm_bindgen_test]
+    fn full_ice_servers_override_carries_credentials() {
+        // The richer `__WILLOW_ICE_SERVERS` knob carries TURN credentials end
+        // to end through `resolve_ice_servers`.
+        let window = web_sys::window().expect("window");
+        let entry = js_sys::Object::new();
+        let urls = js_sys::Array::new();
+        urls.push(&"turn:turn.example:3478".into());
+        js_sys::Reflect::set(&entry, &"urls".into(), &urls).unwrap();
+        js_sys::Reflect::set(&entry, &"username".into(), &"u".into()).unwrap();
+        js_sys::Reflect::set(&entry, &"credential".into(), &"c".into()).unwrap();
+        let arr = js_sys::Array::new();
+        arr.push(&entry);
+        js_sys::Reflect::set(&window, &"__WILLOW_ICE_SERVERS".into(), &arr).unwrap();
+
+        let servers = voice::resolve_ice_servers();
+        let _ = js_sys::Reflect::delete_property(&window, &"__WILLOW_ICE_SERVERS".into());
+
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].urls, vec!["turn:turn.example:3478".to_string()]);
+        assert_eq!(servers[0].username.as_deref(), Some("u"));
+        assert_eq!(servers[0].credential.as_deref(), Some("c"));
     }
 }
 

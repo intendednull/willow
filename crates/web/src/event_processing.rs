@@ -85,7 +85,10 @@ pub fn process_event_batch(
                         participants.push(pid.clone());
                     }
                 });
-                if state.voice.voice_channel.get_untracked() == Some(ch) {
+                // Existing participants offer to the new joiner (one offerer per
+                // pair). Skip our own echoed join so we never offer to ourselves.
+                if state.voice.voice_channel.get_untracked() == Some(ch) && pid != handle.peer_id()
+                {
                     let vm = voice_manager.clone();
                     let p = pid;
                     wasm_bindgen_futures::spawn_local(handle_voice_create_offer(vm, p));
@@ -106,9 +109,7 @@ pub fn process_event_batch(
                 write.voice.set_remote_video_streams.update(|m| {
                     m.remove(&pid_for_stream);
                 });
-                voice_manager
-                    .borrow_mut()
-                    .close_connection(&peer_id.to_string());
+                voice_manager.close_connection(&peer_id.to_string());
             }
             ClientEvent::VoiceSignal {
                 from_peer, signal, ..
@@ -125,7 +126,7 @@ pub fn process_event_batch(
                         wasm_bindgen_futures::spawn_local(handle_voice_answer(vm, from, s));
                     }
                     VoiceSignalPayload::IceCandidate(json) => {
-                        if let Err(e) = vm.borrow().handle_ice_candidate(&from, json) {
+                        if let Err(e) = vm.handle_ice_candidate(&from, json) {
                             tracing::warn!(?e, "handle_ice_candidate failed");
                         }
                     }

@@ -644,19 +644,24 @@ pub(crate) async fn process_received_message<T: TopicHandle>(
             // per channel) dimensions of `VoiceState.participants`.
             // Without these gates, any signed peer can flood arbitrary
             // `channel_id`s and exhaust receiving clients' memory.
-            let known = willow_actor::state::select(&ctx.event_state, {
+            //
+            // The wire carries the canonical `channel_id` (UUID); voice state
+            // and UI events are keyed by the channel *name* (the whole UI is
+            // name-keyed). Resolve id -> name here: `None` both fails the
+            // existence gate and means "unknown channel".
+            let name = willow_actor::state::select(&ctx.event_state, {
                 let ch = channel_id.clone();
-                move |es| es.channels.contains_key(&ch)
+                move |es| es.channels.get(&ch).map(|c| c.name.clone())
             })
             .await;
-            if !known {
+            let Some(name) = name else {
                 tracing::debug!(
                     %signer, channel_id = %channel_id,
                     "dropping VoiceJoin: channel_id not in ServerState.channels"
                 );
                 return;
-            }
-            let ch = channel_id.clone();
+            };
+            let ch = name.clone();
             let inserted = willow_actor::state::mutate(&ctx.voice, move |v| {
                 let new_channel = !v.participants.contains_key(&ch);
                 if new_channel && v.participants.len() >= MAX_VOICE_CHANNELS {
@@ -680,7 +685,7 @@ pub(crate) async fn process_received_message<T: TopicHandle>(
             warn_if_err(
                 ctx.event_broker
                     .do_send(willow_actor::Publish(ClientEvent::VoiceJoined {
-                        channel_id,
+                        channel_id: name,
                         peer_id,
                     })),
                 "event_broker.do_send Publish(VoiceJoined)",
@@ -695,19 +700,21 @@ pub(crate) async fn process_received_message<T: TopicHandle>(
             // UI. The `participants` map is unaffected even without the
             // gate (`get_mut` returns None), but the event-broker fanout
             // would still leak attacker-controlled `channel_id`s.
-            let known = willow_actor::state::select(&ctx.event_state, {
+            // Resolve the wire `channel_id` (UUID) to the name used by voice
+            // state + UI events; `None` fails the existence gate.
+            let name = willow_actor::state::select(&ctx.event_state, {
                 let ch = channel_id.clone();
-                move |es| es.channels.contains_key(&ch)
+                move |es| es.channels.get(&ch).map(|c| c.name.clone())
             })
             .await;
-            if !known {
+            let Some(name) = name else {
                 tracing::debug!(
                     %signer, channel_id = %channel_id,
                     "dropping VoiceLeave: channel_id not in ServerState.channels"
                 );
                 return;
-            }
-            let ch = channel_id.clone();
+            };
+            let ch = name.clone();
             willow_actor::state::mutate(&ctx.voice, move |v| {
                 if let Some(p) = v.participants.get_mut(&ch) {
                     p.remove(&peer_id);
@@ -717,7 +724,7 @@ pub(crate) async fn process_received_message<T: TopicHandle>(
             warn_if_err(
                 ctx.event_broker
                     .do_send(willow_actor::Publish(ClientEvent::VoiceLeft {
-                        channel_id,
+                        channel_id: name,
                         peer_id,
                     })),
                 "event_broker.do_send Publish(VoiceLeft)",
@@ -734,22 +741,22 @@ pub(crate) async fn process_received_message<T: TopicHandle>(
                 // event handlers. Signals do not mutate `participants`
                 // directly, but the existence check shuts the same fanout
                 // gap as Join/Leave.
-                let known = willow_actor::state::select(&ctx.event_state, {
+                let name = willow_actor::state::select(&ctx.event_state, {
                     let ch = channel_id.clone();
-                    move |es| es.channels.contains_key(&ch)
+                    move |es| es.channels.get(&ch).map(|c| c.name.clone())
                 })
                 .await;
-                if !known {
+                let Some(name) = name else {
                     tracing::debug!(
                         %signer, channel_id = %channel_id,
                         "dropping VoiceSignal: channel_id not in ServerState.channels"
                     );
                     return;
-                }
+                };
                 warn_if_err(
                     ctx.event_broker
                         .do_send(willow_actor::Publish(ClientEvent::VoiceSignal {
-                            channel_id,
+                            channel_id: name,
                             from_peer: signer,
                             signal,
                         })),
@@ -1604,6 +1611,18 @@ mod tests {
             .expect("test_client must seed at least one channel")
     }
 
+    /// The display name of the first seeded channel. Voice state + events are
+    /// keyed by name (the wire carries the UUID `channel_id`, which the
+    /// listener resolves to this name), so state assertions look up by name.
+    async fn known_channel_name<N: willow_network::Network>(client: &ClientHandle<N>) -> String {
+        let snap = client.state_snapshot().await;
+        snap.channels
+            .values()
+            .next()
+            .map(|c| c.name.clone())
+            .expect("test_client must seed at least one channel")
+    }
+
     /// VoiceJoin against an unknown `channel_id` must not mutate
     /// `VoiceState.participants` (defends against attackers flooding
     /// random channel ids until memory is exhausted).
@@ -1652,7 +1671,10 @@ mod tests {
             .await
             .expect("subscribe must succeed");
         let ctx = make_ctx(&client);
+        // Wire is addressed by canonical channel_id (UUID); voice state is
+        // keyed by the resolved channel name.
         let channel_id = known_channel_id(&client).await;
+        let channel_name = known_channel_name(&client).await;
 
         let attacker = willow_identity::Identity::generate();
         let attacker_id = attacker.endpoint_id();
@@ -1665,7 +1687,7 @@ mod tests {
 
         let stored = poll_until_some(
             || {
-                let ch = channel_id.clone();
+                let ch = channel_name.clone();
                 willow_actor::state::select(&client.voice_state_addr, move |v| {
                     v.participants
                         .get(&ch)
@@ -1679,7 +1701,7 @@ mod tests {
         assert_eq!(
             stored,
             Some(1),
-            "VoiceJoin on a known channel must record the participant"
+            "VoiceJoin on a known channel must record the participant (keyed by name)"
         );
     }
 
@@ -1748,10 +1770,12 @@ mod tests {
             .await
             .expect("subscribe must succeed");
         let ctx = make_ctx(&client);
+        // Wire is addressed by channel_id (UUID); state is keyed by name.
         let channel_id = known_channel_id(&client).await;
+        let channel_name = known_channel_name(&client).await;
 
-        // Fill the cap with synthetic participants on the real channel.
-        let cap_channel = channel_id.clone();
+        // Fill the cap with synthetic participants on the real channel (by name).
+        let cap_channel = channel_name.clone();
         willow_actor::state::mutate(&client.voice_state_addr, move |v| {
             let set = v.participants.entry(cap_channel).or_default();
             for _ in 0..MAX_PARTICIPANTS_PER_CHANNEL {
@@ -1763,7 +1787,7 @@ mod tests {
         // Confirm preconditions.
         let pre = voice_snapshot(&client).await;
         assert_eq!(
-            pre.participants.get(&channel_id).map(|s| s.len()),
+            pre.participants.get(&channel_name).map(|s| s.len()),
             Some(MAX_PARTICIPANTS_PER_CHANNEL),
             "test setup must fill participants to cap"
         );
@@ -1781,7 +1805,7 @@ mod tests {
         let snap = voice_snapshot(&client).await;
         let set = snap
             .participants
-            .get(&channel_id)
+            .get(&channel_name)
             .expect("channel set must still exist");
         assert_eq!(
             set.len(),

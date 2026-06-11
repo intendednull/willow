@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use leptos::prelude::*;
@@ -51,8 +50,13 @@ const LOADING_TIMEOUT_MS: u32 = 5_000;
 /// Wrapper around `willow_client::ClientHandle` that is `Send` for single-threaded WASM.
 pub type WebClientHandle = SendWrapper<ClientHandle<willow_network::iroh::IrohNetwork>>;
 
-/// Wrapper around `Rc<RefCell<VoiceManager>>` that is `Send` for single-threaded WASM.
-pub type VoiceManagerHandle = SendWrapper<Rc<RefCell<VoiceManager>>>;
+/// Wrapper around `Rc<VoiceManager>` that is `Send` for single-threaded WASM.
+///
+/// No outer `RefCell`: `VoiceManager` owns its mutable state behind interior
+/// mutability and exposes only `&self` methods, so callers can `.await` the
+/// async signaling methods without holding a borrow across the await point
+/// (which previously risked a `RefCell` double-borrow panic mid-negotiation).
+pub type VoiceManagerHandle = SendWrapper<Rc<VoiceManager>>;
 
 /// Default relay URL for the deployed Willow relay server.
 pub const DEFAULT_RELAY_URL: &str = "https://willow.intendednull.com:9443";
@@ -313,35 +317,39 @@ pub fn App() -> impl IntoView {
     let voice_channel_for_signal = app_state.voice.voice_channel;
     let set_remote_streams = write.voice.set_remote_video_streams;
     let set_speaking = write.voice.set_speaking_peers;
-    let voice_manager: VoiceManagerHandle =
-        SendWrapper::new(Rc::new(RefCell::new(VoiceManager::new(
-            local_peer_id,
-            move |target_peer: &str, signal_type: &str, payload: &str| {
-                let ch_id = voice_channel_for_signal.get_untracked().unwrap_or_default();
-                let signal = match signal_type {
-                    "offer" => VoiceSignalPayload::Offer(payload.to_string()),
-                    "answer" => VoiceSignalPayload::Answer(payload.to_string()),
-                    "ice" => VoiceSignalPayload::IceCandidate(payload.to_string()),
-                    _ => return,
-                };
-                if let Ok(target) = target_peer.parse::<willow_identity::EndpointId>() {
-                    voice_signal_handle.send_voice_signal(&ch_id, target, signal);
-                }
-            },
-            move |peer_id: &str, stream: Option<web_sys::MediaStream>| {
-                let pid = peer_id.to_string();
-                set_remote_streams.update(move |map| {
-                    if let Some(s) = stream {
-                        map.insert(pid, send_wrapper::SendWrapper::new(s));
-                    } else {
-                        map.remove(&pid);
-                    }
+    let voice_manager: VoiceManagerHandle = SendWrapper::new(Rc::new(VoiceManager::new(
+        local_peer_id,
+        move |target_peer: &str, signal_type: &str, payload: &str| {
+            let ch_id = voice_channel_for_signal.get_untracked().unwrap_or_default();
+            let signal = match signal_type {
+                "offer" => VoiceSignalPayload::Offer(payload.to_string()),
+                "answer" => VoiceSignalPayload::Answer(payload.to_string()),
+                "ice" => VoiceSignalPayload::IceCandidate(payload.to_string()),
+                _ => return,
+            };
+            if let Ok(target) = target_peer.parse::<willow_identity::EndpointId>() {
+                // send_voice_signal resolves the channel name -> canonical id
+                // (async), so dispatch it on the local task queue.
+                let h = voice_signal_handle.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    h.send_voice_signal(&ch_id, target, signal).await;
                 });
-            },
-            move |peers: std::collections::HashSet<String>| {
-                set_speaking.set(peers);
-            },
-        ))));
+            }
+        },
+        move |peer_id: &str, stream: Option<web_sys::MediaStream>| {
+            let pid = peer_id.to_string();
+            set_remote_streams.update(move |map| {
+                if let Some(s) = stream {
+                    map.insert(pid, send_wrapper::SendWrapper::new(s));
+                } else {
+                    map.remove(&pid);
+                }
+            });
+        },
+        move |peers: std::collections::HashSet<String>| {
+            set_speaking.set(peers);
+        },
+    )));
 
     provide_context(voice_manager.clone());
 
@@ -773,7 +781,7 @@ pub fn App() -> impl IntoView {
     let on_voice_mute = move |_: ()| {
         let new_muted = !app_state.voice.voice_muted.get_untracked();
         write.voice.set_voice_muted.set(new_muted);
-        vm_mute.borrow().set_muted(new_muted);
+        vm_mute.set_muted(new_muted);
     };
 
     // Voice deafen handler.
@@ -783,10 +791,10 @@ pub fn App() -> impl IntoView {
         write.voice.set_voice_deafened.set(new_deafened);
         if new_deafened {
             write.voice.set_voice_muted.set(true);
-            vm_deafen.borrow().set_muted(true);
+            vm_deafen.set_muted(true);
         } else {
             write.voice.set_voice_muted.set(false);
-            vm_deafen.borrow().set_muted(false);
+            vm_deafen.set_muted(false);
         }
     };
 
@@ -798,7 +806,7 @@ pub fn App() -> impl IntoView {
         wasm_bindgen_futures::spawn_local(async move {
             handle_voice_leave.leave_voice().await;
         });
-        vm_disconnect.borrow_mut().close_all();
+        vm_disconnect.close_all();
         write.voice.reset();
         write.ui.set_show_call_page.set(false);
         write
@@ -1053,7 +1061,7 @@ pub fn App() -> impl IntoView {
                                         wasm_bindgen_futures::spawn_local(async move {
                                             vc_leave.leave_voice().await;
                                         });
-                                        vm.borrow_mut().close_all();
+                                        vm.close_all();
                                         write.voice.reset();
                                     }
 
@@ -1098,7 +1106,7 @@ pub fn App() -> impl IntoView {
                                     let on_success = wasm_bindgen::closure::Closure::once(move |stream: wasm_bindgen::JsValue| {
                                         use wasm_bindgen::JsCast;
                                         let stream: web_sys::MediaStream = stream.unchecked_into();
-                                        vm2.borrow_mut().set_local_stream(stream);
+                                        vm2.set_local_stream(stream);
                                         wasm_bindgen_futures::spawn_local(async move {
                                             vc.join_voice(&ch_name).await;
 
@@ -1540,32 +1548,21 @@ pub fn App() -> impl IntoView {
 
 /// Helper to create a WebRTC offer in a spawned future.
 ///
-/// The `RefCell` borrow is held across await but this is safe on
-/// single-threaded WASM where there is no preemption.
-#[allow(clippy::await_holding_refcell_ref)]
+/// `VoiceManager` exposes `&self` async methods over interior mutability, so no
+/// `RefCell` borrow is held across the await — concurrent signaling tasks
+/// (offers, answers, ICE candidates) can interleave safely.
 pub async fn handle_voice_create_offer(vm: VoiceManagerHandle, peer_id: String) {
-    let mut mgr = vm.borrow_mut();
-    mgr.create_offer(&peer_id).await.ok();
+    vm.create_offer(&peer_id).await.ok();
 }
 
 /// Helper to handle an incoming WebRTC offer.
-///
-/// The `RefCell` borrow is held across await but this is safe on
-/// single-threaded WASM where there is no preemption.
-#[allow(clippy::await_holding_refcell_ref)]
 pub async fn handle_voice_offer(vm: VoiceManagerHandle, from: String, sdp: String) {
-    let mut mgr = vm.borrow_mut();
-    mgr.handle_offer(&from, &sdp).await.ok();
+    vm.handle_offer(&from, &sdp).await.ok();
 }
 
 /// Helper to handle an incoming WebRTC answer.
-///
-/// The `RefCell` borrow is held across await but this is safe on
-/// single-threaded WASM where there is no preemption.
-#[allow(clippy::await_holding_refcell_ref)]
 pub async fn handle_voice_answer(vm: VoiceManagerHandle, from: String, sdp: String) {
-    let mgr = vm.borrow();
-    mgr.handle_answer(&from, &sdp).await.ok();
+    vm.handle_answer(&from, &sdp).await.ok();
 }
 
 #[cfg(test)]

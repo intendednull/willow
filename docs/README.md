@@ -141,6 +141,10 @@ Every entry below carries one of:
 
 See also: [`plans/STATUS.md`](plans/STATUS.md) — point-in-time audit of which UI-phase plans have landed.
 
+**Reports**
+
+- [Voice/video media-connectivity investigation](reports/2026-06-07-voice-media-connectivity-investigation.md) — root-cause of "joined a call but no audio/video reached the remote peer": voice wire messages addressed by channel name while the SEC-V-03 gates validate UUIDs (dropped *all* voice), plus the WebRTC media plane broken at four layers (4 KB signaling cap dropping video SDP, dropped early ICE candidates, RefCell-across-await, no STUN/TURN NAT traversal). All but cross-NAT traversal fixed + proven by a 2-peer Playwright media test; coturn deployment tracked separately. `[landed]`
+
 ### Agent / MCP
 
 **Specs**

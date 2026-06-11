@@ -20,11 +20,11 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{
     AnalyserNode, AudioContext, MediaStream, MediaStreamAudioSourceNode, RtcConfiguration,
     RtcIceServer, RtcPeerConnection, RtcPeerConnectionIceEvent, RtcRtpSender, RtcSdpType,
-    RtcSessionDescriptionInit, RtcTrackEvent,
+    RtcSessionDescriptionInit, RtcSignalingState, RtcTrackEvent,
 };
 
 use crate::state::VideoSource;
@@ -200,6 +200,36 @@ struct PeerConnectionState {
     /// Shared flag: `true` while we are in the process of creating and sending
     /// an offer. Shared with the `onnegotiationneeded` closure via `Rc<Cell>`.
     making_offer: Rc<Cell<bool>>,
+    /// `true` once `setRemoteDescription` has succeeded on this connection.
+    ///
+    /// Remote ICE candidates that arrive before this is set cannot be added —
+    /// the browser rejects `addIceCandidate` while `remoteDescription` is null
+    /// (it buffers only the *local* end's candidates, not remote ones). We
+    /// queue such candidates in [`VoiceManager::pending_ice`] and flush them
+    /// once this flips true. Reading `pc.remote_description()` directly would
+    /// require the `RtcSessionDescription` web-sys feature; a flag is both
+    /// cheaper and deterministically testable.
+    remote_set: Rc<Cell<bool>>,
+}
+
+/// Cheaply-cloned handles to a peer connection, returned from
+/// [`VoiceManager::get_or_create_connection`] so the caller can drive the
+/// async SDP exchange without holding a `RefCell` borrow across `.await`.
+struct ConnHandles {
+    pc: RtcPeerConnection,
+    making_offer: Rc<Cell<bool>>,
+    remote_set: Rc<Cell<bool>>,
+}
+
+impl PeerConnectionState {
+    /// Clone the cheap handles (JS reference + `Rc` flags) out of this state.
+    fn handles(&self) -> ConnHandles {
+        ConnHandles {
+            pc: self.pc.clone(),
+            making_offer: self.making_offer.clone(),
+            remote_set: self.remote_set.clone(),
+        }
+    }
 }
 
 /// Manages WebRTC connections for voice chat.
@@ -213,22 +243,32 @@ pub struct VoiceManager {
     /// Our own peer ID, used for polite/impolite determination.
     local_peer_id: String,
     /// One `PeerConnectionState` per remote peer.
-    connections: HashMap<String, PeerConnectionState>,
+    ///
+    /// All mutable state lives behind interior mutability (`RefCell`/`Cell`) so
+    /// every public method can take `&self`. This lets callers hold the manager
+    /// behind a plain `Rc<VoiceManager>` (no outer `RefCell`) and `.await` the
+    /// async signaling methods without holding any borrow across the await
+    /// point. Internal `RefCell` guards are always dropped before any `.await`.
+    connections: RefCell<HashMap<String, PeerConnectionState>>,
     /// Local microphone stream (acquired once).
-    local_stream: Option<MediaStream>,
+    local_stream: RefCell<Option<MediaStream>>,
     /// Callback to send signaling data: `(target_peer, signal_type, payload)`.
     on_signal: SignalCallback,
     /// Callback invoked when a remote video track arrives or ends.
     on_video_track: VideoTrackCallback,
     /// Active video stream (camera or screen share).
-    video_stream: Option<MediaStream>,
+    video_stream: RefCell<Option<MediaStream>>,
     /// Which video source is currently active.
-    video_source: Option<VideoSource>,
+    video_source: Cell<Option<VideoSource>>,
     /// RTP senders for the video track, keyed by remote peer ID.
     /// Stored so we can call `remove_track` later.
-    video_senders: HashMap<String, RtcRtpSender>,
+    video_senders: RefCell<HashMap<String, RtcRtpSender>>,
+    /// Remote ICE candidates that arrived before their connection had a remote
+    /// description set. Flushed by [`VoiceManager::flush_pending_ice`] once
+    /// `setRemoteDescription` succeeds. Keyed by remote peer ID.
+    pending_ice: RefCell<PendingIceCandidates>,
     /// Audio volume analyser for speaking detection.
-    speaking_detector: Option<SpeakingDetector>,
+    speaking_detector: RefCell<Option<SpeakingDetector>>,
     /// Stored so `close_all()` can recreate the `SpeakingDetector` for the next session.
     speaking_change_cb: Option<Rc<dyn Fn(HashSet<String>)>>,
 }
@@ -264,14 +304,15 @@ impl VoiceManager {
         }
         Self {
             local_peer_id,
-            connections: HashMap::new(),
-            local_stream: None,
+            connections: RefCell::new(HashMap::new()),
+            local_stream: RefCell::new(None),
             on_signal: Rc::new(on_signal),
             on_video_track: Rc::new(on_video_track),
-            video_stream: None,
-            video_source: None,
-            video_senders: HashMap::new(),
-            speaking_detector: detector,
+            video_stream: RefCell::new(None),
+            video_source: Cell::new(None),
+            video_senders: RefCell::new(HashMap::new()),
+            pending_ice: RefCell::new(PendingIceCandidates::default()),
+            speaking_detector: RefCell::new(detector),
             speaking_change_cb: Some(speaking_cb),
         }
     }
@@ -280,19 +321,20 @@ impl VoiceManager {
     ///
     /// Also adds the stream to the speaking detector so the local user's
     /// volume is analysed alongside remote peers.
-    pub fn set_local_stream(&mut self, stream: MediaStream) {
-        if let Some(ref mut detector) = self.speaking_detector {
+    pub fn set_local_stream(&self, stream: MediaStream) {
+        if let Some(ref mut detector) = *self.speaking_detector.borrow_mut() {
             detector.add_stream(&self.local_peer_id, &stream);
         }
-        self.local_stream = Some(stream);
+        *self.local_stream.borrow_mut() = Some(stream);
     }
 
-    /// Build an `RTCConfiguration` honouring the configured STUN URL list.
+    /// Build an `RTCConfiguration` honouring the configured ICE server list.
     ///
-    /// See [`resolve_stun_urls`] for the privacy-first default (empty list)
-    /// and the `window.__WILLOW_STUN_URLS` override knob.
+    /// See [`resolve_ice_servers`] for the privacy-first default (empty list)
+    /// and the `window.__WILLOW_ICE_SERVERS` / `window.__WILLOW_STUN_URLS`
+    /// override knobs.
     fn rtc_config() -> RtcConfiguration {
-        build_rtc_config(&resolve_stun_urls())
+        build_rtc_config(&resolve_ice_servers())
     }
 
     /// Test-only accessor for the resolved `RTCConfiguration`.
@@ -313,7 +355,7 @@ impl VoiceManager {
     /// can store it in `video_senders` for later removal.
     fn add_local_tracks(&self, pc: &RtcPeerConnection) -> Option<RtcRtpSender> {
         // Audio tracks.
-        if let Some(ref stream) = self.local_stream {
+        if let Some(ref stream) = *self.local_stream.borrow() {
             let tracks = stream.get_audio_tracks();
             for i in 0..tracks.length() {
                 let track: web_sys::MediaStreamTrack = tracks.get(i).unchecked_into();
@@ -321,7 +363,7 @@ impl VoiceManager {
             }
         }
         // Video track if currently sharing.
-        if let Some(ref video_stream) = self.video_stream {
+        if let Some(ref video_stream) = *self.video_stream.borrow() {
             let tracks = video_stream.get_video_tracks();
             if tracks.length() > 0 {
                 let track: web_sys::MediaStreamTrack = tracks.get(0).unchecked_into();
@@ -362,12 +404,11 @@ impl VoiceManager {
         // Share the detector's analysers map, sources map, and audio context
         // with the closure so it can register incoming remote audio streams
         // for speaking detection.
-        let detector_analysers = self.speaking_detector.as_ref().map(|d| d.analysers.clone());
-        let detector_sources = self.speaking_detector.as_ref().map(|d| d.sources.clone());
-        let detector_ctx = self
-            .speaking_detector
-            .as_ref()
-            .map(|d| d.audio_context.clone());
+        let detector_ref = self.speaking_detector.borrow();
+        let detector_analysers = detector_ref.as_ref().map(|d| d.analysers.clone());
+        let detector_sources = detector_ref.as_ref().map(|d| d.sources.clone());
+        let detector_ctx = detector_ref.as_ref().map(|d| d.audio_context.clone());
+        drop(detector_ref);
 
         let on_track = Closure::wrap(Box::new(move |ev: RtcTrackEvent| {
             let track: web_sys::MediaStreamTrack = ev.track();
@@ -507,24 +548,63 @@ impl VoiceManager {
         on_negotiation.forget();
     }
 
+    /// Log ICE / connection state transitions for a peer connection.
+    ///
+    /// Without this, a failed ICE negotiation (the common cause of "joined but
+    /// no media") is completely silent. We read the state via `Reflect` so no
+    /// extra web-sys enum features are required, and warn on `failed` /
+    /// `disconnected`. This is diagnostics only — it changes no behaviour.
+    fn setup_connection_logging(pc: &RtcPeerConnection, remote_peer: &str) {
+        fn state_str(pc: &RtcPeerConnection, key: &str) -> String {
+            js_sys::Reflect::get(pc, &JsValue::from_str(key))
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        }
+
+        let pc_ice = pc.clone();
+        let peer_ice = remote_peer.to_string();
+        let on_ice_state = Closure::wrap(Box::new(move || {
+            let state = state_str(&pc_ice, "iceConnectionState");
+            if state == "failed" || state == "disconnected" {
+                tracing::warn!(peer = %peer_ice, %state, "ICE connection state");
+            } else {
+                tracing::debug!(peer = %peer_ice, %state, "ICE connection state");
+            }
+        }) as Box<dyn FnMut()>);
+        pc.set_oniceconnectionstatechange(Some(on_ice_state.as_ref().unchecked_ref()));
+        on_ice_state.forget();
+
+        let pc_conn = pc.clone();
+        let peer_conn = remote_peer.to_string();
+        let on_conn_state = Closure::wrap(Box::new(move || {
+            let state = state_str(&pc_conn, "connectionState");
+            if state == "failed" {
+                tracing::warn!(peer = %peer_conn, %state, "peer connection state");
+            } else {
+                tracing::debug!(peer = %peer_conn, %state, "peer connection state");
+            }
+        }) as Box<dyn FnMut()>);
+        pc.set_onconnectionstatechange(Some(on_conn_state.as_ref().unchecked_ref()));
+        on_conn_state.forget();
+    }
+
     /// Get an existing connection or create a new one with all handlers wired up.
     ///
-    /// If a connection already exists for `remote_peer`, it is returned as-is.
-    /// Otherwise a new `RTCPeerConnection` is created, local tracks are added,
-    /// and ICE / track / negotiation handlers are installed.
+    /// If a connection already exists for `remote_peer`, its handles are cloned
+    /// and returned. Otherwise a new `RTCPeerConnection` is created, local
+    /// tracks are added, and ICE / track / negotiation handlers are installed.
     ///
-    /// Returns a reference to the `PeerConnectionState` and an optional
-    /// `RtcRtpSender` for the video track (if one was added to a new connection).
+    /// Returns **owned, cloned** handles (the `RtcPeerConnection` is a cheap JS
+    /// reference; `making_offer`/`remote_set` are `Rc`s) plus an optional
+    /// `RtcRtpSender` for a video track added to a *newly created* connection.
+    /// No `RefCell` borrow escapes, so callers may freely `.await` afterwards.
     fn get_or_create_connection(
-        &mut self,
+        &self,
         remote_peer: &str,
-    ) -> Result<(&PeerConnectionState, Option<RtcRtpSender>), String> {
-        if self.connections.contains_key(remote_peer) {
-            let state = self
-                .connections
-                .get(remote_peer)
-                .expect("key just inserted");
-            return Ok((state, None));
+    ) -> Result<(ConnHandles, Option<RtcRtpSender>), String> {
+        if let Some(state) = self.connections.borrow().get(remote_peer) {
+            return Ok((state.handles(), None));
         }
 
         let pc = RtcPeerConnection::new_with_configuration(&Self::rtc_config())
@@ -533,20 +613,21 @@ impl VoiceManager {
         let video_sender = self.add_local_tracks(&pc);
         self.setup_ice_handler(&pc, remote_peer);
         self.setup_track_handler(&pc, remote_peer);
+        Self::setup_connection_logging(&pc, remote_peer);
 
         let making_offer = Rc::new(Cell::new(false));
         self.setup_negotiation_handler(&pc, remote_peer, making_offer.clone());
 
-        self.connections.insert(
-            remote_peer.to_string(),
-            PeerConnectionState { pc, making_offer },
-        );
-
-        let state = self
-            .connections
-            .get(remote_peer)
-            .expect("key just inserted");
-        Ok((state, video_sender))
+        let state = PeerConnectionState {
+            pc,
+            making_offer,
+            remote_set: Rc::new(Cell::new(false)),
+        };
+        let handles = state.handles();
+        self.connections
+            .borrow_mut()
+            .insert(remote_peer.to_string(), state);
+        Ok((handles, video_sender))
     }
 
     /// Create an SDP offer and send it to a remote peer.
@@ -554,10 +635,10 @@ impl VoiceManager {
     /// If a connection already exists it is reused; otherwise a new one is
     /// created with local tracks and all handlers. The offer is created on
     /// the (possibly existing) connection and sent via the signal callback.
-    pub async fn create_offer(&mut self, remote_peer: &str) -> Result<(), String> {
-        let (state, video_sender) = self.get_or_create_connection(remote_peer)?;
-        let pc = state.pc.clone();
-        let making_offer = state.making_offer.clone();
+    pub async fn create_offer(&self, remote_peer: &str) -> Result<(), String> {
+        let (handles, video_sender) = self.get_or_create_connection(remote_peer)?;
+        let pc = handles.pc;
+        let making_offer = handles.making_offer;
 
         // Prevent the onnegotiationneeded handler from firing a duplicate offer
         // while we are creating one here.
@@ -565,7 +646,9 @@ impl VoiceManager {
 
         // Store video sender if a new connection was created with video.
         if let Some(sender) = video_sender {
-            self.video_senders.insert(remote_peer.to_string(), sender);
+            self.video_senders
+                .borrow_mut()
+                .insert(remote_peer.to_string(), sender);
         }
 
         // Create offer.
@@ -602,31 +685,38 @@ impl VoiceManager {
 
     /// Handle an incoming SDP offer from a remote peer.
     ///
-    /// Implements the "perfect negotiation" pattern:
-    /// - If we are the **impolite** peer (higher ID) and are currently making
-    ///   an offer, we ignore the incoming offer (our offer wins).
-    /// - If we are the **polite** peer (lower ID) and are making an offer,
-    ///   we rollback our local description and accept the remote offer.
-    /// - Otherwise we accept the offer normally.
-    pub async fn handle_offer(&mut self, remote_peer: &str, sdp: &str) -> Result<(), String> {
-        let (state, video_sender) = self.get_or_create_connection(remote_peer)?;
-        let pc = state.pc.clone();
-        let currently_making_offer = state.making_offer.get();
+    /// Implements the canonical "perfect negotiation" pattern (see MDN
+    /// "Establishing a connection: The WebRTC perfect negotiation pattern"):
+    /// - An **offer collision** is `making_offer || signalingState != "stable"`.
+    /// - The **impolite** peer (higher ID) ignores a colliding offer — its own
+    ///   offer wins.
+    /// - The **polite** peer (lower ID) rolls back its pending local offer and
+    ///   accepts the remote one.
+    ///
+    /// Once `setRemoteDescription` succeeds, any ICE candidates that arrived
+    /// early (and were queued) are flushed.
+    pub async fn handle_offer(&self, remote_peer: &str, sdp: &str) -> Result<(), String> {
+        let (handles, video_sender) = self.get_or_create_connection(remote_peer)?;
+        let pc = handles.pc;
 
         // Store video sender if a new connection was created with video.
         if let Some(sender) = video_sender {
-            self.video_senders.insert(remote_peer.to_string(), sender);
+            self.video_senders
+                .borrow_mut()
+                .insert(remote_peer.to_string(), sender);
         }
 
-        // Perfect negotiation collision detection.
+        // Perfect-negotiation collision detection. `polite` = lower peer ID.
         let polite = self.local_peer_id.as_str() < remote_peer;
+        let stable = pc.signaling_state() == RtcSignalingState::Stable;
+        if should_ignore_offer(polite, handles.making_offer.get(), stable) {
+            // Impolite peer in a collision: keep our own offer, drop theirs.
+            return Ok(());
+        }
 
-        if currently_making_offer {
-            if !polite {
-                // We are impolite and already making an offer — ignore incoming.
-                return Ok(());
-            }
-            // We are polite — rollback our pending local description.
+        // Polite peer in a collision (or any non-stable state): roll back our
+        // pending local offer so we can accept the remote one.
+        if !stable {
             let rollback = RtcSessionDescriptionInit::new(RtcSdpType::Rollback);
             let _ = wasm_bindgen_futures::JsFuture::from(pc.set_local_description(&rollback)).await;
         }
@@ -637,6 +727,9 @@ impl VoiceManager {
         wasm_bindgen_futures::JsFuture::from(pc.set_remote_description(&remote_desc))
             .await
             .map_err(|_| "set_remote_description failed")?;
+        handles.remote_set.set(true);
+        // Remote description is in place — apply any candidates that arrived early.
+        self.flush_pending_ice(remote_peer, &pc);
 
         // Create answer.
         let answer = wasm_bindgen_futures::JsFuture::from(pc.create_answer())
@@ -661,44 +754,79 @@ impl VoiceManager {
     }
 
     /// Handle an incoming SDP answer from a remote peer.
+    ///
+    /// After `setRemoteDescription` succeeds, flushes any ICE candidates that
+    /// arrived before the answer.
     pub async fn handle_answer(&self, remote_peer: &str, sdp: &str) -> Result<(), String> {
-        let state = self
-            .connections
-            .get(remote_peer)
-            .ok_or("no connection for peer")?;
+        let handles = {
+            let conns = self.connections.borrow();
+            conns
+                .get(remote_peer)
+                .map(|s| s.handles())
+                .ok_or("no connection for peer")?
+        };
 
         let desc = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
         desc.set_sdp(sdp);
-        wasm_bindgen_futures::JsFuture::from(state.pc.set_remote_description(&desc))
+        wasm_bindgen_futures::JsFuture::from(handles.pc.set_remote_description(&desc))
             .await
             .map_err(|_| "set_remote_description failed")?;
+        handles.remote_set.set(true);
+        self.flush_pending_ice(remote_peer, &handles.pc);
         Ok(())
     }
 
     /// Handle an incoming ICE candidate from a remote peer.
+    ///
+    /// `addIceCandidate` rejects when the connection has no remote description
+    /// yet (the browser buffers only *local* candidates, not remote ones), so a
+    /// candidate that arrives before its offer/answer must be queued rather than
+    /// dropped. Queued candidates are flushed by [`Self::flush_pending_ice`]
+    /// once `setRemoteDescription` succeeds. Candidates for a peer with no
+    /// connection yet are also queued (the connection is created when its offer
+    /// arrives).
     pub fn handle_ice_candidate(
         &self,
         remote_peer: &str,
         candidate_json: &str,
     ) -> Result<(), String> {
-        let state = self
-            .connections
-            .get(remote_peer)
-            .ok_or("no connection for peer")?;
+        // Validate the JSON up front so malformed candidates are rejected
+        // rather than silently queued forever.
+        if js_sys::JSON::parse(candidate_json).is_err() {
+            return Err("invalid ICE candidate JSON".to_string());
+        }
 
-        let candidate_obj =
-            js_sys::JSON::parse(candidate_json).map_err(|_| "invalid ICE candidate JSON")?;
-        // Use add_ice_candidate with the parsed JS object directly.
-        // The browser accepts RTCIceCandidateInit dictionaries natively.
-        let _ = state
-            .pc
-            .add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(candidate_obj.unchecked_ref()));
+        let ready = {
+            let conns = self.connections.borrow();
+            conns
+                .get(remote_peer)
+                .map(|state| (state.pc.clone(), state.remote_set.get()))
+        };
+
+        match ready {
+            Some((pc, true)) => apply_ice_candidate(&pc, candidate_json),
+            Some((_, false)) | None => {
+                // Connection missing or remote description not set yet — queue.
+                self.pending_ice
+                    .borrow_mut()
+                    .push(remote_peer, candidate_json);
+            }
+        }
         Ok(())
+    }
+
+    /// Apply every queued ICE candidate for `remote_peer` to `pc`, in arrival
+    /// order. Called once the connection's remote description is set.
+    fn flush_pending_ice(&self, remote_peer: &str, pc: &RtcPeerConnection) {
+        let queued = self.pending_ice.borrow_mut().take(remote_peer);
+        for json in queued {
+            apply_ice_candidate(pc, &json);
+        }
     }
 
     /// Mute or unmute the local microphone.
     pub fn set_muted(&self, muted: bool) {
-        if let Some(ref stream) = self.local_stream {
+        if let Some(ref stream) = *self.local_stream.borrow() {
             let tracks = stream.get_audio_tracks();
             for i in 0..tracks.length() {
                 let track: web_sys::MediaStreamTrack = tracks.get(i).unchecked_into();
@@ -712,21 +840,25 @@ impl VoiceManager {
     /// Stops any existing video share first. The video track is added to every
     /// existing peer connection; `onnegotiationneeded` fires automatically and
     /// handles the renegotiation.
-    pub fn start_video(&mut self, stream: MediaStream, source: VideoSource) {
+    pub fn start_video(&self, stream: MediaStream, source: VideoSource) {
         self.stop_video_share();
-        self.video_stream = Some(stream.clone());
-        self.video_source = Some(source);
+        *self.video_stream.borrow_mut() = Some(stream.clone());
+        self.video_source.set(Some(source));
 
         let video_tracks = stream.get_video_tracks();
         if video_tracks.length() > 0 {
             let track: web_sys::MediaStreamTrack = video_tracks.get(0).unchecked_into();
-            // Collect peer IDs first to avoid borrowing `self` in the loop.
-            let peer_ids: Vec<String> = self.connections.keys().cloned().collect();
-            for peer_id in peer_ids {
-                if let Some(state) = self.connections.get(&peer_id) {
-                    let sender = state.pc.add_track_0(&track, &stream);
-                    self.video_senders.insert(peer_id, sender);
-                }
+            // Snapshot (peer_id, pc) pairs so we don't hold the connections
+            // borrow while mutating video_senders.
+            let targets: Vec<(String, RtcRtpSender)> = self
+                .connections
+                .borrow()
+                .iter()
+                .map(|(peer_id, state)| (peer_id.clone(), state.pc.add_track_0(&track, &stream)))
+                .collect();
+            let mut senders = self.video_senders.borrow_mut();
+            for (peer_id, sender) in targets {
+                senders.insert(peer_id, sender);
             }
         }
         // onnegotiationneeded fires automatically from addTrack.
@@ -736,50 +868,55 @@ impl VoiceManager {
     ///
     /// Stops the underlying `MediaStreamTrack` (turns off camera LED) and
     /// removes the RTP sender from each connection, triggering renegotiation.
-    pub fn stop_video_share(&mut self) {
-        let senders: Vec<(String, RtcRtpSender)> = self.video_senders.drain().collect();
-        for (peer_id, sender) in senders {
-            if let Some(state) = self.connections.get(&peer_id) {
-                state.pc.remove_track(&sender);
+    pub fn stop_video_share(&self) {
+        let senders: Vec<(String, RtcRtpSender)> =
+            self.video_senders.borrow_mut().drain().collect();
+        {
+            let conns = self.connections.borrow();
+            for (peer_id, sender) in &senders {
+                if let Some(state) = conns.get(peer_id) {
+                    state.pc.remove_track(sender);
+                }
             }
         }
-        if let Some(ref stream) = self.video_stream {
+        if let Some(ref stream) = *self.video_stream.borrow() {
             let tracks = stream.get_video_tracks();
             for i in 0..tracks.length() {
                 let track: web_sys::MediaStreamTrack = tracks.get(i).unchecked_into();
                 track.stop();
             }
         }
-        self.video_stream = None;
-        self.video_source = None;
+        *self.video_stream.borrow_mut() = None;
+        self.video_source.set(None);
     }
 
     /// Start sharing the screen. Convenience wrapper around `start_video`.
-    pub fn start_screen_share(&mut self, stream: MediaStream) {
+    pub fn start_screen_share(&self, stream: MediaStream) {
         self.start_video(stream, VideoSource::Screen);
     }
 
     /// Start sharing the camera. Convenience wrapper around `start_video`.
-    pub fn start_camera(&mut self, stream: MediaStream) {
+    pub fn start_camera(&self, stream: MediaStream) {
         self.start_video(stream, VideoSource::Camera);
     }
 
     /// Return the currently active video source, if any.
     pub fn video_source(&self) -> Option<VideoSource> {
-        self.video_source
+        self.video_source.get()
     }
 
     /// Close the connection to a specific remote peer.
     ///
     /// Also removes the `<audio>` element created for this peer's remote
     /// audio playback so elements do not accumulate across reconnects.
-    pub fn close_connection(&mut self, remote_peer: &str) {
-        self.video_senders.remove(remote_peer);
-        if let Some(ref mut detector) = self.speaking_detector {
+    pub fn close_connection(&self, remote_peer: &str) {
+        self.video_senders.borrow_mut().remove(remote_peer);
+        self.pending_ice.borrow_mut().take(remote_peer);
+        if let Some(ref mut detector) = *self.speaking_detector.borrow_mut() {
             detector.remove_peer(remote_peer);
         }
         (self.on_video_track)(remote_peer, None);
-        if let Some(state) = self.connections.remove(remote_peer) {
+        if let Some(state) = self.connections.borrow_mut().remove(remote_peer) {
             state.pc.close();
         }
         // Remove the <audio> element from the DOM.
@@ -799,115 +936,297 @@ impl VoiceManager {
     /// `<audio>` elements are removed from the DOM and the speaking detector
     /// is cleaned up per-peer. The detector is then destroyed and recreated
     /// so speaking detection works on the next voice session.
-    pub fn close_all(&mut self) {
+    pub fn close_all(&self) {
         self.stop_video_share();
         // Close each peer individually to remove <audio> elements and clean
         // up per-peer detector state.
-        let peers: Vec<String> = self.connections.keys().cloned().collect();
+        let peers: Vec<String> = self.connections.borrow().keys().cloned().collect();
         for peer in peers {
             self.close_connection(&peer);
         }
-        // Destroy the detector after per-peer cleanup.
-        if let Some(ref mut detector) = self.speaking_detector {
+        self.pending_ice.borrow_mut().clear();
+        // Destroy the detector after per-peer cleanup, then recreate it so
+        // speaking detection works on rejoin.
+        if let Some(ref mut detector) = *self.speaking_detector.borrow_mut() {
             detector.destroy();
         }
-        self.speaking_detector = None;
-        // Recreate the detector so speaking detection works on rejoin.
+        *self.speaking_detector.borrow_mut() = None;
         if let Some(ref cb) = self.speaking_change_cb {
             let cb_clone = cb.clone();
-            self.speaking_detector = SpeakingDetector::new(move |s| cb_clone(s)).ok();
-            if let Some(ref mut d) = self.speaking_detector {
+            let mut detector = SpeakingDetector::new(move |s| cb_clone(s)).ok();
+            if let Some(ref mut d) = detector {
                 d.start_polling();
             }
+            *self.speaking_detector.borrow_mut() = detector;
         }
-        if let Some(ref stream) = self.local_stream {
+        if let Some(ref stream) = *self.local_stream.borrow() {
             let tracks = stream.get_tracks();
             for i in 0..tracks.length() {
                 let track: web_sys::MediaStreamTrack = tracks.get(i).unchecked_into();
                 track.stop();
             }
         }
-        self.local_stream = None;
+        *self.local_stream.borrow_mut() = None;
     }
 }
 
-/// Resolve the list of STUN server URLs to use for WebRTC ICE gathering.
+/// A single ICE server entry: one or more URLs plus optional TURN credentials.
+///
+/// STUN servers need only `urls`. TURN servers additionally require
+/// `username` + `credential`; without them the browser silently cannot use the
+/// TURN server, which is why the previous STUN-only config could never relay
+/// media across symmetric NATs.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IceServerConfig {
+    /// `stun:` / `turn:` / `turns:` URLs for this server.
+    pub urls: Vec<String>,
+    /// TURN username (omit for STUN-only entries).
+    pub username: Option<String>,
+    /// TURN credential / shared secret (omit for STUN-only entries).
+    pub credential: Option<String>,
+}
+
+/// Resolve the list of ICE servers to use for WebRTC ICE gathering.
 ///
 /// # Privacy-first default
 ///
-/// Returns an **empty list** by default. WebRTC will then rely on host
-/// candidates plus whatever relay path the iroh layer provides — no
-/// third-party STUN server learns the user's IP address.
+/// Returns an **empty list** by default. WebRTC then relies on host candidates
+/// only — no third-party STUN/TURN server learns the user's IP address.
+/// Hardcoding `stun:stun.l.google.com:19302` (the original behaviour) leaked
+/// every voice-call participant's public IP to Google (issue #179).
 ///
-/// Hardcoding `stun:stun.l.google.com:19302` (the previous behaviour) leaked
-/// every voice-call participant's public IP to Google. See issue #179.
+/// **Empty means no NAT traversal**: host-only candidates connect on the same
+/// machine / flat LAN but fail across any NAT boundary. To make cross-network
+/// calls work *without* leaking IPs to a third party, deployments should point
+/// these knobs at a self-hosted STUN/TURN server (e.g. coturn co-located with
+/// the Willow relay). See
+/// `docs/specs/2026-06-07-webrtc-nat-traversal-design.md`.
 ///
-/// # Override
+/// # Override knobs (read at boot, before the WASM module starts)
 ///
-/// Deployments that need NAT traversal via STUN can set the
-/// `window.__WILLOW_STUN_URLS` global to an array of STUN URLs *before* the
-/// WASM module boots, e.g. in `init.js`:
-///
+/// `window.__WILLOW_ICE_SERVERS` — full entries incl. TURN credentials:
 /// ```js
-/// // Opt back into Google's public STUN server (leaks your IP to Google):
-/// window.__WILLOW_STUN_URLS = ['stun:stun.l.google.com:19302'];
-///
-/// // Or point at a self-hosted STUN server:
-/// window.__WILLOW_STUN_URLS = ['stun:stun.example.com:3478'];
+/// window.__WILLOW_ICE_SERVERS = [
+///   { urls: 'stun:stun.willow.example:3478' },
+///   { urls: ['turn:turn.willow.example:3478'],
+///     username: 'ephemeral-user', credential: 'hmac-token' },
+/// ];
 /// ```
 ///
-/// Values that are not a JS array, or entries that are not strings, are
-/// silently ignored.
+/// `window.__WILLOW_STUN_URLS` — legacy STUN-only array, still honoured:
+/// ```js
+/// window.__WILLOW_STUN_URLS = ['stun:stun.willow.example:3478'];
+/// ```
 ///
-/// # Follow-up
-///
-/// - Medium term: ship a self-hosted STUN server alongside the relay.
-/// - Long term: use the iroh relay path for ICE traversal directly so STUN
-///   becomes unnecessary.
-pub fn resolve_stun_urls() -> Vec<String> {
+/// Entries that are not objects/strings, or lack any usable URL, are ignored.
+pub fn resolve_ice_servers() -> Vec<IceServerConfig> {
     let Some(window) = web_sys::window() else {
         return Vec::new();
     };
-    let raw = match js_sys::Reflect::get(
+    let full = js_sys::Reflect::get(
+        &window,
+        &wasm_bindgen::JsValue::from_str("__WILLOW_ICE_SERVERS"),
+    )
+    .ok()
+    .map(parse_ice_servers)
+    .unwrap_or_default();
+    let legacy = js_sys::Reflect::get(
         &window,
         &wasm_bindgen::JsValue::from_str("__WILLOW_STUN_URLS"),
-    ) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-    if raw.is_undefined() || raw.is_null() {
-        return Vec::new();
-    }
+    )
+    .ok()
+    .map(parse_legacy_stun_urls)
+    .unwrap_or_default();
+    merge_ice_servers(full, legacy)
+}
+
+/// Parse a `window.__WILLOW_ICE_SERVERS` value (array of `{urls, username?,
+/// credential?}` objects) into [`IceServerConfig`]s. Tolerant of junk: bad
+/// entries are skipped, and `urls` accepts either a string or an array of
+/// strings.
+fn parse_ice_servers(raw: wasm_bindgen::JsValue) -> Vec<IceServerConfig> {
     let Ok(array) = raw.dyn_into::<js_sys::Array>() else {
         return Vec::new();
     };
-    let mut out = Vec::with_capacity(array.length() as usize);
-    for i in 0..array.length() {
-        if let Some(s) = array.get(i).as_string() {
+    let mut out = Vec::new();
+    for entry in array.iter() {
+        let urls_val = js_sys::Reflect::get(&entry, &"urls".into()).unwrap_or(JsValue::UNDEFINED);
+        let mut urls = Vec::new();
+        if let Some(s) = urls_val.as_string() {
             if !s.is_empty() {
-                out.push(s);
+                urls.push(s);
             }
+        } else if let Ok(arr) = urls_val.dyn_into::<js_sys::Array>() {
+            for u in arr.iter() {
+                if let Some(s) = u.as_string() {
+                    if !s.is_empty() {
+                        urls.push(s);
+                    }
+                }
+            }
+        }
+        if urls.is_empty() {
+            continue;
+        }
+        let username = js_sys::Reflect::get(&entry, &"username".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .filter(|s| !s.is_empty());
+        let credential = js_sys::Reflect::get(&entry, &"credential".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .filter(|s| !s.is_empty());
+        out.push(IceServerConfig {
+            urls,
+            username,
+            credential,
+        });
+    }
+    out
+}
+
+/// Parse the legacy `window.__WILLOW_STUN_URLS` string array into a single
+/// credential-less [`IceServerConfig`] (or nothing if empty/invalid).
+fn parse_legacy_stun_urls(raw: wasm_bindgen::JsValue) -> Vec<IceServerConfig> {
+    let Ok(array) = raw.dyn_into::<js_sys::Array>() else {
+        return Vec::new();
+    };
+    let urls: Vec<String> = array
+        .iter()
+        .filter_map(|v| v.as_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if urls.is_empty() {
+        Vec::new()
+    } else {
+        vec![IceServerConfig {
+            urls,
+            username: None,
+            credential: None,
+        }]
+    }
+}
+
+/// Combine the full `__WILLOW_ICE_SERVERS` entries with any legacy STUN-only
+/// entries, dropping legacy URLs already covered by a full entry so we don't
+/// emit duplicate servers. Pure — unit-tested.
+fn merge_ice_servers(
+    full: Vec<IceServerConfig>,
+    legacy: Vec<IceServerConfig>,
+) -> Vec<IceServerConfig> {
+    let known: std::collections::HashSet<&String> =
+        full.iter().flat_map(|s| s.urls.iter()).collect();
+    let mut out = full.clone();
+    for mut entry in legacy {
+        entry.urls.retain(|u| !known.contains(u));
+        if !entry.urls.is_empty() {
+            out.push(entry);
         }
     }
     out
 }
 
-/// Build an `RTCConfiguration` from a resolved list of STUN URLs.
+/// Build an `RTCConfiguration` from a resolved list of ICE servers.
 ///
-/// An empty `urls` list yields a config with **no** `iceServers` entries —
-/// the privacy-first default. See [`resolve_stun_urls`] for rationale.
-fn build_rtc_config(urls: &[String]) -> RtcConfiguration {
+/// An empty `servers` list yields a config with **no** `iceServers` entries —
+/// the privacy-first default. TURN entries carry their `username`/`credential`
+/// so the browser can actually authenticate to the relay (the previous
+/// implementation only ever set `urls`, so it could not drive TURN at all).
+fn build_rtc_config(servers: &[IceServerConfig]) -> RtcConfiguration {
     let config = RtcConfiguration::new();
     let ice_servers = js_sys::Array::new();
-    if !urls.is_empty() {
-        let server = RtcIceServer::new();
-        let url_array = js_sys::Array::new();
-        for u in urls {
-            url_array.push(&wasm_bindgen::JsValue::from_str(u));
+    for server in servers {
+        if server.urls.is_empty() {
+            continue;
         }
-        server.set_urls(&url_array);
-        ice_servers.push(&server);
+        let entry = RtcIceServer::new();
+        let url_array = js_sys::Array::new();
+        for u in &server.urls {
+            url_array.push(&JsValue::from_str(u));
+        }
+        entry.set_urls(&url_array);
+        if let Some(ref username) = server.username {
+            entry.set_username(username);
+        }
+        if let Some(ref credential) = server.credential {
+            entry.set_credential(credential);
+        }
+        ice_servers.push(&entry);
     }
     config.set_ice_servers(&ice_servers);
     config
+}
+
+/// Test-only accessor for [`build_rtc_config`] so browser tests can assert that
+/// TURN credentials propagate into the `RTCConfiguration`.
+#[doc(hidden)]
+pub fn build_rtc_config_for_test(servers: &[IceServerConfig]) -> RtcConfiguration {
+    build_rtc_config(servers)
+}
+
+/// Decide whether an incoming SDP offer should be ignored under the perfect
+/// negotiation pattern.
+///
+/// An offer *collides* when we are mid-offer (`making_offer`) or our signaling
+/// state is not `stable`. The **impolite** peer ignores a colliding offer (its
+/// own offer wins); the **polite** peer accepts it (rolling back its own). When
+/// there is no collision, the offer is always accepted.
+///
+/// This mirrors the canonical MDN/W3C condition
+/// `ignoreOffer = !polite && (makingOffer || signalingState !== "stable")`.
+pub fn should_ignore_offer(polite: bool, making_offer: bool, stable: bool) -> bool {
+    let collision = making_offer || !stable;
+    !polite && collision
+}
+
+/// Buffer of remote ICE candidates that arrived before their connection had a
+/// remote description, keyed by remote peer ID. Pure data structure (no
+/// web-sys), so the queue/flush logic is unit-testable off-browser.
+#[derive(Debug, Default)]
+pub struct PendingIceCandidates {
+    by_peer: HashMap<String, Vec<String>>,
+}
+
+impl PendingIceCandidates {
+    /// Queue a candidate JSON blob for `peer`.
+    pub fn push(&mut self, peer: &str, candidate_json: &str) {
+        self.by_peer
+            .entry(peer.to_string())
+            .or_default()
+            .push(candidate_json.to_string());
+    }
+
+    /// Remove and return every queued candidate for `peer`, in arrival order.
+    pub fn take(&mut self, peer: &str) -> Vec<String> {
+        self.by_peer.remove(peer).unwrap_or_default()
+    }
+
+    /// Number of peers with queued candidates (test/diagnostics helper).
+    pub fn peers_pending(&self) -> usize {
+        self.by_peer.len()
+    }
+
+    /// Drop all queued candidates (session teardown).
+    pub fn clear(&mut self) {
+        self.by_peer.clear();
+    }
+}
+
+/// Parse and apply a single remote ICE candidate to `pc`.
+///
+/// The browser accepts an `RTCIceCandidateInit` dictionary natively. The add is
+/// async; we spawn it and log (rather than silently swallow) any rejection so a
+/// genuinely bad candidate is visible instead of mysteriously breaking ICE.
+fn apply_ice_candidate(pc: &RtcPeerConnection, candidate_json: &str) {
+    let Ok(candidate_obj) = js_sys::JSON::parse(candidate_json) else {
+        tracing::warn!("apply_ice_candidate: invalid candidate JSON");
+        return;
+    };
+    let promise =
+        pc.add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(candidate_obj.unchecked_ref()));
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(e) = wasm_bindgen_futures::JsFuture::from(promise).await {
+            tracing::warn!(?e, "addIceCandidate rejected");
+        }
+    });
 }
