@@ -29,6 +29,27 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
     {
+      // Dedicated project for WebRTC voice/video media tests. The fake-media
+      // flags give Chromium a synthetic mic/camera (no hardware) and
+      // auto-grant the getUserMedia/getDisplayMedia permission prompt, so two
+      // browser contexts on this machine can establish a *real* peer
+      // connection over loopback host candidates (no STUN/TURN needed
+      // same-host) and actually exchange media. Used by e2e/voice-video.spec.ts.
+      name: 'voice-chrome',
+      testMatch: /voice-video\.spec\.ts/,
+      use: {
+        ...devices['Desktop Chrome'],
+        launchOptions: {
+          args: [
+            '--use-fake-device-for-media-stream',
+            '--use-fake-ui-for-media-stream',
+            '--autoplay-policy=no-user-gesture-required',
+          ],
+        },
+        permissions: ['microphone', 'camera'],
+      },
+    },
+    {
       name: 'mobile-chrome',
       use: { ...devices['Pixel 7'] },
     },

@@ -156,6 +156,30 @@ impl<N: willow_network::Network> ClientMutations<N> {
         channel_id.ok_or_else(|| anyhow::anyhow!("channel not found: {channel}"))
     }
 
+    /// Resolve a channel reference (already a `channel_id`, or a display name)
+    /// to the canonical `channel_id` (UUID) used on the wire.
+    ///
+    /// Voice signaling (`VoiceJoin`/`VoiceLeave`/`VoiceSignal`) must address
+    /// channels by their canonical id so the receiver's existence gate — which
+    /// validates against `ServerState.channels` (keyed by id) — accepts them.
+    /// The UI keys voice state by name, so this accepts either form: an exact
+    /// id match wins, otherwise it falls back to a name lookup. Returns `None`
+    /// if the channel is unknown.
+    pub(crate) async fn channel_id_for_voice(&self, channel: &str) -> Option<String> {
+        let ch = channel.to_string();
+        willow_actor::state::select(&self.event_state, move |es| {
+            if es.channels.contains_key(&ch) {
+                Some(ch.clone())
+            } else {
+                es.channels
+                    .iter()
+                    .find(|(_, c)| c.name == ch)
+                    .map(|(id, _)| id.clone())
+            }
+        })
+        .await
+    }
+
     /// Sync event_state mirror from ManagedDag, persist, and emit
     /// ClientEvents. Called after build_event succeeds — ManagedDag has
     /// already applied the event to its internal state atomically.
@@ -699,21 +723,33 @@ impl<N: willow_network::Network> ClientMutations<N> {
 
 impl<N: willow_network::Network> ClientMutations<N> {
     /// Join a voice channel.
-    pub async fn join_voice(&self, channel_id: &str) {
+    ///
+    /// `channel` is a channel name (the UI's identifier) or a `channel_id`.
+    /// Local voice state stays keyed by the channel *name* (consistent with the
+    /// name-keyed UI); the broadcast `VoiceJoin` carries the canonical
+    /// `channel_id` (UUID) so remote peers' existence gate accepts it.
+    pub async fn join_voice(&self, channel: &str) {
         let in_voice =
             willow_actor::state::select(&self.voice, |v| v.active_channel.is_some()).await;
         if in_voice {
             self.leave_voice().await;
         }
-        let ch = channel_id.to_string();
+        // Local voice state is keyed by the caller's reference (the UI's
+        // channel name), so the UI — which reads the same key — matches.
         let my_peer_id = self.identity.endpoint_id();
+        let ch = channel.to_string();
         willow_actor::state::mutate(&self.voice, move |v| {
             v.active_channel = Some(ch.clone());
             v.participants.entry(ch).or_default().insert(my_peer_id);
         })
         .await;
+        // Broadcast addressed by canonical channel_id so peers accept it.
+        let Some(channel_id) = self.channel_id_for_voice(channel).await else {
+            tracing::warn!(%channel, "join_voice: unknown channel, not broadcasting");
+            return;
+        };
         let msg = ops::WireMessage::VoiceJoin {
-            channel_id: channel_id.to_string(),
+            channel_id,
             peer_id: my_peer_id,
         };
         if let Some(data) = ops::pack_wire(&msg, &self.identity) {
@@ -736,8 +772,14 @@ impl<N: willow_network::Network> ClientMutations<N> {
         })
         .await;
         if let Some(ch) = maybe_ch {
+            // `ch` is the local key (channel name); address the wire message
+            // by canonical channel_id so peers' existence gate accepts it.
+            let Some(channel_id) = self.channel_id_for_voice(&ch).await else {
+                tracing::warn!(channel = %ch, "leave_voice: unknown channel, not broadcasting");
+                return;
+            };
             let msg = ops::WireMessage::VoiceLeave {
-                channel_id: ch,
+                channel_id,
                 peer_id: my_peer_id,
             };
             if let Some(data) = ops::pack_wire(&msg, &self.identity) {
