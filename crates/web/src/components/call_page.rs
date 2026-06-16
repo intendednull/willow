@@ -199,7 +199,7 @@ pub fn CallPage(
 
         if current_source == Some(VideoSource::Camera) {
             // Toggle off — stop camera.
-            vm_camera.borrow_mut().stop_video_share();
+            vm_camera.stop_video_share();
             write.voice.set_video_source.set(None);
             write.voice.set_local_video_stream.set(None);
             return;
@@ -207,7 +207,7 @@ pub fn CallPage(
 
         // Stop any existing share first.
         if current_source.is_some() {
-            vm_camera.borrow_mut().stop_video_share();
+            vm_camera.stop_video_share();
             write.voice.set_video_source.set(None);
             write.voice.set_local_video_stream.set(None);
         }
@@ -236,7 +236,7 @@ pub fn CallPage(
             use wasm_bindgen::JsCast;
             let stream: web_sys::MediaStream = stream.unchecked_into();
             let stream_for_signal = SendWrapper::new(stream.clone());
-            vm2.borrow_mut().start_camera(stream);
+            vm2.start_camera(stream);
             write2.voice.set_video_source.set(Some(VideoSource::Camera));
             write2
                 .voice
@@ -260,7 +260,7 @@ pub fn CallPage(
 
         if current_source == Some(VideoSource::Screen) {
             // Toggle off — stop screen share.
-            vm_screen.borrow_mut().stop_video_share();
+            vm_screen.stop_video_share();
             write.voice.set_video_source.set(None);
             write.voice.set_local_video_stream.set(None);
             return;
@@ -268,7 +268,7 @@ pub fn CallPage(
 
         // Stop any existing share first.
         if current_source.is_some() {
-            vm_screen.borrow_mut().stop_video_share();
+            vm_screen.stop_video_share();
             write.voice.set_video_source.set(None);
             write.voice.set_local_video_stream.set(None);
         }
@@ -295,7 +295,7 @@ pub fn CallPage(
             use wasm_bindgen::JsCast;
             let stream: web_sys::MediaStream = stream.unchecked_into();
             let stream_for_signal = SendWrapper::new(stream.clone());
-            vm2.borrow_mut().start_screen_share(stream.clone());
+            vm2.start_screen_share(stream.clone());
             write2.voice.set_video_source.set(Some(VideoSource::Screen));
             write2
                 .voice
@@ -309,7 +309,7 @@ pub fn CallPage(
                 let track: web_sys::MediaStreamTrack = track_val.unchecked_into();
                 let vm_ended = vm2.clone();
                 let on_ended = Closure::once(move || {
-                    vm_ended.borrow_mut().stop_video_share();
+                    vm_ended.stop_video_share();
                     write2.voice.set_local_video_stream.set(None);
                     write2.voice.set_video_source.set(None);
                 });

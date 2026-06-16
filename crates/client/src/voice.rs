@@ -40,14 +40,23 @@ impl<N: willow_network::Network> ClientHandle<N> {
         willow_actor::state::select(&self.voice_state_addr, |v| v.deafened).await
     }
 
-    pub fn send_voice_signal(
+    /// Send a WebRTC signaling message to a peer.
+    ///
+    /// `channel` is the UI's channel reference (name) or a `channel_id`; it is
+    /// resolved to the canonical `channel_id` (UUID) so the receiver's
+    /// existence gate accepts it. Async because resolution reads event state.
+    pub async fn send_voice_signal(
         &self,
-        channel_id: &str,
+        channel: &str,
         target: willow_identity::EndpointId,
         signal: ops::VoiceSignalPayload,
     ) {
+        let Some(channel_id) = self.mutation_handle.channel_id_for_voice(channel).await else {
+            tracing::warn!(%channel, "send_voice_signal: unknown channel");
+            return;
+        };
         let msg = ops::WireMessage::VoiceSignal {
-            channel_id: channel_id.to_string(),
+            channel_id,
             target_peer: target,
             signal,
         };

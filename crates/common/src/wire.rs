@@ -240,6 +240,17 @@ const SIGNALING_CAP: usize = 4 * 1024;
 /// fall-through for variants that don't have a dedicated cap.
 const DEFAULT_CAP: usize = 64 * 1024;
 
+/// Per-variant size cap for WebRTC SDP signaling: 64 KB.
+///
+/// [`WireMessage::VoiceSignal`] carries SDP offers/answers, **not** just tiny
+/// ICE-candidate blobs. A real video offer (multiple codecs, RTP header
+/// extensions, trickle-ICE history) routinely runs 5-15 KB and can grow larger
+/// after renegotiation, so the 4 KB [`SIGNALING_CAP`] silently dropped them
+/// (see `docs/reports/2026-06-07-voice-media-connectivity-investigation.md`).
+/// 64 KB leaves ample headroom while staying inside the transport-level
+/// [`willow_transport::MAX_DESER_SIZE`] (256 KB) ceiling.
+const SDP_CAP: usize = 64 * 1024;
+
 impl WireMessage {
     /// Returns the maximum permitted serialized size, in bytes, for this
     /// variant when it appears on the wire.
@@ -267,9 +278,12 @@ impl WireMessage {
     ///   formal length limit yet, but 64 KB is wildly more than any
     ///   reasonable display name.
     /// - **Signaling variants** (`TypingIndicator`, `VoiceJoin`,
-    ///   `VoiceLeave`, `VoiceSignal`, `JoinRequest`, `JoinResponse`,
-    ///   `JoinDenied`, `SyncRequest`): `SIGNALING_CAP` (4 KB). These
-    ///   carry only ids, short strings, and SDP/ICE blobs — all small.
+    ///   `VoiceLeave`, `JoinRequest`, `JoinResponse`, `JoinDenied`,
+    ///   `SyncRequest`): `SIGNALING_CAP` (4 KB). These carry only ids, short
+    ///   strings, and tiny control payloads.
+    /// - **`VoiceSignal`**: `SDP_CAP` (64 KB). Carries WebRTC SDP
+    ///   offers/answers, which are far larger than the other signaling
+    ///   variants — see [`SDP_CAP`].
     pub fn max_size(&self) -> usize {
         match self {
             // User-generated bodies, batched payloads, and topic announces:
@@ -301,10 +315,11 @@ impl WireMessage {
             | WireMessage::TypingIndicator { .. }
             | WireMessage::VoiceJoin { .. }
             | WireMessage::VoiceLeave { .. }
-            | WireMessage::VoiceSignal { .. }
             | WireMessage::JoinRequest { .. }
             | WireMessage::JoinResponse { .. }
             | WireMessage::JoinDenied { .. } => SIGNALING_CAP,
+            // WebRTC SDP offers/answers are far larger than other signaling.
+            WireMessage::VoiceSignal { .. } => SDP_CAP,
         }
     }
 
@@ -1095,6 +1110,71 @@ mod tests {
             }
             _ => panic!("expected VoiceSignal"),
         }
+    }
+
+    /// Build an SDP blob of approximately `kb` kilobytes that looks like a
+    /// real video offer (the size, not the exact grammar, is what matters
+    /// for the per-variant cap test).
+    fn fake_video_sdp(kb: usize) -> String {
+        // A real video SDP is dominated by repeated codec/fmtp/rtcp-fb and
+        // ICE candidate lines. Emit enough to reach ~kb KB.
+        let line = "a=rtpmap:96 VP9/90000\r\na=fmtp:96 profile-id=0;max-fs=12288;max-fr=60\r\na=rtcp-fb:96 nack pli\r\n";
+        let mut sdp = String::from("v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n");
+        while sdp.len() < kb * 1024 {
+            sdp.push_str(line);
+        }
+        sdp
+    }
+
+    #[test]
+    fn voice_signal_offer_survives_realistic_video_sdp() {
+        // A real video SDP offer (multiple codecs, header extensions, trickle
+        // ICE history) routinely runs 5-15 KB. It must survive the wire
+        // round-trip — the per-variant cap for VoiceSignal has to leave room
+        // for SDP, not just tiny ICE-candidate blobs.
+        let id = Identity::generate();
+        let target = Identity::generate().endpoint_id();
+        let sdp = fake_video_sdp(10); // ~10 KB
+        assert!(
+            sdp.len() > 4 * 1024,
+            "test SDP must exceed the old 4 KB cap"
+        );
+        let msg = WireMessage::VoiceSignal {
+            channel_id: "voice-1".to_string(),
+            target_peer: target,
+            signal: VoiceSignalPayload::Offer(sdp.clone()),
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        let decoded = unpack_wire(&data);
+        assert!(
+            decoded.is_some(),
+            "a ~10 KB video SDP offer must not be dropped by the per-variant cap"
+        );
+        match decoded.unwrap().0 {
+            WireMessage::VoiceSignal {
+                signal: VoiceSignalPayload::Offer(got),
+                ..
+            } => assert_eq!(got, sdp),
+            other => panic!("expected VoiceSignal Offer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn oversize_voice_signal_is_still_rejected() {
+        // The SDP cap still bounds abuse: a payload past the cap is dropped.
+        let id = Identity::generate();
+        let target = Identity::generate().endpoint_id();
+        let huge = fake_video_sdp(100); // 100 KB, past the SDP cap
+        let msg = WireMessage::VoiceSignal {
+            channel_id: "voice-1".to_string(),
+            target_peer: target,
+            signal: VoiceSignalPayload::Offer(huge),
+        };
+        let data = pack_wire(&msg, &id).unwrap();
+        assert!(
+            unpack_wire(&data).is_none(),
+            "a VoiceSignal past the SDP cap must still be rejected"
+        );
     }
 
     #[test]
