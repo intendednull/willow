@@ -39,7 +39,7 @@ jobs:
           restore-keys: deploy-
 
       - name: Install trunk
-        uses: taiki-e/install-action@50b4a718b59c718df4ef27a3b445f86cd57b9f00 # v2.79.3 trunk
+        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2.79.3 trunk
         with:
           tool: trunk@0.21.14
 
